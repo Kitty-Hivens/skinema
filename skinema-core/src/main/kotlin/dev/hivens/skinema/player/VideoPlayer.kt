@@ -247,12 +247,16 @@ class VideoPlayer(
         }
         is Command.Seek -> {
             audioPipeline?.seek(cmd.ptsNanos)
-            if (decoder != null) {
+            val keepRunning = if (decoder != null) {
                 performSeek(decoder, cmd.ptsNanos)
-            } else if (state is State.Ended) {
-                state = State.Playing
+            } else {
+                if (state is State.Ended) state = State.Playing
+                true
             }
-            true
+            // Sound stays frozen at the anchor until the landing is done;
+            // released here even when the landing ended the stream.
+            audioPipeline?.videoLanded()
+            keepRunning
         }
     }
 
@@ -275,11 +279,28 @@ class VideoPlayer(
      * Frame-precise seek: the demuxer lands on the keyframe at-or-before
      * the target, then frames are decoded (and dropped) forward until the
      * target is reached; that frame is published immediately.
+     *
+     * The decode-forward run can span seconds of footage (keyframes are
+     * sparse), so newer seeks queued meanwhile supersede the landing in
+     * progress -- rapid presses cost one landing at the final target, not
+     * a landing each. Returns false when a Close arrived mid-landing.
      */
-    private fun performSeek(decoder: FrameSource, targetNanos: Long) {
+    private fun performSeek(decoder: FrameSource, targetNanos: Long): Boolean {
         seekGeneration++
-        decoder.seekTo(targetNanos)
+        var target = targetNanos
+        decoder.seekTo(target)
         while (true) {
+            when (val next = commands.peek()) {
+                is Command.Seek -> {
+                    commands.poll()
+                    target = next.ptsNanos
+                    audioPipeline?.seek(target)
+                    decoder.seekTo(target)
+                    continue
+                }
+                Command.Close -> return false
+                else -> {}
+            }
             val f = decoder.nextFrame(buffer?.writing?.rgba)
             if (f == null) {
                 // Seeked past the last frame: same treatment as EOF.
@@ -290,13 +311,13 @@ class VideoPlayer(
                 } else {
                     state = State.Ended
                 }
-                return
+                return true
             }
-            if (f.ptsNanos >= targetNanos) {
+            if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
                 if (state is State.Ended) state = State.Playing
                 publish(f)
-                return
+                return true
             }
         }
     }

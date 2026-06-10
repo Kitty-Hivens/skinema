@@ -76,10 +76,56 @@ class AudioPipelineTest {
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
+            pipeline.videoLanded()
             assertTrue(awaitTrue { pipeline.isEnded }, "playback must finish after the seek")
             // 0.25s into 1s of 44.1kHz: the post-flush write is the cropped
             // remainder, sample-exact.
             assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `seek freezes the sink until the video lands`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone("freeze.flac"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.seek(250_000_000L)
+            assertTrue(
+                awaitTrue { sink.stopped && sink.bytesSinceLastFlush > 0 },
+                "the sink must freeze at the anchor, prefilled with the cropped chunk",
+            )
+            val prefilled = sink.bytesSinceLastFlush
+            Thread.sleep(150)
+            assertEquals(prefilled, sink.bytesSinceLastFlush, "no audio may flow while the video is landing")
+
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { !sink.stopped }, "the landing must release the sink")
+            assertTrue(awaitTrue { sink.bytesSinceLastFlush > prefilled }, "audio must flow again")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `resume during a landing keeps the sink frozen`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone("frozen-resume.flac"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.pause()
+            assertTrue(awaitTrue { sink.stopped })
+            pipeline.seek(250_000_000L)
+            pipeline.resume()
+            Thread.sleep(150)
+            assertTrue(sink.stopped, "resume mid-landing must not let audio run ahead of the video")
+
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { !sink.stopped }, "the landing releases the resumed sink")
         } finally {
             pipeline.close()
         }

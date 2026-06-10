@@ -155,6 +155,33 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `rapid seeks coalesce into a landing at the final target`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("spam.mp4", "3"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            Thread.sleep(100)
+            player.acquireFrame()
+
+            // Ten rapid presses; superseding must collapse the landings
+            // instead of replaying ten keyframe runs back to back.
+            for (step in 1..10) {
+                player.seek(step * 100_000_000L)
+            }
+            val landed = mutableListOf<Long>()
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { landed += it.ptsNanos }
+                    landed.lastOrNull() == 1_000_000_000L
+                },
+                "the final target must land, saw $landed",
+            )
+            assertTrue(landed.size <= 5, "ten queued seeks must coalesce, saw ${landed.size} landings: $landed")
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->
