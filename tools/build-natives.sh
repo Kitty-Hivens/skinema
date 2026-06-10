@@ -8,7 +8,11 @@
 #
 # Env:
 #   FFMPEG_VERSION  release to build (default 8.1.1; must stay in the n8.1 pin)
-#   STATIC_DEPS=1   build libvpx + dav1d from source, statically linked in
+#   STATIC_DEPS=1   shipping mode: libvpx + dav1d from source statically
+#                   linked into ffmpeg, plus libwebp/libwebpdemux built as
+#                   SHARED libraries for the bundle (the animated-WebP path
+#                   binds them directly; FFmpeg cannot decode animations)
+#   WEBP_VERSION    libwebp release for STATIC_DEPS (default 1.5.0)
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
 #   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
@@ -20,6 +24,7 @@
 set -euo pipefail
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
+WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
@@ -68,6 +73,25 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
             -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
         ninja -C "dav1d-$DAV1D_VERSION/build" install
+    fi
+
+    # libwebp ships SHARED into the bundle prefix (the webp bindings load
+    # it at runtime; it is not linked into ffmpeg). Autotools, not cmake:
+    # libtool produces the soname naming the loader expects on every OS
+    # (libwebp.so.7 / libwebp.7.dylib / libwebp-7.dll).
+    if ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
+        fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz" libwebp-dist.tar.gz
+        rm -rf "libwebp-$WEBP_VERSION"
+        tar -xzf libwebp-dist.tar.gz
+        (
+            cd "libwebp-$WEBP_VERSION"
+            ./configure --prefix="$PREFIX" --enable-shared --disable-static \
+                --enable-libwebpdemux --disable-libwebpmux \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "libwebp-$WEBP_VERSION/COPYING" "$WORK/libwebp-COPYING"
     fi
 
     if [ ! -f "$DEPS/lib/libvpx.a" ]; then
@@ -120,6 +144,7 @@ cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
 if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
+    cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
 fi
 
 # Flatten into the bundle layout NativeBundle deploys: real files under
@@ -131,15 +156,22 @@ BUNDLE="$PREFIX/bundle"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/licenses"
 cp "$PREFIX"/licenses/* "$BUNDLE/licenses/"
+# Soname-level names come from the symlinks (ELF) or the install names
+# (Mach-O): dereference whatever matches lib<name>.<so-or-dylib>.<major>,
+# which covers both ffmpeg's x.y.z chains and libtool's single-level
+# naming for libwebp.
 shopt -s nullglob
-for f in "$PREFIX"/lib/*.so.*.*.*; do
+for f in "$PREFIX"/lib/lib*.so.*; do
     base="$(basename "$f")"
-    cp "$f" "$BUNDLE/${base%.*.*}"
+    if [[ "$base" =~ ^lib[^.]+\.so\.[0-9]+$ ]]; then
+        cp -L "$f" "$BUNDLE/$base"
+    fi
 done
-for f in "$PREFIX"/lib/*.*.*.*.dylib; do
+for f in "$PREFIX"/lib/lib*.dylib; do
     base="$(basename "$f")"
-    name="${base%.dylib}"
-    cp "$f" "$BUNDLE/${name%.*.*}.dylib"
+    if [[ "$base" =~ ^lib[^.]+\.[0-9]+\.dylib$ ]]; then
+        cp -L "$f" "$BUNDLE/$base"
+    fi
 done
 for f in "$PREFIX"/bin/*-*.dll; do
     cp "$f" "$BUNDLE/"
