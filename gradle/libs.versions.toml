@@ -1,8 +1,13 @@
 [versions]
-kotlin = "2.4.0"
+kotlin  = "2.4.0"
+compose = "1.11.0"
+skiko   = "0.144.6"
 
 [libraries]
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+skiko-awt   = { group = "org.jetbrains.skiko", name = "skiko-awt", version.ref = "skiko" }
 
 [plugins]
-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-jvm              = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose                 = { id = "org.jetbrains.compose", version.ref = "compose" }

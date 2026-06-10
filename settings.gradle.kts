@@ -8,9 +8,15 @@ plugins {
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
+        // Compose Multiplatform resolution needs google() even off Android
+        // (androidx annotation/collection artifacts live there).
+        google()
     }
 }
 
 rootProject.name = "skinema"
 
 include(":skinema-core")
+include(":skinema-skiko")
+include(":skinema-compose")
+include(":skinema-demo")
