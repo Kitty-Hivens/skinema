@@ -84,7 +84,8 @@ class VideoDecoderTest {
             "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2",
         )
         VideoDecoder.open(video).use { decoder ->
-            while (decoder.nextFrame() != null) Unit
+            val drained = generateSequence { decoder.nextFrame() }.count()
+            assertTrue(drained > 0, "the fixture should decode at least one frame")
             assertNull(decoder.nextFrame(), "stream is drained")
             decoder.seekTo(0)
             assertEquals(0L, decoder.nextFrame()?.ptsNanos, "seek must reopen a drained stream")
