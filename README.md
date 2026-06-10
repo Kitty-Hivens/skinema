@@ -34,12 +34,12 @@ fine for development, not what you ship.
 
 ## What it plays
 
-| | |
-|---|---|
-| Containers | mp4/mov, webm/mkv, gif, apng, webp, ogg |
-| Video | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG |
+|                 |                                                                                      |
+|-----------------|--------------------------------------------------------------------------------------|
+| Containers      | mp4/mov, webm/mkv, gif, apng, webp, ogg                                              |
+| Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                         |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode |
-| Pixels out | RGBA8888, straight alpha, exact-pts pacing |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                           |
 
 Audio is on the roadmap (the clock architecture is already built for
 it); HDR content is tone-mapped down to SDR.
@@ -56,12 +56,12 @@ it); HDR content is tone-mapped down to SDR.
 
 ## Modules
 
-| Module            | Contents                                          | Floor   |
-|-------------------|---------------------------------------------------|---------|
-| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer` | JDK 22  |
+| Module            | Contents                                                | Floor                            |
+|-------------------|---------------------------------------------------------|----------------------------------|
+| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
-| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale` | Compose Desktop |
-| `skinema-natives` | trimmed FFmpeg + libwebp, classifier jar per platform | -- |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
+| `skinema-natives` | trimmed FFmpeg + libwebp, classifier jar per platform   | --                               |
 
 ROADMAP.md is the project's working memory: every architectural
 decision, with its reasoning, lives there.
