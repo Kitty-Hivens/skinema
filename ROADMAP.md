@@ -294,10 +294,16 @@ README once the library is usable.
   upgrades never overwrite mapped libraries), load precedence
   prop > env > bundle > system; the headless soak runner measures the
   adoption bar (2-minute smoke: exact 30 fps pacing, RSS flat after
-  warm-up). Still open: the natives workflow (4-platform trimmed builds
-  with an on-runner acceptance suite) going green end-to-end, assembling
-  the classifier jars from its artifacts, the long soak, and the
-  windowed harness scenarios (hide/show, several players).
+  warm-up). The natives workflow is green on all four platforms --
+  including macos-x64 cross-compiled on the arm runner -- each delivering
+  independently to the rolling release after its on-runner acceptance
+  suite (cross builds excepted). The script emits a flat, jar-ready
+  bundle/ (soname-named real files + licenses + fingerprint index);
+  skinema-natives packs bundles into classifier jars from the release or
+  a local build. The whole shipping path is proven end to end on Linux:
+  jarLocal -> classpath -> NativeBundle fingerprint cache -> a full-rate
+  1080p30 soak with zero overrides set. Still open: the long soak and
+  the windowed harness scenarios (hide/show, several players).
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
