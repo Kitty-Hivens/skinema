@@ -36,12 +36,19 @@ internal class AudioPipeline(
         data object Pause : Command
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
+        data object VideoLanded : Command
         data object Close : Command
     }
 
     private val commands = LinkedBlockingQueue<Command>()
     private var clock: AudioClock? = null
     private var paused = false
+
+    // A seek freezes the sink at the target anchor until the video side
+    // lands there: video seeks ride a keyframe jump plus a decode-forward
+    // run that can take seconds, and audio running ahead through that gap
+    // is exactly the "freeze, then fast-forward chase" artifact.
+    private var awaitingLanding = false
 
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
@@ -51,6 +58,10 @@ internal class AudioPipeline(
     fun pause() = commands.put(Command.Pause)
     fun resume() = commands.put(Command.Resume)
     fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos))
+
+    /** The video side finished its seek landing; sound may run again. */
+    fun videoLanded() = commands.put(Command.VideoLanded)
+
     fun setVolume(volume: Float) = sink.setVolume(volume)
 
     fun close() {
@@ -108,7 +119,7 @@ internal class AudioPipeline(
                 if (!handle(cmd, decoder, theClock)) return
                 cmd = commands.poll()
             }
-            if (paused || isEnded) {
+            if (paused || isEnded || awaitingLanding) {
                 val idle = commands.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 if (!handle(idle, decoder, theClock)) return
                 continue
@@ -143,7 +154,8 @@ internal class AudioPipeline(
         }
         Command.Resume -> {
             if (paused) {
-                sink.start()
+                // Mid-landing the sink must stay frozen; VideoLanded starts it.
+                if (!awaitingLanding) sink.start()
                 clock.resume()
                 paused = false
             }
@@ -153,17 +165,30 @@ internal class AudioPipeline(
             performSeek(decoder, clock, cmd.ptsNanos)
             true
         }
+        Command.VideoLanded -> {
+            if (awaitingLanding) {
+                awaitingLanding = false
+                if (!paused && !isEnded) sink.start()
+            }
+            true
+        }
     }
 
     /**
-     * Sample-precise seek: land on the chunk covering the target, crop the
-     * leading samples, re-anchor the clock at the exact crop point, and
-     * write the remainder. Revives an ended pipeline.
+     * Sample-precise seek: freeze the sink, land on the chunk covering the
+     * target, crop the leading samples, re-anchor the clock at the exact
+     * crop point, and prefill the remainder into the stopped device. Sound
+     * resumes when the video side reports its own landing ([videoLanded])
+     * -- the frozen sink freezes the clock, so video lands against a
+     * standing target instead of chasing a running one. Revives an ended
+     * pipeline.
      */
     private fun performSeek(decoder: AudioDecoder, clock: AudioClock, targetNanos: Long) {
-        decoder.seekTo(targetNanos)
+        sink.stop()
         sink.flush()
+        awaitingLanding = true
         isEnded = false
+        decoder.seekTo(targetNanos)
         while (true) {
             val chunk = decoder.nextChunk()
             if (chunk == null) {
