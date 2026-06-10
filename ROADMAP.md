@@ -329,8 +329,17 @@ README once the library is usable.
   baseline (263-269 MB) with RSS an asymptote -- the harness's churn
   mode exists for exactly this question. 24 simultaneous 1080p30 players
   pace at ~5.8 cores and ~94 MB RSS each.
-- **M4 -- publish.** Maven Central under dev.hivens (the libtray release
-  pipeline is the precedent); README compat-policy statement; v0.1.
+- **M4 -- publish: machinery DONE (2026-06-10), 0.1.0 release pending
+  the libwebp natives run.** The libtray recipe verbatim: vanniktech
+  maven.publish 0.36.0 to the Central Portal, gpg-cmd signing, shared
+  POM config in the root for every module that applies the plugin.
+  skinema-core/-skiko/-compose publish as libraries; skinema-natives
+  publishes an (empty) main jar with the four platform bundles attached
+  as classifiers, assembled straight from the rolling natives release.
+  README rewritten as the public face: usage, format table, the
+  behavior contract, the compat policy, licensing. Release flow: tag
+  vX.Y.Z, then `publishToMavenCentral -PappVersion=X.Y.Z
+  --no-configuration-cache`.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
   javax.sound.sampled sink per player, the sink-backed MediaClock takes
   over pacing, A/V sync across seek/loop/underrun. Consumer: the

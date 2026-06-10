@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.maven.publish)
     alias(libs.plugins.kotlin.compose.compiler)
     alias(libs.plugins.compose)
 }
@@ -28,4 +29,10 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+mavenPublishing {
+    pom {
+        description.set("Compose Desktop VideoSurface and player-state helpers for skinema.")
+    }
 }
