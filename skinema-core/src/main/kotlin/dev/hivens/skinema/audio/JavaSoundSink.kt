@@ -22,7 +22,15 @@ class JavaSoundSink : PcmSink {
     override fun open(sampleRate: Int) {
         val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
         line = AudioSystem.getSourceDataLine(format).apply {
-            open(format)
+            // A deliberately small buffer. The default can run to half a
+            // second, and everything queued in it is past the point of no
+            // return: it keeps sounding after stop() on some backends
+            // (the not-abrupt pause), plays at the old gain after a volume
+            // change, and holds blocking writes -- which is the command
+            // latency of the whole audio thread. 200 ms still rides out
+            // scheduling hiccups; underruns just freeze the clock, and
+            // video freezes in sync with it by design.
+            open(format, (sampleRate / 5) * BYTES_PER_FRAME)
             start()
         }
         applyVolume()
@@ -72,5 +80,10 @@ class JavaSoundSink : PcmSink {
             it.close()
         }
         line = null
+    }
+
+    private companion object {
+        /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
+        const val BYTES_PER_FRAME = 4
     }
 }
