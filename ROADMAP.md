@@ -354,8 +354,40 @@ README once the library is usable.
   normal lifecycle. The sync proof is a test: a manually-advanced fake
   DAC releases exactly the frames up to its position. The video-facing
   API gained only additive parameters with defaults -- the adoption
-  bar's stability clause holds. Remaining: a live listen on real
-  hardware, then 0.2.0.
+  bar's stability clause holds.
+
+  Player-control polish followed the core (commits 3895e42..ab9cf55):
+  the seek/landing handshake (audio freezes its sink at the anchor until
+  the video side reports its decode-forward landing, so video lands
+  against standing time instead of chasing a running clock); seek
+  coalescing (a burst supersedes the landing in progress -- one landing
+  at the final target, not one per press); `seekBy` accumulating against
+  an always-valid intended playhead, NOT the live clock (the clock stands
+  at the old anchor mid-landing, so reading it made backward bursts land
+  at the wrong place, sometimes walking upward -- measured and fixed via
+  the `:skinema-demo:seekbench` tool); resume re-anchoring audio to the
+  on-screen frame; the `State.Seeking` advertisement for a loading
+  affordance; and the landing drop-run decoding without converting
+  (`FrameSource.convertLast`).
+
+  OPEN (deferred, not root-caused): an INTERMITTENT post-seek freeze with
+  audio on -- "то работает, то нет", load-dependent, present at both the
+  100 ms and 200 ms line buffers (so it is NOT the buffer-underrun theory
+  that the 100->200 ms revert was meant to test). Measured facts: bare
+  decode is fast (~0.7 ms/frame at 720p, 14-136 ms per landing); the
+  deterministic part of the hold is the line's buffer-drain latency after
+  a flush (the device reports no frame progress until the buffer first
+  fills, ~one buffer's worth). The intermittent part is unexplained --
+  candidate roots still to probe: the AudioClock handoff right after a
+  re-anchor (framePosition vs baseFrames timing), a race between the
+  GUI-thread seekBy and the decode/audio threads, or device-level
+  scheduling jitter. The honest next step is a wall-time spin-up
+  extrapolation in AudioClock (advance media time on the wall clock for
+  the bounded device warm-up window after a flush, then hand back to the
+  device) -- but that trades a freeze for up to ~one-buffer of
+  picture-ahead-of-sound drift, so it waits for a decision rather than a
+  third blind pivot. Remaining for 0.2.0: root-cause this, then a live
+  listen on real hardware.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
@@ -384,6 +416,13 @@ without breaking changes. Not before.
   alpha path requires.
 - Windows/macOS arena + library unloading behavior on session close --
   verify during M3, libraryLookup lifetime is tied to an Arena.
+- The intermittent post-seek freeze (M5 section) -- root cause, then
+  decide whether the wall-time spin-up extrapolation is worth its sync
+  drift. A read-ahead frame queue (decode 3-5 frames instead of one) is a
+  separate candidate: the player decodes one frame ahead today, so any
+  decode hiccup is immediately visible; a small queue would absorb
+  jitter. Not needed for backgrounds (the latest-frame mailbox is
+  deliberate there), but it is the player-scenario knob.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
 - HDR: today's reality is a naive swscale conversion (PQ content plays
