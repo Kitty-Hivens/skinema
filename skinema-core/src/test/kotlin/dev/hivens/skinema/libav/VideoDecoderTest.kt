@@ -128,6 +128,109 @@ class VideoDecoderTest {
         }
     }
 
+    /** Decodes [name] and asserts frame count, dimensions and a monotonic pts grid. */
+    private fun assertDecodesEveryFrame(name: String, expectedFrames: Int, vararg encodeArgs: String) {
+        val video = Fixtures.generate(dir.resolve(name), *encodeArgs)
+        VideoDecoder.open(video).use { decoder ->
+            var count = 0
+            var lastPts = Long.MIN_VALUE
+            while (true) {
+                val frame = decoder.nextFrame() ?: break
+                count++
+                assertEquals(64, frame.width, "$name width")
+                assertEquals(64, frame.height, "$name height")
+                assertTrue(frame.ptsNanos > lastPts, "$name pts must be monotonic, got ${frame.ptsNanos} after $lastPts")
+                lastPts = frame.ptsNanos
+            }
+            assertEquals(expectedFrames, count, "$name frame count")
+        }
+    }
+
+    @Test
+    fun `vp8 in webm decodes -- the whitelist carries it`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertDecodesEveryFrame(
+            "vp8.webm", 10,
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8",
+        )
+    }
+
+    @Test
+    fun `av1 decodes through dav1d -- the whitelist carries it`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertDecodesEveryFrame(
+            "av1.mp4", 10,
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40",
+        )
+    }
+
+    @Test
+    fun `animated gif rides the same pipeline -- the consumer's animated category`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertDecodesEveryFrame(
+            "anim.gif", 10,
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+        )
+    }
+
+    @Test
+    fun `apng rides the same pipeline and keeps alpha`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("anim.apng"),
+            "-f", "lavfi", "-i", "color=c=red@0.5:size=16x16:rate=5,format=rgba", "-t", "1",
+            "-f", "apng",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val frame = decoder.nextFrame()!!
+            val i = (8 * 16 + 8) * 4
+            val a = frame.rgba[i + 3].toInt() and 0xFF
+            assertTrue(a in 96..160, "apng alpha 0.5 should survive, got $a")
+        }
+    }
+
+    @Test
+    fun `still webp decodes as a single frame`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertDecodesEveryFrame(
+            "still.webp", 1,
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
+            "-c:v", "libwebp",
+        )
+    }
+
+    @Test
+    fun `animated webp fails closed -- upstream FFmpeg cannot decode it`() {
+        // FFmpeg's webp decoder handles stills only; animated WebP decoding
+        // has never been merged upstream (even a full build refuses files it
+        // itself encoded). The consumer contract is the usual fail-closed:
+        // the error surfaces as LibavException -> VideoPlayer.Failed ->
+        // fallback, never a hang or a garbage frame.
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("anim.webp"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-c:v", "libwebp", "-lossless", "0", "-loop", "0",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            assertFailsWith<LibavException> {
+                while (decoder.nextFrame() != null) Unit
+            }
+        }
+    }
+
+    @Test
+    fun `mjpeg in mov decodes -- the whitelist carries it`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertDecodesEveryFrame(
+            "mjpeg.mov", 10,
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuvj420p", "-c:v", "mjpeg", "-q:v", "4",
+        )
+    }
+
     @Test
     fun `garbage input fails closed with LibavException`() {
         Fixtures.assumeDecodeEnvironment()
