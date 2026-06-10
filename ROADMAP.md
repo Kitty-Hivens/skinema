@@ -269,12 +269,25 @@ README once the library is usable.
   product against a moving API doubles every change, so the launcher
   adopts a published artifact after M4 instead (see the adoption bar
   below).
-- **M3 -- natives pipeline.** Trimmed FFmpeg builds in CI for all three
-  OSes; pinned-build loading; packaging decision; macOS/Windows enter the
-  test matrix. Alongside it, skinema-demo grows into a background
-  harness -- hours-long looping with RSS tracking, window hide/show,
-  several players at once, failure fallback -- the consumer-shaped
-  pressure that replaces early product wiring.
+- **M3 -- natives pipeline: IN PROGRESS (2026-06-10).** Landed so far:
+  the trimmed build recipe (`tools/build-natives.sh`) proven locally --
+  8.7 MB for all five libraries against ~70 MB full, suite green against
+  it in strict mode; fixtures moved from mpeg4 to libx264 because tests
+  must exercise exactly the shipped whitelist (mpeg4 is not in it, and
+  h264 was never suite-covered before); SKINEMA_REQUIRE_DECODE makes CI
+  fail loudly instead of skip-faking green; the test matrix runs
+  Linux/Windows (pinned BtbN via the dir override -- the same mechanism
+  the bundles use) and macOS (brew, until our mac builds land), all
+  three green; packaging decided and implemented -- per-platform
+  classifier jars with an index.txt, deployed by NativeBundle into a
+  fingerprint-keyed per-user cache (atomic rename, crash/race-safe,
+  upgrades never overwrite mapped libraries), load precedence
+  prop > env > bundle > system; the headless soak runner measures the
+  adoption bar (2-minute smoke: exact 30 fps pacing, RSS flat after
+  warm-up). Still open: the natives workflow (4-platform trimmed builds
+  with an on-runner acceptance suite) going green end-to-end, assembling
+  the classifier jars from its artifacts, the long soak, and the
+  windowed harness scenarios (hide/show, several players).
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
