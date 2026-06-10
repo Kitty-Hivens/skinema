@@ -30,8 +30,13 @@ class JavaSoundSink : PcmSink {
             // thread's commands, and -- because the device reports no
             // progress until the buffer first drains -- sets how long the
             // clock (and the video with it) stalls after a seek flush.
-            // 100 ms still rides out scheduling hiccups.
-            open(format, (sampleRate / 10) * BYTES_PER_FRAME)
+            //
+            // 200 ms is the floor that does NOT underrun under load: 100 ms
+            // measured cleaner on an idle machine but glitched intermittently
+            // with the build daemon running, and an underrun freezes the
+            // clock (and video) exactly like the stall it was meant to cut.
+            // A deterministic 200 ms hold beats a load-dependent freeze.
+            open(format, (sampleRate / 5) * BYTES_PER_FRAME)
             start()
         }
         applyVolume()
