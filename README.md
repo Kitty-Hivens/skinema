@@ -42,7 +42,7 @@ fine for development, not what you ship.
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                           |
 
 Audio is on the roadmap (the clock architecture is already built for
-it); HDR content is tone-mapped down to SDR.
+it). HDR content plays through a naive SDR conversion for now -- washed out, not tone-mapped; proper tone-mapping is a roadmap item.
 
 ## Behavior contract
 

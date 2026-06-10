@@ -172,9 +172,7 @@ UI side:        latest-frame mailbox; present when pts <= now; drop late
 
 ## 7. v0.1 scope
 
-In: local files; play, loop, seek-to-frame; RGBA software pipeline; HDR
-tone-mapped down to SDR (detect transfer characteristics, apply one
-tonemap, done); alpha preserved where the codec carries it (VP9/webm);
+In: local files; play, loop, seek-to-frame; RGBA software pipeline; alpha preserved where the codec carries it (VP9/webm);
 GIF / APNG / animated WebP through the same pipeline (covers the consumer's
 "animated background" category for free).
 
@@ -377,3 +375,8 @@ without breaking changes. Not before.
   verify during M3, libraryLookup lifetime is tied to an Arena.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
+- HDR: today's reality is a naive swscale conversion (PQ content plays
+  washed out; README says so honestly). Proper tone-mapping means either
+  enabling avfilter+tonemap in the trim (real, costs size) or a small
+  software tonemap on the RGBA path. Decide when a consumer actually
+  brings HDR files.
