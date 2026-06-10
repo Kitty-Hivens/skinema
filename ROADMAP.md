@@ -230,7 +230,10 @@ README once the library is usable.
   platform delays only itself -- never a release, never the other
   platforms -- and a rebuild replaces just its own asset. Matches the
   platform tier model: a missing community-tier build degrades that
-  platform, nothing else.
+  platform, nothing else. macos-x64 is cross-compiled on the arm runner
+  (GitHub's Intel macs queue for days to months) and ships without an
+  on-metal acceptance run -- an arm JVM cannot load x86_64 dylibs --
+  which is exactly what community tier means.
 
 ## 11. Milestones
 

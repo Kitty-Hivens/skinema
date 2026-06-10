@@ -12,6 +12,9 @@
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
 #   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
+#   MAC_CROSS_X64=1 cross-compile x86_64 binaries on an arm64 mac (GitHub's
+#                   Intel runners are scarce-to-dead; Apple's toolchain
+#                   cross-builds natively via -arch)
 #   EXTRA_FLAGS     appended to ffmpeg ./configure (cross builds etc.)
 #   JOBS            parallel make (default nproc)
 set -euo pipefail
@@ -27,6 +30,28 @@ WORK="${WORK:-/tmp/skinema-natives}"
 mkdir -p "$WORK"
 cd "$WORK"
 
+MESON_CROSS=()
+FFMPEG_CROSS=()
+if [ "${MAC_CROSS_X64:-}" = "1" ]; then
+    cat > "$WORK/mac-x64-cross.ini" <<'EOF'
+[binaries]
+c = ['clang', '-arch', 'x86_64']
+cpp = ['clang++', '-arch', 'x86_64']
+ar = 'ar'
+strip = 'strip'
+
+[host_machine]
+system = 'darwin'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+EOF
+    MESON_CROSS=(--cross-file "$WORK/mac-x64-cross.ini")
+    VPX_TARGET="${VPX_TARGET:-x86_64-darwin20-gcc}"
+    export CC="clang -arch x86_64"
+    FFMPEG_CROSS=(--enable-cross-compile --arch=x86_64 --target-os=darwin --cc="clang -arch x86_64")
+fi
+
 fetch() { # url, dest-file
     [ -f "$2" ] || curl -fsSL -o "$2" "$1"
 }
@@ -41,7 +66,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xzf dav1d.tar.gz
         meson setup "dav1d-$DAV1D_VERSION/build" "dav1d-$DAV1D_VERSION" \
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
-            -Denable_tools=false -Denable_tests=false
+            -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
         ninja -C "dav1d-$DAV1D_VERSION/build" install
     fi
 
@@ -83,7 +108,7 @@ cd "ffmpeg-$FFMPEG_VERSION"
     --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav \
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,pcm_s16le \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac \
-    ${EXTRA_FLAGS:-}
+    ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA_FLAGS:-}
 
 make -j"$JOBS"
 make install
