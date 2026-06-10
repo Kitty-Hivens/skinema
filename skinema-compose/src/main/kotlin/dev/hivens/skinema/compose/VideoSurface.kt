@@ -11,7 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.skiaCanvas
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.skiko.VideoFrameImage
 import org.jetbrains.skia.Rect
@@ -70,7 +70,7 @@ fun VideoSurface(
             scale = scale,
         )
         drawIntoCanvas { canvas ->
-            val nc = canvas.nativeCanvas
+            val nc = canvas.skiaCanvas
             nc.save()
             // Cover overflows the bounds by design; never paint outside them.
             nc.clipRect(Rect.makeWH(size.width, size.height))

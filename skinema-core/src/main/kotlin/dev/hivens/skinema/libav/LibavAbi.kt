@@ -12,7 +12,6 @@ package dev.hivens.skinema.libav
 object LibavAbi {
 
     object FormatContext {
-        const val NB_STREAMS = 44L
         const val STREAMS = 48L
         const val SIZEOF = 480L
     }
@@ -52,7 +51,6 @@ object LibavAbi {
     const val AV_CODEC_ID_VP9 = 167
     const val AV_LOG_QUIET = -8
     const val AVERROR_EOF = -541478725
-    const val AVERROR_INVALIDDATA = -1094995529
     const val AV_NOPTS_VALUE = Long.MIN_VALUE
 
     /**

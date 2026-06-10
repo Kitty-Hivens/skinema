@@ -29,6 +29,8 @@ import dev.hivens.skinema.compose.rememberPlayerState
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlinx.coroutines.delay
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Windowed background harness (ROADMAP.md, M3): the consumer-shaped
@@ -63,7 +65,7 @@ fun main(args: Array<String>) {
                 while (true) {
                     rss = rssMbOrZero()
                     heap = heapMbNow()
-                    delay(1_000)
+                    delay(1.seconds)
                 }
             }
 
@@ -74,12 +76,12 @@ fun main(args: Array<String>) {
                 LaunchedEffect(Unit) {
                     var cycles = 0
                     while (true) {
-                        delay(churnSeconds * 1_000)
+                        delay(churnSeconds.seconds)
                         surfacesMounted = !surfacesMounted
                         cycles++
                         if (cycles % 6 == 0) {
                             System.gc()
-                            delay(300)
+                            delay(300.milliseconds)
                             println("churn cycles=$cycles postGcHeapMb=${heapMbNow()} rssMb=${rssMbOrZero()}")
                         }
                     }

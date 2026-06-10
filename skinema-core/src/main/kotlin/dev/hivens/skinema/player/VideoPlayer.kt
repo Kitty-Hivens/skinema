@@ -87,7 +87,10 @@ class VideoPlayer(
      */
     fun acquireFrame(): FrameSlot? = buffer?.acquire()
 
+    /** Freezes playback; the surface keeps showing the last frame. */
     fun pause() = commands.put(Command.Pause)
+
+    /** Continues from where [pause] froze, without a frame jump. */
     fun resume() = commands.put(Command.Resume)
 
     /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */

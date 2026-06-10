@@ -27,8 +27,6 @@ object WebpAbi {
     object AnimInfo {
         const val CANVAS_WIDTH = 0L
         const val CANVAS_HEIGHT = 4L
-        const val LOOP_COUNT = 8L
-        const val FRAME_COUNT = 16L
         const val SIZEOF = 36L
     }
 }
