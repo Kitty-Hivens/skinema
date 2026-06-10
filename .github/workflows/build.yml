@@ -11,21 +11,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux and Windows test against the pinned BtbN n8.1 runtime --
-          # the same line the trimmed shipping builds follow. macOS has no
-          # BtbN; until our own trimmed mac builds land (M3), it tests
-          # against Homebrew's ffmpeg, and the strict version probe fails
-          # the job loudly if brew drifts off major 8.
+          # Every platform tests against OUR trimmed bundles from the
+          # rolling natives release -- CI dogfoods exactly the bytes that
+          # ship to users, loaded through the same SKINEMA_LIBAV_DIR
+          # mechanism the classifier jars use.
           - os: ubuntu-latest
-            libav: btbn
-            asset: ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz
-            libdir: lib
+            platform: linux-x64
           - os: windows-latest
-            libav: btbn
-            asset: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
-            libdir: bin
+            platform: windows-x64
           - os: macos-14
-            libav: brew
+            platform: macos-arm64
     runs-on: ${{ matrix.os }}
     env:
       # A runner with a broken decode environment must fail, not skip.
@@ -41,7 +36,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       # Fixture generation needs a full-build CLI (libx264); the libraries
-      # under test are pointed at separately below.
+      # under test come from the natives release below.
       - name: Install ffmpeg CLI (fixtures)
         shell: bash
         run: |
@@ -51,35 +46,28 @@ jobs:
             macOS)   brew install ffmpeg ;;
           esac
 
-      - name: Cache pinned FFmpeg n8.1 runtime
-        if: matrix.libav == 'btbn'
+      - name: Cache the trimmed natives bundle
         id: libav-cache
         uses: actions/cache@v4
         with:
-          path: libav-n8.1
-          key: btbn-${{ matrix.asset }}-v1
+          path: libav-bundle
+          key: skinema-natives-8.1.1-${{ matrix.platform }}-v1
 
-      - name: Download pinned FFmpeg n8.1 runtime
-        if: matrix.libav == 'btbn' && steps.libav-cache.outputs.cache-hit != 'true'
+      - name: Download the trimmed natives bundle
+        if: steps.libav-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          mkdir -p libav-n8.1
-          curl -fsSL -o pkg "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${{ matrix.asset }}"
-          case "${{ matrix.asset }}" in
-            *.tar.xz) tar -xJf pkg -C libav-n8.1 --strip-components=1 ;;
-            *.zip)    unzip -q pkg -d tmp-zip && mv tmp-zip/*/* libav-n8.1/ ;;
-          esac
+          mkdir -p libav-bundle
+          curl -fsSL -o bundle.tar.gz \
+            "https://github.com/Kitty-Hivens/skinema/releases/download/natives-8.1.1/skinema-natives-${{ matrix.platform }}.tar.gz"
+          tar -xzf bundle.tar.gz -C libav-bundle
 
-      - name: Point skinema at the runtime under test
+      - name: Point skinema at the bundle under test
         shell: bash
         run: |
-          if [ "${{ matrix.libav }}" = "brew" ]; then
-            echo "SKINEMA_LIBAV_DIR=$(brew --prefix ffmpeg)/lib" >> "$GITHUB_ENV"
-          else
-            base="$PWD"
-            if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
-            echo "SKINEMA_LIBAV_DIR=$base/libav-n8.1/${{ matrix.libdir }}" >> "$GITHUB_ENV"
-          fi
+          base="$PWD"
+          if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
+          echo "SKINEMA_LIBAV_DIR=$base/libav-bundle" >> "$GITHUB_ENV"
 
       - name: Build and test
         shell: bash

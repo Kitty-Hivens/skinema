@@ -52,6 +52,19 @@ tasks.withType<JavaExec>().configureEach {
     }
 }
 
+// Windowed background harness (several players, unmount/remount, fallback):
+//   ./gradlew :skinema-demo:harness -Pvideo=/path/file.mp4
+tasks.register<JavaExec>("harness") {
+    group = "skinema"
+    description = "Windowed consumer-shaped harness: -Pvideo=<file>"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("dev.hivens.skinema.demo.HarnessMainKt")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    argumentProviders.add {
+        listOfNotNull(demoVideo.orNull)
+    }
+}
+
 // Headless soak for the adoption bar:
 //   ./gradlew :skinema-demo:soak -Pvideo=/path/file.mp4 [-Pminutes=N]
 val soakMinutes = providers.gradleProperty("minutes")
