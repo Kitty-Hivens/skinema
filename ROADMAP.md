@@ -302,8 +302,15 @@ README once the library is usable.
   skinema-natives packs bundles into classifier jars from the release or
   a local build. The whole shipping path is proven end to end on Linux:
   jarLocal -> classpath -> NativeBundle fingerprint cache -> a full-rate
-  1080p30 soak with zero overrides set. Still open: the long soak and
-  the windowed harness scenarios (hide/show, several players).
+  1080p30 soak with zero overrides set. The windowed harness
+  (`:skinema-demo:harness`) runs several players at once, surfaces
+  unmount/remount while players keep running, and renders a failed
+  source as the consumer's fallback cell -- which immediately earned its
+  keep: core's volatile `state` is invisible to composition, so
+  skinema-compose grew `rememberPlayerState` (frame-clock poll, one
+  volatile read per frame). CI dogfoods the shipped bundles: the test
+  matrix downloads OUR release assets on all three platforms instead of
+  BtbN/brew. Still open: the long-soak verdict.
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
