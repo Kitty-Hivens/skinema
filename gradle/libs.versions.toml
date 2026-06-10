@@ -1,7 +1,10 @@
 [versions]
-kotlin  = "2.4.0"
-compose = "1.11.0"
-skiko   = "0.144.6"
+kotlin       = "2.4.0"
+compose      = "1.11.0"
+skiko        = "0.144.6"
+# Maven Central publishing (signing + Central Portal upload) -- the
+# libtray-proven recipe.
+mavenPublish = "0.36.0"
 
 [libraries]
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
@@ -11,3 +14,4 @@ skiko-awt   = { group = "org.jetbrains.skiko", name = "skiko-awt", version.ref =
 kotlin-jvm              = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose                 = { id = "org.jetbrains.compose", version.ref = "compose" }
+maven-publish           = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }

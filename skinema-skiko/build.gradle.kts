@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.maven.publish)
 }
 
 kotlin {
@@ -42,4 +43,10 @@ tasks.test {
     useJUnitPlatform()
     // Skiko loads its natives via System.load; silence the JDK 25 warning.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
+
+mavenPublishing {
+    pom {
+        description.set("Skia image bridge for skinema video frames.")
+    }
 }

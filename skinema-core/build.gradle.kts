@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.maven.publish)
 }
 
 kotlin {
@@ -42,5 +43,11 @@ tasks.register<JavaExec>("spike") {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     argumentProviders.add {
         listOfNotNull(spikeInput.orNull, spikeOut.orNull, spikeFrames.orNull)
+    }
+}
+
+mavenPublishing {
+    pom {
+        description.set("Video decoding for the JVM: FFmpeg and libwebp through hand-written FFM bindings, paced RGBA frames out.")
     }
 }

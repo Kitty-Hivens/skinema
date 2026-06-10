@@ -1,24 +1,81 @@
 # skinema
 
-Video decode and playback for JVM desktop apps. FFmpeg through hand-written
-Java FFM (Panama) bindings, frames out as raw RGBA or Skia images, a Compose
-Desktop surface on top. No JNI wrapper stacks, no embedded player engines,
-no network access.
+Video decode and playback for JVM desktop apps. FFmpeg through
+hand-written Java FFM (Panama) bindings, frames out as raw RGBA or Skia
+images, a Compose Desktop surface on top. No JNI wrapper stacks, no
+embedded player engines, and no network access -- the bundled FFmpeg is
+built with `--disable-network`, so the library physically cannot perform
+I/O beyond the file you hand it.
 
-Status: pre-alpha. Nothing to consume yet. Every decision made so far, with
-its reasoning, lives in [ROADMAP.md](ROADMAP.md) -- that file is the
-project's working memory and the place to start reading.
+```kotlin
+val player = VideoPlayer(Path.of("background.webm"), loop = true)
 
-## Layout
+// Compose Desktop:
+VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
+
+// Or poll frames yourself from any render loop:
+player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
+```
+
+## Dependencies
+
+```kotlin
+implementation("dev.hivens:skinema-compose:0.1.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.1.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.1.0:windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.1.0:macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.1.0:macos-x64")
+```
+
+The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
+platform) plus libwebp; on first use they unpack to a per-user cache.
+Without a natives jar, skinema looks for matching system libraries --
+fine for development, not what you ship.
+
+## What it plays
+
+| | |
+|---|---|
+| Containers | mp4/mov, webm/mkv, gif, apng, webp, ogg |
+| Video | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG |
+| Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode |
+| Pixels out | RGBA8888, straight alpha, exact-pts pacing |
+
+Audio is on the roadmap (the clock architecture is already built for
+it); HDR content is tone-mapped down to SDR.
+
+## Behavior contract
+
+- **Fail closed.** A file the pipeline cannot handle surfaces as
+  `VideoPlayer.State.Failed` -- show your fallback. No partial recovery,
+  no garbage frames, no hangs.
+- **Drop late.** A slow consumer skips frames; the clock never lags.
+- **One decode thread per player.** Players are independent and
+  self-synced; play as many as your CPU affords (a desktop comfortably
+  runs dozens of 1080p30 streams).
+
+## Modules
 
 | Module            | Contents                                          | Floor   |
 |-------------------|---------------------------------------------------|---------|
-| `skinema-core`    | FFM bindings, demux/decode loop, frame pacing     | JDK 22  |
-| `skinema-skiko`   | `VideoFrame -> org.jetbrains.skia.Image` (planned)| Skiko   |
-| `skinema-compose` | `VideoSurface` composable (planned)               | Compose |
+| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer` | JDK 22  |
+| `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale` | Compose Desktop |
+| `skinema-natives` | trimmed FFmpeg + libwebp, classifier jar per platform | -- |
+
+ROADMAP.md is the project's working memory: every architectural
+decision, with its reasoning, lives there.
+
+## Compatibility policy
+
+Decode correctness for well-formed files in the formats above is a bug
+when broken. Exotic, damaged or adversarial files get the fail-closed
+treatment by design; compatibility issues beyond that are triaged at the
+maintainer's discretion.
 
 ## License
 
-Apache-2.0 for skinema itself. FFmpeg is consumed as separate LGPL shared
-libraries, dynamically linked, never statically embedded; see the licensing
-section of ROADMAP.md.
+Apache-2.0 for skinema itself. FFmpeg is consumed as separate LGPL
+shared libraries, dynamically linked, never statically embedded; license
+texts ship inside every natives bundle. libwebp, libvpx and dav1d are
+BSD-family.

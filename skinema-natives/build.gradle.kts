@@ -7,7 +7,17 @@ import org.gradle.jvm.tasks.Jar
 // for end-to-end checks without the network.
 
 plugins {
-    base
+    // java-library gives the publication an (empty) main jar plus sources/
+    // javadoc stubs Central requires; the real payload is the classifier
+    // jars attached below.
+    `java-library`
+    alias(libs.plugins.maven.publish)
+}
+
+mavenPublishing {
+    pom {
+        description.set("Trimmed FFmpeg and libwebp runtimes for skinema, one classifier jar per platform.")
+    }
 }
 
 val resourceRoot = "dev/hivens/skinema/natives"
@@ -38,7 +48,7 @@ platforms.forEach { platform ->
             val url = "https://github.com/Kitty-Hivens/skinema/releases/download/$nativesTag/skinema-natives-$platform.tar.gz"
             val target = archive.get().asFile
             target.parentFile.mkdirs()
-            java.net.URI(url).toURL().openStream().use { input ->
+            uri(url).toURL().openStream().use { input ->
                 target.outputStream().use { input.copyTo(it) }
             }
         }
@@ -60,4 +70,13 @@ tasks.register("jarAll") {
     group = "skinema"
     description = "Classifier jars for every platform on the natives release"
     dependsOn(platforms.map { "jar-$it" })
+}
+
+// Every platform bundle rides the same publication as a classifier.
+afterEvaluate {
+    publishing.publications.withType<MavenPublication>().configureEach {
+        platforms.forEach { platform ->
+            artifact(tasks.named("jar-$platform"))
+        }
+    }
 }
