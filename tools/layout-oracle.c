@@ -37,6 +37,9 @@ int main(void) {
     P(offsetof(AVPacket, stream_index));
     P(sizeof(AVPacket));
 
+    P(offsetof(AVCodecParameters, codec_id));
+    P(sizeof(AVCodecParameters));
+
     P(offsetof(AVFrame, data));
     P(offsetof(AVFrame, linesize));
     P(offsetof(AVFrame, width));
@@ -49,6 +52,9 @@ int main(void) {
     P(AVMEDIA_TYPE_VIDEO);
     P(AV_PIX_FMT_RGBA);
     P(SWS_BILINEAR);
+    P(AVSEEK_FLAG_BACKWARD);
+    P(AV_CODEC_ID_VP8);
+    P(AV_CODEC_ID_VP9);
     P(AV_LOG_QUIET);
     P(AVERROR(EAGAIN));
     P(AVERROR_EOF);

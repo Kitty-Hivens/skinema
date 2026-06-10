@@ -20,3 +20,22 @@ fun ptsToNanos(pts: Long, timeBaseNum: Int, timeBaseDen: Int): Long {
         remainder * NANOS_PER_SECOND / timeBaseDen,
     )
 }
+
+/**
+ * Inverse of [ptsToNanos]: nanoseconds to whole time-base units, rounded
+ * half-up, for feeding av_seek_frame. `nanos * den` overflows Long for
+ * large positions, and splitting the computation re-introduces sub-unit
+ * truncation (a 1001/30000 base puts whole seconds off the unit grid), so
+ * this goes through 128-bit math -- it runs per seek, not per frame.
+ */
+fun nanosToPts(nanos: Long, timeBaseNum: Int, timeBaseDen: Int): Long {
+    require(nanos >= 0) { "seek positions are non-negative, got $nanos" }
+    require(timeBaseNum > 0) { "time base numerator must be positive, got $timeBaseNum" }
+    require(timeBaseDen > 0) { "time base denominator must be positive, got $timeBaseDen" }
+    val unitNanos = timeBaseNum * NANOS_PER_SECOND
+    return java.math.BigInteger.valueOf(nanos)
+        .multiply(java.math.BigInteger.valueOf(timeBaseDen.toLong()))
+        .add(java.math.BigInteger.valueOf(unitNanos / 2))
+        .divide(java.math.BigInteger.valueOf(unitNanos))
+        .toLong()
+}

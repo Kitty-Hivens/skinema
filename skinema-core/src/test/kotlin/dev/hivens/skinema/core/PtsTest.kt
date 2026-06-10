@@ -43,4 +43,29 @@ class PtsTest {
     fun `zero denominator is rejected`() {
         assertFailsWith<IllegalArgumentException> { ptsToNanos(1, 1, 0) }
     }
+
+    @Test
+    fun `nanosToPts inverts whole seconds exactly`() {
+        assertEquals(15360, nanosToPts(1_000_000_000L, 1, 15360))
+        assertEquals(90000, nanosToPts(1_000_000_000L, 1, 90000))
+        assertEquals(0, nanosToPts(0, 1, 1000))
+    }
+
+    @Test
+    fun `nanosToPts round-trips a ptsToNanos value within one unit`() {
+        // ptsToNanos floors sub-nanosecond detail (512/15360 s is a
+        // repeating decimal); the half-up rounding must recover the unit.
+        for (pts in longArrayOf(1, 7, 512, 513, 15359, 123_456)) {
+            assertEquals(pts, nanosToPts(ptsToNanos(pts, 1, 15360), 1, 15360))
+        }
+        for (pts in longArrayOf(1, 2, 29, 30, 31, 1000)) {
+            assertEquals(pts, nanosToPts(ptsToNanos(pts, 1001, 30000), 1001, 30000))
+        }
+    }
+
+    @Test
+    fun `nanosToPts rejects non-positive bases`() {
+        assertFailsWith<IllegalArgumentException> { nanosToPts(1, 0, 1000) }
+        assertFailsWith<IllegalArgumentException> { nanosToPts(1, 1, 0) }
+    }
 }
