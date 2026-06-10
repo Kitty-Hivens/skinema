@@ -38,3 +38,17 @@ tasks.withType<JavaExec>().configureEach {
         }
     }
 }
+
+// Headless soak for the adoption bar:
+//   ./gradlew :skinema-demo:soak -Pvideo=/path/file.mp4 [-Pminutes=N]
+val soakMinutes = providers.gradleProperty("minutes")
+tasks.register<JavaExec>("soak") {
+    group = "skinema"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N]"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    argumentProviders.add {
+        listOfNotNull(demoVideo.orNull, soakMinutes.orNull)
+    }
+}

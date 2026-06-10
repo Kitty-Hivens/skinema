@@ -16,6 +16,20 @@ enum class Os {
     }
 }
 
+/** "<os>-<arch>" tag the natives bundles use (linux-x64, macos-arm64, ...). */
+fun nativesPlatform(): String {
+    val os = when (Os.current()) {
+        Os.LINUX -> "linux"
+        Os.MAC -> "macos"
+        Os.WINDOWS -> "windows"
+    }
+    val arch = when (System.getProperty("os.arch", "").lowercase()) {
+        "aarch64", "arm64" -> "arm64"
+        else -> "x64"
+    }
+    return "$os-$arch"
+}
+
 /**
  * The libav* shared libraries skinema binds, with the soname major each one
  * carries in the pinned FFmpeg release line (n8.1 -- see ROADMAP.md).
