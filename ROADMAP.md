@@ -279,7 +279,7 @@ README once the library is usable.
   product against a moving API doubles every change, so the launcher
   adopts a published artifact after M4 instead (see the adoption bar
   below).
-- **M3 -- natives pipeline: IN PROGRESS (2026-06-10).** Landed so far:
+- **M3 -- natives pipeline: DONE (2026-06-10).** Landed:
   the trimmed build recipe (`tools/build-natives.sh`) proven locally --
   8.7 MB for all five libraries against ~70 MB full, suite green against
   it in strict mode; fixtures moved from mpeg4 to libx264 because tests
@@ -310,7 +310,13 @@ README once the library is usable.
   skinema-compose grew `rememberPlayerState` (frame-clock poll, one
   volatile read per frame). CI dogfoods the shipped bundles: the test
   matrix downloads OUR release assets on all three platforms instead of
-  BtbN/brew. Still open: the long-soak verdict.
+  BtbN/brew. Soak verdicts: one hour of looped 1080p30 through the
+  bundle path = 103k frames with RSS FALLING from 161 to 99 MB (the JVM
+  returned memory mid-run) while a 24-player stress saturated the same
+  machine; 96 surface mount/unmount cycles hold a flat post-GC heap
+  baseline (263-269 MB) with RSS an asymptote -- the harness's churn
+  mode exists for exactly this question. 24 simultaneous 1080p30 players
+  pace at ~5.8 cores and ~94 MB RSS each.
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
