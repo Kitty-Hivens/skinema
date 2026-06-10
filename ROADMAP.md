@@ -202,10 +202,18 @@ README once the library is usable.
 
 ## 11. Milestones
 
-- **M0 -- spike (next).** Linux only, system FFmpeg 8.1: open mp4/webm,
-  decode N frames, dump PNGs via ImageIO, log pts. Success = correct frames
-  at correct timestamps and a measured CPU cost for 1080p30. Answers "is
-  Panama-FFmpeg pain or routine" in a couple of evenings.
+- **M0 -- spike: DONE (2026-06-10).** Linux, system FFmpeg 8.1.1, through
+  the real hand-written bindings (`Libav`/`VideoDecoder`, offsets from
+  `tools/layout-oracle.c`). Results: H.264/mp4 (1/15360 base) and VP9/webm
+  (1/1000 base) both decode with pts landing exactly on the frame grid
+  (verified against testsrc2's burned-in timecode); 1080p30 H.264
+  decode+swscale-to-RGBA costs ~10.6 ms/frame on the dev machine, ~94 fps
+  capacity -- 30 fps playback uses about a third of one core, comfortably
+  inside the background budget. Verdict: Panama-FFmpeg is routine, not
+  pain. Bindings call through adapting `MethodHandle.invoke`; tightening
+  hot paths to `invokeExact` is an M1 option, not a need at this cost
+  profile. Run it: `./gradlew :skinema-core:spike -Pinput=<video>
+  -Pout=<dir> [-Pframes=N]`.
 - **M1 -- core.** Decode session lifecycle, pacer, mailbox, seek, loop,
   fail-closed error path; unit + golden tests; CI on Linux.
 - **M2 -- skiko + compose.** Image conversion with buffer reuse and
