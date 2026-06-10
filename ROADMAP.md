@@ -248,7 +248,6 @@ README once the library is usable.
 | Toolchain  | 25 (LTS)       | foojay resolver fetches if absent      |
 | Kotlin     | 2.4.0          | matches the primary consumer           |
 | Gradle     | 9.5.1 (wrapper)|                                        |
-| coroutines | 1.11.0         | declared; core API choice still open   |
 | FFmpeg     | n8.1.x         | sonames in section 4                   |
 
 ## 13. Open questions
