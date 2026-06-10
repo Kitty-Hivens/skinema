@@ -79,6 +79,30 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `pause freezes the frame flow and resume restarts it`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("pause.mp4", "10"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            // Drain whatever was published before the pause landed.
+            Thread.sleep(100)
+            player.acquireFrame()
+
+            val leaked = (1..15).count {
+                Thread.sleep(20)
+                player.acquireFrame() != null
+            }
+            assertEquals(0, leaked, "no frames may arrive while paused")
+
+            player.resume()
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "frames must flow again after resume")
+            assertIs<VideoPlayer.State.Playing>(player.state)
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->

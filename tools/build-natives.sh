@@ -117,6 +117,11 @@ fi
 
 cd "ffmpeg-$FFMPEG_VERSION"
 
+# EXTRA_FLAGS exists to be word-split (several configure flags in one
+# env var); splitting through an array keeps that working with an empty
+# default and quiet shellcheck.
+read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
+
 # Decode whitelist (ROADMAP.md section 4). Demuxers cover the consumer's
 # container set plus standalone audio for M5; native opus/vorbis/aac/mp3/
 # flac decoders need no external libraries. libvpx is required, not a
@@ -132,7 +137,7 @@ cd "ffmpeg-$FFMPEG_VERSION"
     --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav \
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,pcm_s16le \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac \
-    ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA_FLAGS:-}
+    ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
 make install
