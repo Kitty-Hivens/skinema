@@ -57,6 +57,20 @@ their pts; the UI side asks "which frame should be visible now" against a
 monotonic clock (Compose: `withFrameNanos`). Late frames are dropped, never
 shown. The pacer is pure Kotlin and unit-tested.
 
+Audio (designed now, built later): pacing depends only on the `MediaClock`
+interface. Silent playback runs on the wall-time `PlaybackClock`; when a
+player gains sound, its audio sink becomes the clock -- a DAC consumes
+samples at its own immutable rate, so audio masters and video follows,
+never the reverse. Bolting sound onto a video API built around a wall
+clock is how players end up with two competing clocks; the seam exists
+precisely so nothing inverts later. Each player owns its sink and syncs
+itself; simultaneous sources stay independent because the OS audio server
+(PipeWire / WASAPI / CoreAudio) mixes client streams -- there is
+deliberately no global media clock and no in-process mixer. Volume policy
+and ducking across sources are the consumer's domain. swresample and the
+audio decoders sit in the pin and the trimmed-build whitelist for exactly
+this.
+
 ## 4. FFmpeg pin
 
 Pinned line: **FFmpeg n8.1.x, LGPL, shared** (pinned 2026-06).
@@ -160,11 +174,14 @@ tonemap, done); alpha preserved where the codec carries it (VP9/webm);
 GIF / APNG / animated WebP through the same pipeline (covers the consumer's
 "animated background" category for free).
 
-Out (explicitly, revisit only with a consumer in hand): audio (the clock-
-master and resampler problem arrives with a future media-player consumer,
-not with silent backgrounds); hardware decode and GPU YUV shaders; network
-sources and custom AVIO; Dolby Vision profile 5 (proprietary colorspace --
-out of scope forever unless licensing changes).
+Out (explicitly, revisit only with a consumer in hand): hardware decode
+and GPU YUV shaders; network sources and custom AVIO; Dolby Vision
+profile 5 (proprietary colorspace -- out of scope forever unless
+licensing changes).
+
+Audio is not in v0.1 but is no longer indefinite: the clock seam is in
+place (section 3) and audio lands as milestone M5 with its own consumer,
+at an unhurried pace.
 
 ## 8. Edge-case policy ("the circus")
 
@@ -251,6 +268,12 @@ README once the library is usable.
   test matrix.
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
+- **M5 -- audio.** Audio stream decode + swresample to PCM, one
+  javax.sound.sampled sink per player, the sink-backed MediaClock takes
+  over pacing, A/V sync across seek/loop/underrun. Consumer: the
+  music-player direction in the primary consumer's backlog. The seam
+  already exists (section 3), so nothing inverts -- this is addition,
+  not surgery.
 
 ## 12. Version pins (2026-06)
 
