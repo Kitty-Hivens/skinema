@@ -93,6 +93,24 @@ class VideoDecoderTest {
     }
 
     @Test
+    fun `hevc decodes -- the whitelist carries it`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("hevc.mp4"),
+            // lime, not green: lavfi color names are HTML's, where green
+            // means half-intensity #008000.
+            "-f", "lavfi", "-i", "color=c=lime:size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val frames = generateSequence { decoder.nextFrame()?.let { it.ptsNanos to it.rgba[(32 * 64 + 32) * 4 + 1] } }.toList()
+            assertEquals(10, frames.size)
+            val g = frames.first().second.toInt() and 0xFF
+            assertTrue(g > 200, "green channel should dominate, got $g")
+        }
+    }
+
+    @Test
     fun `vp9 with alpha preserves transparency`() {
         Fixtures.assumeDecodeEnvironment()
         val video = Fixtures.generate(
