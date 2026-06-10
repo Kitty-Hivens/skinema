@@ -239,6 +239,15 @@ class VideoPlayer(
         }
         Command.Resume -> {
             if (state is State.Paused) {
+                // The sink's buffered tail keeps sounding (and advancing the
+                // device clock) for a beat after a pause lands; resuming
+                // re-anchors sound to the frame actually on screen,
+                // sample-precise. Frameless players have no frame to anchor
+                // to and just resume.
+                if (audioPipeline != null && decoder != null) {
+                    audioPipeline.seek(lastPublishedPts)
+                    audioPipeline.videoLanded()
+                }
                 audioPipeline?.resume()
                 clock.resume()
                 state = State.Playing
@@ -301,7 +310,9 @@ class VideoPlayer(
                 Command.Close -> return false
                 else -> {}
             }
-            val f = decoder.nextFrame(buffer?.writing?.rgba)
+            // Bare decode while dropping: converting frames that are thrown
+            // away costs several times the decode itself.
+            val f = decoder.nextFrame(convert = false)
             if (f == null) {
                 // Seeked past the last frame: same treatment as EOF.
                 if (loop) {
@@ -316,7 +327,7 @@ class VideoPlayer(
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
                 if (state is State.Ended) state = State.Playing
-                publish(f)
+                publish(decoder.convertLast(buffer?.writing?.rgba))
                 return true
             }
         }

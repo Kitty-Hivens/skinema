@@ -35,20 +35,29 @@ class WebpAnimSource private constructor(
     // GetNext reports when a frame's display ENDS; a frame's pts is the
     // previous frame's end.
     private var prevEndMs = 0
+    private var lastPtsNanos = 0L
 
-    override fun nextFrame(target: ByteArray?): VideoDecoder.RgbaFrame? {
+    override fun nextFrame(target: ByteArray?, convert: Boolean): VideoDecoder.RgbaFrame? {
         if (!Webp.hasMoreFrames(decoder)) return null
         if (Webp.getNext(decoder, bufOut, timestampOut) == 0) {
             throw LibavException("WebPAnimDecoderGetNext failed (corrupt animation data)")
         }
         val endMs = timestampOut.get(JAVA_INT, 0)
-        val ptsNanos = prevEndMs * 1_000_000L
+        lastPtsNanos = prevEndMs * 1_000_000L
         prevEndMs = endMs
 
+        if (!convert) return VideoDecoder.RgbaFrame(width, height, lastPtsNanos, NO_PIXELS)
+        return copyCanvas(target)
+    }
+
+    override fun convertLast(target: ByteArray?): VideoDecoder.RgbaFrame = copyCanvas(target)
+
+    /** The canvas behind [bufOut] stays valid until the next GetNext. */
+    private fun copyCanvas(target: ByteArray?): VideoDecoder.RgbaFrame {
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         val canvas = bufOut.get(ADDRESS, 0).reinterpret(out.size.toLong())
         MemorySegment.copy(canvas, JAVA_BYTE, 0, out, 0, out.size)
-        return VideoDecoder.RgbaFrame(width, height, ptsNanos, out)
+        return VideoDecoder.RgbaFrame(width, height, lastPtsNanos, out)
     }
 
     override fun seekTo(ptsNanos: Long) {
@@ -64,6 +73,8 @@ class WebpAnimSource private constructor(
     }
 
     companion object {
+
+        private val NO_PIXELS = ByteArray(0)
 
         /** Opens [path]; the caller checked [Webp.available] and the RIFF/WEBP magic. */
         fun open(path: Path): WebpAnimSource {

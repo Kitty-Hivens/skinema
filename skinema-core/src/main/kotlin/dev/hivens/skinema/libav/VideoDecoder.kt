@@ -59,16 +59,26 @@ class VideoDecoder private constructor(
      * the pixels (the caller's buffer pool); otherwise an internal reused
      * buffer backs the result.
      */
-    override fun nextFrame(target: ByteArray?): RgbaFrame? {
+    override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
-                0 -> return convertCurrentFrame(target)
+                0 -> return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
                 LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
                 LibavAbi.AVERROR_EOF -> return null
                 else -> Libav.checkAv(ret, "avcodec_receive_frame")
             }
         }
     }
+
+    override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
+
+    /** The decoded frame's pts and geometry without touching its pixels. */
+    private fun metadataOnlyFrame(): RgbaFrame = RgbaFrame(
+        width = frame.get(JAVA_INT, LibavAbi.Frame.WIDTH),
+        height = frame.get(JAVA_INT, LibavAbi.Frame.HEIGHT),
+        ptsNanos = currentPtsNanos(),
+        rgba = NO_PIXELS,
+    )
 
     /**
      * Positions the demuxer at the last keyframe at-or-before [ptsNanos]
@@ -133,12 +143,14 @@ class VideoDecoder private constructor(
         )
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         MemorySegment.copy(rgbaNative, JAVA_BYTE, 0, out, 0, out.size)
+        return RgbaFrame(width, height, currentPtsNanos(), out)
+    }
 
+    private fun currentPtsNanos(): Long {
         val pts = frame.get(JAVA_LONG, LibavAbi.Frame.PTS)
             .takeIf { it != LibavAbi.AV_NOPTS_VALUE }
             ?: frame.get(JAVA_LONG, LibavAbi.Frame.BEST_EFFORT_TIMESTAMP)
-        val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
-        return RgbaFrame(width, height, ptsNanos, out)
+        return if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
     }
 
     private fun ensureSws(width: Int, height: Int, format: Int) {
@@ -179,6 +191,8 @@ class VideoDecoder private constructor(
     }
 
     companion object {
+
+        private val NO_PIXELS = ByteArray(0)
 
         /**
          * The native vp8/vp9 decoders ignore the webm alpha side-channel

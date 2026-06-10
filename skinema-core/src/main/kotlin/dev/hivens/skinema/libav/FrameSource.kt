@@ -13,8 +13,17 @@ interface FrameSource : AutoCloseable {
      * Decodes and converts the next frame; null at end of stream. When
      * [target] is provided and matches the frame's RGBA size it receives
      * the pixels; otherwise an internal reused buffer backs the result.
+     *
+     * With [convert] false the frame is decoded but not converted: the
+     * result carries pts and dimensions over an empty rgba. That is the
+     * seek landing's drop-run -- converting frames that are thrown away
+     * costs several times the bare decode. [convertLast] materializes the
+     * frame that turned out to be the landing.
      */
-    fun nextFrame(target: ByteArray? = null): VideoDecoder.RgbaFrame?
+    fun nextFrame(target: ByteArray? = null, convert: Boolean = true): VideoDecoder.RgbaFrame?
+
+    /** Converts the most recent [nextFrame] result (either convert mode). */
+    fun convertLast(target: ByteArray? = null): VideoDecoder.RgbaFrame
 
     /**
      * Repositions at-or-before [ptsNanos]; frames then resume from that

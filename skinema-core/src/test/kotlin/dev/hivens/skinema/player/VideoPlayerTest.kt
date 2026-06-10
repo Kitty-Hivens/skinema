@@ -155,6 +155,52 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `resume re-anchors audio to the frame on screen`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("resync.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", "-shortest",
+        )
+        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+            // Frame 0 publishing means the clock is anchored; only then may
+            // the test move the device position.
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // Run the DAC to 300ms and let video follow.
+            sink.positionFrames.set(44_100 * 3 / 10)
+            var shownPts = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { shownPts = it.ptsNanos }
+                    shownPts >= 300_000_000L
+                },
+                "video must follow the device clock to 300ms",
+            )
+
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            // The buffered tail keeps playing after the pause landed: the
+            // device consumes another 200ms that video never showed.
+            sink.positionFrames.set(44_100 / 2)
+
+            player.resume()
+            awaitTrue { player.state is VideoPlayer.State.Playing }
+            assertTrue(
+                awaitTrue {
+                    val pos = player.positionNanos()
+                    pos in (shownPts - 1_000_000L)..(shownPts + 100_000_000L)
+                },
+                "resume must re-anchor time at the shown frame (${shownPts}ns), got ${player.positionNanos()}ns",
+            )
+        }
+    }
+
+    @Test
     fun `rapid seeks coalesce into a landing at the final target`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("spam.mp4", "3"), loop = false).use { player ->
