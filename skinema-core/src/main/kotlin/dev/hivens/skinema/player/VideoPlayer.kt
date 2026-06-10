@@ -3,6 +3,8 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
+import dev.hivens.skinema.libav.FrameSource
+import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
@@ -100,7 +102,7 @@ class VideoPlayer(
 
     private fun run() {
         val decoder = try {
-            VideoDecoder.open(path)
+            FrameSources.open(path)
         } catch (t: Throwable) {
             state = State.Failed(t)
             return
@@ -117,7 +119,7 @@ class VideoPlayer(
         }
     }
 
-    private fun decodeLoop(decoder: VideoDecoder) {
+    private fun decodeLoop(decoder: FrameSource) {
         while (true) {
             var cmd = commands.poll()
             while (cmd != null) {
@@ -161,7 +163,7 @@ class VideoPlayer(
         }
     }
 
-    private fun handle(cmd: Command, decoder: VideoDecoder): Boolean = when (cmd) {
+    private fun handle(cmd: Command, decoder: FrameSource): Boolean = when (cmd) {
         Command.Close -> false
         Command.Pause -> {
             if (state is State.Playing) {
@@ -188,7 +190,7 @@ class VideoPlayer(
      * the target, then frames are decoded (and dropped) forward until the
      * target is reached; that frame is published immediately.
      */
-    private fun performSeek(decoder: VideoDecoder, targetNanos: Long) {
+    private fun performSeek(decoder: FrameSource, targetNanos: Long) {
         seekGeneration++
         decoder.seekTo(targetNanos)
         while (true) {

@@ -95,6 +95,7 @@ class VideoDecoderTest {
     @Test
     fun `hevc decodes -- the whitelist carries it`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libx265")
         val video = Fixtures.generate(
             dir.resolve("hevc.mp4"),
             // lime, not green: lavfi color names are HTML's, where green
@@ -113,6 +114,7 @@ class VideoDecoderTest {
     @Test
     fun `vp9 with alpha preserves transparency`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libvpx-vp9")
         val video = Fixtures.generate(
             dir.resolve("alpha.webm"),
             "-f", "lavfi", "-i", "color=c=red@0.5:size=16x16:rate=5,format=yuva420p", "-t", "1",
@@ -149,6 +151,7 @@ class VideoDecoderTest {
     @Test
     fun `vp8 in webm decodes -- the whitelist carries it`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libvpx")
         assertDecodesEveryFrame(
             "vp8.webm", 10,
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
@@ -159,6 +162,7 @@ class VideoDecoderTest {
     @Test
     fun `av1 decodes through dav1d -- the whitelist carries it`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libaom-av1")
         assertDecodesEveryFrame(
             "av1.mp4", 10,
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
@@ -192,33 +196,17 @@ class VideoDecoderTest {
     }
 
     @Test
-    fun `still webp decodes as a single frame`() {
+    fun `still webp decodes as a single frame through the libav path`() {
+        // The fallback for builds without libwebpdemux: ffmpeg's webp
+        // decoder handles stills (animations are libwebp's job -- see
+        // WebpAnimSourceTest).
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libwebp")
         assertDecodesEveryFrame(
             "still.webp", 1,
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
             "-c:v", "libwebp",
         )
-    }
-
-    @Test
-    fun `animated webp fails closed -- upstream FFmpeg cannot decode it`() {
-        // FFmpeg's webp decoder handles stills only; animated WebP decoding
-        // has never been merged upstream (even a full build refuses files it
-        // itself encoded). The consumer contract is the usual fail-closed:
-        // the error surfaces as LibavException -> VideoPlayer.Failed ->
-        // fallback, never a hang or a garbage frame.
-        Fixtures.assumeDecodeEnvironment()
-        val video = Fixtures.generate(
-            dir.resolve("anim.webp"),
-            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
-            "-c:v", "libwebp", "-lossless", "0", "-loop", "0",
-        )
-        VideoDecoder.open(video).use { decoder ->
-            assertFailsWith<LibavException> {
-                while (decoder.nextFrame() != null) Unit
-            }
-        }
     }
 
     @Test

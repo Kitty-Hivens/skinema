@@ -39,6 +39,28 @@ object Fixtures {
         assumeTrue(libavLoadable, "pinned libav* not loadable -- skipping integration test")
     }
 
+    private val encoders: Set<String> by lazy {
+        runCatching {
+            val proc = ProcessBuilder("ffmpeg", "-hide_banner", "-encoders").redirectErrorStream(true).start()
+            val names = proc.inputStream.readAllBytes().decodeToString()
+                .lineSequence()
+                .mapNotNull { line -> Regex("^ [A-Z.]{6} (\\S+)").find(line)?.groupValues?.get(1) }
+                .toSet()
+            proc.waitFor()
+            names
+        }.getOrDefault(emptySet())
+    }
+
+    /**
+     * Skips when the fixture CLI lacks [encoder]. Deliberately NOT
+     * escalated by SKINEMA_REQUIRE_DECODE: what the runner's CLI can
+     * encode is the environment's business (brew ships ffmpeg without
+     * libaom/libwebp), not part of skinema's decode contract.
+     */
+    fun assumeEncoder(encoder: String) {
+        assumeTrue(encoder in encoders, "CLI lacks encoder $encoder -- fixture impossible, skipping")
+    }
+
     /**
      * Runs `ffmpeg <args> <output>` and returns [output]. Fixture codecs
      * mirror the shipped decode whitelist (h264 via libx264, vp9 via

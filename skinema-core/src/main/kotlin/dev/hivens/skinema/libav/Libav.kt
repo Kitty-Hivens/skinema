@@ -42,10 +42,11 @@ object Libav {
             ?.takeIf { it.isNotBlank() }
             ?: NativeBundle.deployIfBundled()?.toString()
 
-    private fun libraryPath(lib: LibavLibrary): String {
-        val name = lib.fileName(Os.current())
-        return if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
-    }
+    private fun libraryPath(lib: LibavLibrary): String = resolveLibraryPath(lib.fileName(Os.current()))
+
+    /** Resolves [name] against the natives directory override, shared with the webp bindings. */
+    internal fun resolveLibraryPath(name: String): String =
+        if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
 
     private val lookups: Map<LibavLibrary, SymbolLookup> =
         LibavLibrary.entries.associateWith { lib ->

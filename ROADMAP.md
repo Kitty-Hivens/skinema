@@ -187,13 +187,17 @@ Audio is not in v0.1 but is no longer indefinite: the clock seam is in
 place (section 3) and audio lands as milestone M5 with its own consumer,
 at an unhurried pace.
 
-Known upstream limitation: FFmpeg decodes only STILL WebP -- animated
-WebP support has never been merged upstream, and even a full build
-refuses files its own encoder produced. skinema inherits that: still
-WebP yields its single frame, animated WebP fails closed into the
-consumer's fallback. The animated-background category is therefore
-GIF + APNG (+ real video); both are covered by tests, APNG including
-alpha.
+Animated WebP is the one format FFmpeg cannot decode (never merged
+upstream; even a full build refuses files its own encoder produced), so
+skinema covers it with a second tiny FFM binding: libwebp's
+WebPAnimDecoder (`dev.hivens.skinema.webp`, ~7 downcalls, its own oracle
+at tools/webp-oracle.c). FrameSources routes RIFF/WEBP there when
+libwebpdemux is loadable -- frames arrive as RGBA with millisecond
+timestamps, no swscale -- and falls back to libav otherwise (stills
+decode, animations fail closed). The capability is optional by design:
+the trimmed bundles will carry libwebp + libwebpdemux; until then,
+system copies serve. The animated-background category is therefore
+GIF + APNG + animated WebP, all tested, alpha included.
 
 ## 8. Edge-case policy ("the circus")
 
