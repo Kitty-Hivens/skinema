@@ -109,11 +109,12 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then libdir="bin"; fi
           SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/$libdir" ./gradlew :skinema-core:test --rerun-tasks
 
-      # Tar preserves the .so symlink chains that artifact zipping would
-      # expand into duplicate copies.
+      # The flat loader-named bundle/ (built by the script) is the asset:
+      # no symlinks, jar-ready layout, index.txt included. gzip, not xz --
+      # Gradle's tarTree unpacks gz natively when assembling the jars.
       - name: Pack the bundle
         shell: bash
-        run: tar -cJf "skinema-natives-${{ matrix.platform }}.tar.xz" -C "natives/${{ matrix.platform }}" .
+        run: tar -czf "skinema-natives-${{ matrix.platform }}.tar.gz" -C "natives/${{ matrix.platform }}/bundle" .
 
       - name: Upload to the rolling natives release
         shell: bash
@@ -127,7 +128,7 @@ jobs:
             gh release create "$tag" --title "Trimmed FFmpeg $FFMPEG_VERSION natives" \
               --notes "Per-platform trimmed FFmpeg runtimes (see ROADMAP.md section 4). Assets land independently as platforms finish; a rebuild replaces its own asset." \
               || true
-          gh release upload "$tag" "skinema-natives-${{ matrix.platform }}.tar.xz" --clobber
+          gh release upload "$tag" "skinema-natives-${{ matrix.platform }}.tar.gz" --clobber
 
       - uses: actions/upload-artifact@v4
         with:
