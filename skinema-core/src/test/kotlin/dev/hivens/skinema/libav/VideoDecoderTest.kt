@@ -24,7 +24,7 @@ class VideoDecoderTest {
         val video = Fixtures.generate(
             dir.resolve("grid.mp4"),
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
-            "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
         VideoDecoder.open(video).use { decoder ->
             val pts = generateSequence { decoder.nextFrame()?.ptsNanos }.toList()
@@ -38,7 +38,7 @@ class VideoDecoderTest {
         val video = Fixtures.generate(
             dir.resolve("red.mp4"),
             "-f", "lavfi", "-i", "color=c=red:size=16x16:rate=5", "-t", "1",
-            "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
         VideoDecoder.open(video).use { decoder ->
             val frame = decoder.nextFrame()!!
@@ -62,7 +62,7 @@ class VideoDecoderTest {
         val video = Fixtures.generate(
             dir.resolve("seek.mp4"),
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "3",
-            "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2", "-g", "5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "5",
         )
         val target = 1_500_000_000L
         VideoDecoder.open(video).use { decoder ->
@@ -81,7 +81,7 @@ class VideoDecoderTest {
         val video = Fixtures.generate(
             dir.resolve("loop.mp4"),
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "0.5",
-            "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
         VideoDecoder.open(video).use { decoder ->
             val drained = generateSequence { decoder.nextFrame() }.count()

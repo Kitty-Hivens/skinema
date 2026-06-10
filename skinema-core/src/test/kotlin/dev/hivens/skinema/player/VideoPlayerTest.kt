@@ -25,7 +25,7 @@ class VideoPlayerTest {
     private fun shortVideo(name: String, seconds: String): Path = Fixtures.generate(
         dir.resolve(name),
         "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", seconds,
-        "-pix_fmt", "yuv420p", "-c:v", "mpeg4", "-q:v", "2",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
     )
 
     private fun awaitTrue(deadlineMs: Long = 10_000, condition: () -> Boolean): Boolean {

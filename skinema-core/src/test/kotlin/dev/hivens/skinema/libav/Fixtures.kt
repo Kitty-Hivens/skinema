@@ -24,15 +24,26 @@ object Fixtures {
         runCatching { Libav.versions }.isSuccess
     }
 
+    // CI exports SKINEMA_REQUIRE_DECODE so a broken runner environment
+    // (missing CLI, unloadable libraries) fails the build loudly instead
+    // of silently skipping every integration test and faking green.
+    private val strict = System.getenv("SKINEMA_REQUIRE_DECODE") != null
+
     fun assumeDecodeEnvironment() {
+        if (strict) {
+            check(ffmpegOnPath) { "SKINEMA_REQUIRE_DECODE is set but the ffmpeg CLI is not on PATH" }
+            check(libavLoadable) { "SKINEMA_REQUIRE_DECODE is set but the pinned libav* did not load" }
+            return
+        }
         assumeTrue(ffmpegOnPath, "ffmpeg CLI not on PATH -- skipping integration test")
         assumeTrue(libavLoadable, "pinned libav* not loadable -- skipping integration test")
     }
 
     /**
-     * Runs `ffmpeg <args> <output>` and returns [output]. Encoder choices
-     * in callers stick to what every ffmpeg CLI build carries (mpeg4,
-     * libvpx) so fixture generation works on GPL and LGPL builds alike.
+     * Runs `ffmpeg <args> <output>` and returns [output]. Fixture codecs
+     * mirror the shipped decode whitelist (h264 via libx264, vp9 via
+     * libvpx) -- tests must exercise what the trimmed builds carry, so CI
+     * runners need a full-build CLI (apt/brew/choco), not an LGPL one.
      */
     fun generate(output: Path, vararg args: String): Path {
         val cmd = listOf("ffmpeg", "-y", "-hide_banner", "-loglevel", "error") + args + output.toString()
