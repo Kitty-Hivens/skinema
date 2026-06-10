@@ -21,8 +21,12 @@ editor may not. We are the former.
 
 ## 2. Ground rules
 
-- **Consumer-first.** API grows against a real consumer (Nexira's background
-  system), never speculatively.
+- **Consumer-shaped, product-clean.** The API grows under consumer-shaped
+  pressure from a harness inside this repo (the demo grown into a
+  background testbed), never against imagination -- but the primary
+  consumer adopts only published artifacts once the hard problem is
+  solved end-to-end, natives included. The product is not a test bench,
+  and a half-solved library is worth less than none.
 - **Fail closed per file.** Any file the pipeline cannot handle: log, skip,
   let the consumer fall back (static image). One code path, no heroics.
 - **No network.** Local files only; the pinned FFmpeg builds are configured
@@ -260,12 +264,17 @@ README once the library is usable.
   `./gradlew :skinema-demo:run -Pvideo=<file>` -- verified live against
   the 1080p fixture. Pins follow the consumer: Compose 1.11.0, Skiko
   0.144.6, and skiko stays compileOnly (the consumer's Compose provides
-  it at runtime). Remaining for M2: the Nexira background consumer behind
-  a dev flag, which first needs the dependency-link decision --
-  includeBuild vs mavenLocal snapshot vs an early publish.
+  it at runtime). M2 closes here: the early Nexira wiring originally
+  planned for this milestone is deliberately dropped -- co-developing the
+  product against a moving API doubles every change, so the launcher
+  adopts a published artifact after M4 instead (see the adoption bar
+  below).
 - **M3 -- natives pipeline.** Trimmed FFmpeg builds in CI for all three
   OSes; pinned-build loading; packaging decision; macOS/Windows enter the
-  test matrix.
+  test matrix. Alongside it, skinema-demo grows into a background
+  harness -- hours-long looping with RSS tracking, window hide/show,
+  several players at once, failure fallback -- the consumer-shaped
+  pressure that replaces early product wiring.
 - **M4 -- publish.** Maven Central under dev.hivens (the libtray release
   pipeline is the precedent); README compat-policy statement; v0.1.
 - **M5 -- audio.** Audio stream decode + swresample to PCM, one
@@ -274,6 +283,12 @@ README once the library is usable.
   music-player direction in the primary consumer's backlog. The seam
   already exists (section 3), so nothing inverts -- this is addition,
   not surgery.
+
+Adoption bar (the primary consumer): the launcher takes skinema as a
+normal published dependency once 0.x is on Maven Central with bundled
+natives for its official platforms, the background harness has survived
+a long soak without RSS growth, and the API has gone a full milestone
+without breaking changes. Not before.
 
 ## 12. Version pins (2026-06)
 
