@@ -231,9 +231,21 @@ README once the library is usable.
   vp8/vp9 decoders silently drop the webm alpha side-channel; the decoder
   swaps to libvpx for those streams (see `pickDecoder`), so trimmed builds
   must carry libvpx.
-- **M2 -- skiko + compose.** Image conversion with buffer reuse and
-  disposal; VideoSurface; first real consumer wiring in Nexira behind a
-  dev flag.
+- **M2 -- skiko + compose: modules DONE (2026-06-10); Nexira wiring
+  pending.** VideoFrameImage raster-copies a frame into a Skia image and
+  closes the previous one (straight/UNPREMUL alpha); deliberately
+  core-independent -- it takes width/height/bytes, so skinema-compose is
+  what ties core and skiko together. VideoSurface pumps frames on
+  `withFrameNanos` (a hidden window stops polling for free), scales via
+  pure `destinationRect` (Cover/Fit, unit-tested), and draws nothing
+  before the first frame or after a failure -- fallback visuals stay the
+  consumer's job. skinema-demo plays a file in a bare Compose window:
+  `./gradlew :skinema-demo:run -Pvideo=<file>` -- verified live against
+  the 1080p fixture. Pins follow the consumer: Compose 1.11.0, Skiko
+  0.144.6, and skiko stays compileOnly (the consumer's Compose provides
+  it at runtime). Remaining for M2: the Nexira background consumer behind
+  a dev flag, which first needs the dependency-link decision --
+  includeBuild vs mavenLocal snapshot vs an early publish.
 - **M3 -- natives pipeline.** Trimmed FFmpeg builds in CI for all three
   OSes; pinned-build loading; packaging decision; macOS/Windows enter the
   test matrix.
@@ -247,6 +259,8 @@ README once the library is usable.
 | JDK floor  | 22             | java.lang.foreign final                |
 | Toolchain  | 25 (LTS)       | foojay resolver fetches if absent      |
 | Kotlin     | 2.4.0          | matches the primary consumer           |
+| Compose    | 1.11.0         | matches the primary consumer           |
+| Skiko      | 0.144.6        | what Compose 1.11.0 ships; compileOnly |
 | Gradle     | 9.5.1 (wrapper)|                                        |
 | FFmpeg     | n8.1.x         | sonames in section 4                   |
 
