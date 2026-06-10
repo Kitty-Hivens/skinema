@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import dev.hivens.skinema.compose.VideoScale
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
@@ -19,7 +20,9 @@ fun main(args: Array<String>) {
             DisposableEffect(player) {
                 onDispose { player.close() }
             }
-            VideoSurface(player, Modifier.fillMaxSize())
+            // A viewer letterboxes; Cover (the background default) crops
+            // whenever the window's aspect drifts from the video's.
+            VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Fit)
         }
     }
 }
