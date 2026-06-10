@@ -9,6 +9,7 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
+import java.nio.file.Path
 
 /** The byte stream did not decode, or a libav call refused it. */
 class LibavException(message: String) : RuntimeException(message)
@@ -41,7 +42,7 @@ object Libav {
 
     private fun libraryPath(lib: LibavLibrary): String {
         val name = lib.fileName(Os.current())
-        return if (libavDir != null) java.nio.file.Path.of(libavDir, name).toAbsolutePath().toString() else name
+        return if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
     }
 
     private val lookups: Map<LibavLibrary, SymbolLookup> =
