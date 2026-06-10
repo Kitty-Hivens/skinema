@@ -46,12 +46,26 @@ jobs:
             macOS)   brew install ffmpeg ;;
           esac
 
+      # The rolling release clobbers assets in place, so the cache key must
+      # track the asset's upload time -- a fixed suffix kept serving stale
+      # bundles after every natives re-dispatch.
+      - name: Resolve the bundle revision
+        id: natives-rev
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rev=$(gh api repos/${{ github.repository }}/releases/tags/natives-8.1.1 \
+            --jq '[.assets[] | select(.name == "skinema-natives-${{ matrix.platform }}.tar.gz")][0].updated_at' \
+            2>/dev/null | tr -dc '0-9TZ:-' || true)
+          echo "rev=${rev:-unknown}" >> "$GITHUB_OUTPUT"
+
       - name: Cache the trimmed natives bundle
         id: libav-cache
         uses: actions/cache@v4
         with:
           path: libav-bundle
-          key: skinema-natives-8.1.1-${{ matrix.platform }}-v1
+          key: skinema-natives-8.1.1-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
 
       - name: Download the trimmed natives bundle
         if: steps.libav-cache.outputs.cache-hit != 'true'
