@@ -122,6 +122,9 @@ class VideoPlayer(
         audioPipeline?.setVolume(volume)
     }
 
+    /** Current media position in nanoseconds; zero until playback starts. */
+    fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
+
     override fun close() {
         commands.put(Command.Close)
         thread.join(5_000)
