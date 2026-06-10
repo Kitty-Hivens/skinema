@@ -52,6 +52,14 @@ class VideoPlayer(
         /** Non-looping playback ran out of frames; a seek revives it. */
         data object Ended : State
 
+        /**
+         * A seek is landing: the demuxer jumped to a keyframe and is
+         * decoding forward to the target. The last frame stays on screen;
+         * a consumer may show a loading affordance. Resolves back to
+         * Playing / Paused / Ended when the target frame lands.
+         */
+        data object Seeking : State
+
         /** Open or decode failed; playback stopped for good. Fall back. */
         data class Failed(val cause: Throwable) : State
         data object Closed : State
@@ -88,6 +96,14 @@ class VideoPlayer(
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val commands = LinkedBlockingQueue<Command>()
     private var seekGeneration = 0
+
+    // Where the in-flight (or most recent) seek is headed. [seekBy] adds to
+    // this rather than to the clock, so a burst of presses faster than a
+    // landing takes accumulates to the final destination instead of all
+    // resolving against the same stale clock position. -1 = no seek yet.
+    @Volatile
+    private var pendingTargetNanos = -1L
+    private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
         if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop) else null
     private lateinit var clock: MediaClock
@@ -115,7 +131,22 @@ class VideoPlayer(
     fun resume() = commands.put(Command.Resume)
 
     /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */
-    fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos))
+    fun seek(ptsNanos: Long) {
+        val target = ptsNanos.coerceAtLeast(0)
+        pendingTargetNanos = target
+        commands.put(Command.Seek(target))
+    }
+
+    /**
+     * Seeks [deltaNanos] relative to the seek already in flight (or the
+     * current position if none) -- the right primitive for +N/-N buttons.
+     * Rapid presses accumulate to one destination regardless of how far
+     * behind the clock's anchor is lagging during a landing.
+     */
+    fun seekBy(deltaNanos: Long) {
+        val base = pendingTargetNanos.takeIf { it >= 0 } ?: positionNanos()
+        seek(base + deltaNanos)
+    }
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -259,6 +290,8 @@ class VideoPlayer(
             val keepRunning = if (decoder != null) {
                 performSeek(decoder, cmd.ptsNanos)
             } else {
+                // Frameless (audio-only): no landing to wait for.
+                pendingTargetNanos = -1L
                 if (state is State.Ended) state = State.Playing
                 true
             }
@@ -296,6 +329,10 @@ class VideoPlayer(
      */
     private fun performSeek(decoder: FrameSource, targetNanos: Long): Boolean {
         seekGeneration++
+        // Remember what to return to (Playing/Paused/Ended) and advertise
+        // the landing so a consumer can show a loading affordance.
+        stateBeforeSeek.compareAndSet(null, state.takeIf { it != State.Seeking } ?: State.Playing)
+        state = State.Seeking
         var target = targetNanos
         decoder.seekTo(target)
         while (true) {
@@ -318,18 +355,33 @@ class VideoPlayer(
                 if (loop) {
                     decoder.seekTo(0)
                     if (ownsClock) clock.seek(0)
-                    if (state is State.Ended) state = State.Playing
+                    finishSeek(State.Playing)
                 } else {
-                    state = State.Ended
+                    finishSeek(State.Ended)
                 }
                 return true
             }
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
-                if (state is State.Ended) state = State.Playing
                 publish(decoder.convertLast(buffer?.writing?.rgba))
+                finishSeek(State.Playing)
                 return true
             }
+        }
+    }
+
+    /**
+     * Resolves [State.Seeking] back to the lifecycle. A seek that landed
+     * resumes whatever was running before the burst started (a paused
+     * player stays paused at the new frame); [ended]/[playing] only chooses
+     * the fallback when there was no prior state to restore.
+     */
+    private fun finishSeek(landed: State) {
+        pendingTargetNanos = -1L
+        val prior = stateBeforeSeek.getAndSet(null)
+        state = when {
+            prior == State.Paused && landed != State.Ended -> State.Paused
+            else -> landed
         }
     }
 

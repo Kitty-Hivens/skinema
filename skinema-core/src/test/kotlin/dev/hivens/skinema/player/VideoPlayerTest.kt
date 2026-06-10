@@ -201,6 +201,46 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `seekBy accumulates against the pending target, not the lagging clock`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("accum.mp4", "30"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+
+            // Five +2s presses. If seekBy added to the clock (frozen near 0
+            // during the landings) every press would compute ~2s; against the
+            // pending target they sum to 10s.
+            repeat(5) { player.seekBy(2_000_000_000L) }
+
+            var landedPts = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { landedPts = it.ptsNanos }
+                    landedPts >= 9_500_000_000L
+                },
+                "five +2s presses must reach ~10s, landed at ${landedPts / 1_000_000}ms",
+            )
+            assertIs<VideoPlayer.State.Paused>(player.state, "a paused player stays paused at the new frame")
+        }
+    }
+
+    @Test
+    fun `a seek advertises the Seeking state and resolves out of it`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("seekstate.mp4", "10"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.seek(8_000_000_000L)
+            // The landing resolves quickly here; assert we leave Seeking and
+            // land back in a steady state rather than getting stuck.
+            assertTrue(
+                awaitTrue { player.state is VideoPlayer.State.Playing },
+                "must resolve out of Seeking, stuck at ${player.state}",
+            )
+        }
+    }
+
+    @Test
     fun `rapid seeks coalesce into a landing at the final target`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("spam.mp4", "3"), loop = false).use { player ->
