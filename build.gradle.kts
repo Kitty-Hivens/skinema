@@ -18,7 +18,9 @@ allprojects {
 subprojects {
     plugins.withId("com.vanniktech.maven.publish") {
         configure<MavenPublishBaseExtension> {
-            publishToMavenCentral()
+            // Explicit auto-release: the no-arg form leaves the deployment
+            // VALIDATED in the portal, waiting for a manual Publish click.
+            publishToMavenCentral(automaticRelease = true)
             signAllPublications()
             coordinates("dev.hivens", project.name, project.version.toString())
             pom {
