@@ -28,6 +28,11 @@ object LibavAbi {
         const val SIZEOF = 104L
     }
 
+    object CodecParameters {
+        const val CODEC_ID = 4L
+        const val SIZEOF = 184L
+    }
+
     object Frame {
         const val DATA = 0L
         const val LINESIZE = 64L
@@ -42,6 +47,9 @@ object LibavAbi {
     const val AVMEDIA_TYPE_VIDEO = 0
     const val AV_PIX_FMT_RGBA = 26
     const val SWS_BILINEAR = 2
+    const val AVSEEK_FLAG_BACKWARD = 1
+    const val AV_CODEC_ID_VP8 = 139
+    const val AV_CODEC_ID_VP9 = 167
     const val AV_LOG_QUIET = -8
     const val AVERROR_EOF = -541478725
     const val AVERROR_INVALIDDATA = -1094995529
