@@ -61,11 +61,10 @@ class VideoDecoder private constructor(
      */
     fun nextFrame(target: ByteArray? = null): RgbaFrame? {
         while (true) {
-            val ret = Libav.avcodecReceiveFrame(codecCtx, frame)
-            when {
-                ret == 0 -> return convertCurrentFrame(target)
-                ret == LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
-                ret == LibavAbi.AVERROR_EOF -> return null
+            when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
+                0 -> return convertCurrentFrame(target)
+                LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
+                LibavAbi.AVERROR_EOF -> return null
                 else -> Libav.checkAv(ret, "avcodec_receive_frame")
             }
         }
