@@ -40,8 +40,9 @@ import kotlinx.coroutines.delay
  *   ./gradlew :skinema-demo:harness -Pvideo=<file>
  */
 fun main(args: Array<String>) {
-    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: harness <video> [players]" })
+    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: harness <video> [players] [churn-seconds]" })
     val playerCount = args.getOrNull(1)?.toInt() ?: 3
+    val churnSeconds = args.getOrNull(2)?.toLong() ?: 0L
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema harness") {
             // N live players plus one doomed source: the fallback cell
@@ -63,6 +64,25 @@ fun main(args: Array<String>) {
                     rss = rssMbOrZero()
                     heap = heapMbNow()
                     delay(1_000)
+                }
+            }
+
+            // Leak hunt mode: churn mount/unmount on a timer and log the
+            // post-GC heap baseline -- raw heap readings are GC sawtooth;
+            // only a ratcheting post-GC baseline is a real leak.
+            if (churnSeconds > 0) {
+                LaunchedEffect(Unit) {
+                    var cycles = 0
+                    while (true) {
+                        delay(churnSeconds * 1_000)
+                        surfacesMounted = !surfacesMounted
+                        cycles++
+                        if (cycles % 6 == 0) {
+                            System.gc()
+                            delay(300)
+                            println("churn cycles=$cycles postGcHeapMb=${heapMbNow()} rssMb=${rssMbOrZero()}")
+                        }
+                    }
                 }
             }
 
