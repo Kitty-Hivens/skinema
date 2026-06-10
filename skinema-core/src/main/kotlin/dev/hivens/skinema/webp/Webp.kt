@@ -24,10 +24,11 @@ import java.lang.invoke.MethodHandle
  */
 object Webp {
 
+    // libtool naming, not ffmpeg's: Windows DLLs keep the lib prefix.
     private fun fileName(base: String, major: Int): String = when (Os.current()) {
         Os.LINUX -> "lib$base.so.$major"
         Os.MAC -> "lib$base.$major.dylib"
-        Os.WINDOWS -> "$base-$major.dll"
+        Os.WINDOWS -> "lib$base-$major.dll"
     }
 
     private class Bindings {
@@ -46,6 +47,13 @@ object Webp {
                     SymbolLookup.libraryLookup(name, Arena.global())
                 }
                 .getOrThrow()
+        }
+
+        init {
+            // libwebp links libsharpyuv; preload it so a bundled copy
+            // resolves the dependency by soname. Absence is fine -- older
+            // system libwebp builds carry no sharpyuv at all.
+            runCatching { lookup("sharpyuv", 0) }
         }
 
         private val webp = lookup("webp", 7)
