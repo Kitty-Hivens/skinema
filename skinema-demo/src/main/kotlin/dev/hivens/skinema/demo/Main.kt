@@ -55,9 +55,19 @@ fun main(args: Array<String>) {
             }
 
             Column(Modifier.fillMaxSize().background(Color(0xFF101014))) {
-                // A viewer letterboxes; Cover (the background default) crops
-                // whenever the window\'s aspect drifts from the video\'s.
-                VideoSurface(player, Modifier.weight(1f).fillMaxWidth(), scale = VideoScale.Fit)
+                androidx.compose.foundation.layout.Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // A viewer letterboxes; Cover (the background default) crops
+                    // whenever the window\'s aspect drifts from the video\'s.
+                    VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Fit)
+                    if (rememberPlayerState(player) is VideoPlayer.State.Seeking) {
+                        Text(
+                            "seeking...",
+                            color = Color.White,
+                            modifier = Modifier.align(Alignment.Center)
+                                .background(Color(0xAA000000)).padding(12.dp),
+                        )
+                    }
+                }
 
                 Row(
                     Modifier.fillMaxWidth().padding(8.dp),
@@ -70,10 +80,10 @@ fun main(args: Array<String>) {
                     }) {
                         Text(if (paused) "Play" else "Pause")
                     }
-                    Button(onClick = { player.seek((player.positionNanos() - SEEK_STEP_NANOS).coerceAtLeast(0)) }) {
+                    Button(onClick = { player.seekBy(-SEEK_STEP_NANOS) }) {
                         Text("-10s")
                     }
-                    Button(onClick = { player.seek(player.positionNanos() + SEEK_STEP_NANOS) }) {
+                    Button(onClick = { player.seekBy(SEEK_STEP_NANOS) }) {
                         Text("+10s")
                     }
                     Text(
