@@ -10,6 +10,7 @@
 #   FFMPEG_VERSION  release to build (default 8.1.1; must stay in the n8.1 pin)
 #   STATIC_DEPS=1   build libvpx + dav1d from source, statically linked in
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
+#   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
 #   EXTRA_FLAGS     appended to ffmpeg ./configure (cross builds etc.)
 #   JOBS            parallel make (default nproc)
@@ -51,7 +52,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             cd "libvpx-${VPX_VERSION#v}"
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
-                --enable-vp9 --disable-shared --enable-static
+                --enable-vp9 --disable-shared --enable-static \
+                ${VPX_TARGET:+--target=$VPX_TARGET}
             make -j"$JOBS"
             make install
         )
@@ -84,6 +86,15 @@ cd "ffmpeg-$FFMPEG_VERSION"
 
 make -j"$JOBS"
 make install
+
+# LGPL compliance travels with the binaries: license texts ship inside
+# every native bundle, and the exact source is pinned by FFMPEG_VERSION.
+mkdir -p "$PREFIX/licenses"
+cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
+if [ "${STATIC_DEPS:-}" = "1" ]; then
+    cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
+    cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
+fi
 
 echo "== installed libraries =="
 du -sh "$PREFIX"/lib* 2>/dev/null || true

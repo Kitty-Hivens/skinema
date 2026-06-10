@@ -1,0 +1,95 @@
+name: Natives
+
+# Builds the trimmed shipping runtime (ROADMAP.md section 4) for every
+# supported platform and runs the full decode suite against the fresh
+# binaries before uploading them. Manual trigger: these are release
+# artifacts, not per-commit noise.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: windows-latest
+            platform: windows-x64
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-13
+            platform: macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install nasm meson ninja pkg-config
+
+      - name: Install toolchain (Windows / MSYS2)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            curl
+            unzip
+
+      - name: Build trimmed FFmpeg (unix)
+        if: runner.os != 'Windows'
+        run: STATIC_DEPS=1 tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
+
+      - name: Build trimmed FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: STATIC_DEPS=1 VPX_TARGET=x86_64-win64-gcc tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
+
+      # The acceptance gate: the suite must pass against the binaries we
+      # are about to ship, on the platform that will run them.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install ffmpeg CLI (fixtures)
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux)   sudo apt-get install -y ffmpeg ;;
+            Windows) choco install -y ffmpeg ;;
+            macOS)   brew install ffmpeg ;;
+          esac
+
+      - name: Test against the freshly built natives
+        shell: bash
+        env:
+          SKINEMA_REQUIRE_DECODE: "1"
+        run: |
+          base="$PWD"
+          if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
+          libdir="lib"
+          if [ "${{ runner.os }}" = "Windows" ]; then libdir="bin"; fi
+          SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/$libdir" ./gradlew :skinema-core:test --rerun-tasks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skinema-natives-${{ matrix.platform }}
+          path: natives/${{ matrix.platform }}
+          if-no-files-found: error
