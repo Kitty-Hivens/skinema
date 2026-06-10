@@ -20,10 +20,11 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
-PREFIX="$(cd "$(dirname "${1:-natives-out}")" 2>/dev/null && pwd)/$(basename "${1:-natives-out}")"
+mkdir -p "${1:-natives-out}"
+PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
 
-mkdir -p "$WORK" "$PREFIX"
+mkdir -p "$WORK"
 cd "$WORK"
 
 fetch() { # url, dest-file
