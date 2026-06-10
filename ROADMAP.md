@@ -221,9 +221,16 @@ README once the library is usable.
   linked shared libraries only**, license texts shipped, source of the
   exact build referenced (BtbN tag or our CI artifact). Static linking is
   off the table -- it would change the licensing story.
-- Natives packaging: per-OS/arch classifier jars (the lwjgl/skiko pattern)
-  or runtime fetch by the consumer; decide during M3 when real sizes are
-  known.
+- Natives packaging: per-OS/arch classifier jars (the lwjgl/skiko
+  pattern) carrying the trimmed runtime plus an `index.txt`; NativeBundle
+  deploys them to a fingerprint-keyed per-user cache (atomic, race-safe).
+- Natives delivery is asynchronous by design: every platform build
+  uploads independently to the rolling `natives-<ffmpeg version>` release
+  the moment it passes its on-runner acceptance suite. A queued or broken
+  platform delays only itself -- never a release, never the other
+  platforms -- and a rebuild replaces just its own asset. Matches the
+  platform tier model: a missing community-tier build degrades that
+  platform, nothing else.
 
 ## 11. Milestones
 
