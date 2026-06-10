@@ -25,7 +25,7 @@ class VideoDecoder private constructor(
     val streamIndex: Int,
     val timeBaseNum: Int,
     val timeBaseDen: Int,
-) : AutoCloseable {
+) : FrameSource {
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -59,7 +59,7 @@ class VideoDecoder private constructor(
      * the pixels (the caller's buffer pool); otherwise an internal reused
      * buffer backs the result.
      */
-    fun nextFrame(target: ByteArray? = null): RgbaFrame? {
+    override fun nextFrame(target: ByteArray?): RgbaFrame? {
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> return convertCurrentFrame(target)
@@ -77,7 +77,7 @@ class VideoDecoder private constructor(
      * pts reaches it (what VideoPlayer does). Also reopens a drained
      * stream, which is how looping works.
      */
-    fun seekTo(ptsNanos: Long) {
+    override fun seekTo(ptsNanos: Long) {
         val ts = nanosToPts(ptsNanos, timeBaseNum, timeBaseDen)
         Libav.checkAv(
             Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD),
