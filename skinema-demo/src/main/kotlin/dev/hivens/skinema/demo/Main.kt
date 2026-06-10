@@ -11,10 +11,11 @@ import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 
 fun main(args: Array<String>) {
-    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video>" })
+    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound]" })
+    val sound = args.getOrNull(1) == "sound"
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema demo") {
-            val player = remember { VideoPlayer(video, loop = true) }
+            val player = remember { VideoPlayer(video, loop = true, audio = sound) }
             DisposableEffect(player) {
                 onDispose { player.close() }
             }

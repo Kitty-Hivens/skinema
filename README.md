@@ -39,10 +39,15 @@ fine for development, not what you ship.
 | Containers      | mp4/mov, webm/mkv, gif, apng, webp, ogg                                              |
 | Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                         |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode |
+| Audio           | AAC, Opus, Vorbis, MP3, FLAC -- the device clock masters A/V sync                    |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                           |
 
-Audio is on the roadmap (the clock architecture is already built for
-it). HDR content plays through a naive SDR conversion for now -- washed out, not tone-mapped; proper tone-mapping is a roadmap item.
+Audio: pass `audio = true` to `VideoPlayer` -- aac, opus, vorbis, mp3
+and flac decode through the same bindings, and the audio device becomes
+the player's clock (video follows sound, never the reverse).
+Audio-only files play frameless. HDR content plays through a naive SDR
+conversion for now -- washed out, not tone-mapped; proper tone-mapping
+is a roadmap item.
 
 ## Behavior contract
 

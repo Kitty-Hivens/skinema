@@ -28,13 +28,14 @@ compose.desktop {
     }
 }
 
-// Demo runner: ./gradlew :skinema-demo:run -Pvideo=/path/file.mp4
+// Demo runner: ./gradlew :skinema-demo:run -Pvideo=/path/file.mp4 [-Psound]
 val demoVideo = providers.gradleProperty("video")
+val demoSound = providers.gradleProperty("sound")
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
         argumentProviders.add {
-            listOfNotNull(demoVideo.orNull)
+            listOfNotNull(demoVideo.orNull, if (demoSound.isPresent) "sound" else null)
         }
     }
 }

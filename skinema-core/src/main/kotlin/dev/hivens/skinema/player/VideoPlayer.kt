@@ -1,5 +1,8 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.AudioPipeline
+import dev.hivens.skinema.audio.JavaSoundSink
+import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
@@ -28,7 +31,17 @@ import java.util.concurrent.TimeUnit
 class VideoPlayer(
     private val path: Path,
     private val loop: Boolean = true,
-    private val clock: MediaClock = PlaybackClock(),
+    /**
+     * Decode and play the file's audio stream. The audio sink then
+     * masters the player's clock (ROADMAP.md section 3); files without
+     * an audio stream -- and machines without an audio device -- degrade
+     * to silent wall-clock playback. Audio-only files play frameless:
+     * [acquireFrame] stays null while [state] runs the usual lifecycle.
+     */
+    private val audio: Boolean = false,
+    /** Overrides the clock entirely; with audio on, prefer not to. */
+    private val explicitClock: MediaClock? = null,
+    sink: PcmSink? = null,
 ) : AutoCloseable {
 
     sealed interface State {
@@ -75,6 +88,14 @@ class VideoPlayer(
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val commands = LinkedBlockingQueue<Command>()
     private var seekGeneration = 0
+    private val audioPipeline: AudioPipeline? =
+        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop) else null
+    private lateinit var clock: MediaClock
+
+    // When audio masters the clock, video never re-anchors it: seeks and
+    // loop wraps are anchored by the audio thread at its actual landing.
+    private var ownsClock = true
+    private var lastPublishedPts = 0L
 
     private val thread = Thread(::run, "skinema-decode").apply {
         isDaemon = true
@@ -96,6 +117,11 @@ class VideoPlayer(
     /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */
     fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos))
 
+    /** Linear 0..1 volume; no-op for silent playback. */
+    fun setVolume(volume: Float) {
+        audioPipeline?.setVolume(volume)
+    }
+
     override fun close() {
         commands.put(Command.Close)
         thread.join(5_000)
@@ -104,14 +130,29 @@ class VideoPlayer(
     // -- Decode thread --------------------------------------------------------
 
     private fun run() {
+        // The audio thread reports whether this file has sound; that
+        // decides whose clock rules before any pacing starts.
+        val audioClock = audioPipeline?.let {
+            runCatching { it.clockFuture.get(5, TimeUnit.SECONDS) }.getOrNull()
+        }
+        clock = explicitClock ?: audioClock ?: PlaybackClock()
+        ownsClock = explicitClock != null || audioClock == null
+
         val decoder = try {
             FrameSources.open(path)
         } catch (t: Throwable) {
-            state = State.Failed(t)
+            if (audioClock != null) {
+                // No video stream but the audio plays: frameless mode.
+                framelessLoop()
+                state = State.Closed
+            } else {
+                state = State.Failed(t)
+            }
+            audioPipeline?.close()
             return
         }
         try {
-            clock.start(0)
+            if (ownsClock) clock.start(0)
             state = State.Playing
             decodeLoop(decoder)
             state = State.Closed
@@ -119,6 +160,19 @@ class VideoPlayer(
             state = State.Failed(t)
         } finally {
             runCatching { decoder.close() }
+            runCatching { audioPipeline?.close() }
+        }
+    }
+
+    /** Audio-only playback: commands and lifecycle, no frames. */
+    private fun framelessLoop() {
+        state = State.Playing
+        while (true) {
+            val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
+            if (cmd != null && !handle(cmd, decoder = null)) return
+            if (state is State.Playing && !loop && audioPipeline?.isEnded == true) {
+                state = State.Ended
+            }
         }
     }
 
@@ -141,7 +195,11 @@ class VideoPlayer(
             if (frame == null) {
                 if (loop) {
                     decoder.seekTo(0)
-                    clock.seek(0)
+                    if (ownsClock) {
+                        clock.seek(0)
+                    } else if (!awaitClockWrap()) {
+                        return
+                    }
                 } else {
                     state = State.Ended
                 }
@@ -166,10 +224,11 @@ class VideoPlayer(
         }
     }
 
-    private fun handle(cmd: Command, decoder: FrameSource): Boolean = when (cmd) {
+    private fun handle(cmd: Command, decoder: FrameSource?): Boolean = when (cmd) {
         Command.Close -> false
         Command.Pause -> {
             if (state is State.Playing) {
+                audioPipeline?.pause()
                 clock.pause()
                 state = State.Paused
             }
@@ -177,15 +236,36 @@ class VideoPlayer(
         }
         Command.Resume -> {
             if (state is State.Paused) {
+                audioPipeline?.resume()
                 clock.resume()
                 state = State.Playing
             }
             true
         }
         is Command.Seek -> {
-            performSeek(decoder, cmd.ptsNanos)
+            audioPipeline?.seek(cmd.ptsNanos)
+            if (decoder != null) {
+                performSeek(decoder, cmd.ptsNanos)
+            } else if (state is State.Ended) {
+                state = State.Playing
+            }
             true
         }
+    }
+
+    /**
+     * The audio side wraps the clock on ITS end-of-stream; video parks
+     * here after its own EOF until time restarts, staying responsive to
+     * commands. Returns false on Close.
+     */
+    private fun awaitClockWrap(): Boolean {
+        val wrapped = lastPublishedPts / 2
+        while (state is State.Playing && lastPublishedPts > 0 && clock.mediaNanos() > wrapped) {
+            val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
+            if (!handle(cmd, decoder = null)) return false
+            if (state !is State.Playing) break
+        }
+        return true
     }
 
     /**
@@ -202,7 +282,7 @@ class VideoPlayer(
                 // Seeked past the last frame: same treatment as EOF.
                 if (loop) {
                     decoder.seekTo(0)
-                    clock.seek(0)
+                    if (ownsClock) clock.seek(0)
                     if (state is State.Ended) state = State.Playing
                 } else {
                     state = State.Ended
@@ -210,7 +290,7 @@ class VideoPlayer(
                 return
             }
             if (f.ptsNanos >= targetNanos) {
-                clock.seek(f.ptsNanos)
+                if (ownsClock) clock.seek(f.ptsNanos)
                 if (state is State.Ended) state = State.Playing
                 publish(f)
                 return
@@ -243,5 +323,6 @@ class VideoPlayer(
         slot.width = frame.width
         slot.height = frame.height
         slot.ptsNanos = frame.ptsNanos
+        lastPublishedPts = frame.ptsNanos
     }
 }
