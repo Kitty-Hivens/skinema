@@ -103,6 +103,58 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `audio-only file plays frameless through the lifecycle`() {
+        Fixtures.assumeDecodeEnvironment()
+        val tone = Fixtures.generate(
+            dir.resolve("tone.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
+        )
+        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        VideoPlayer(tone, loop = false, audio = true, sink = sink).use { player ->
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "audio-only playback must reach Ended")
+            assertEquals(null, player.acquireFrame(), "frameless mode serves no frames")
+            assertEquals(44_100 * 4, sink.totalBytes, "the whole tone reaches the sink")
+        }
+    }
+
+    @Test
+    fun `video frames pace against the audio clock, not the wall`() {
+        Fixtures.assumeDecodeEnvironment()
+        // 2s of video+audio; the fake sink's play position is manual, so
+        // media time moves only when this test says so.
+        val av = Fixtures.generate(
+            dir.resolve("av.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", "-shortest",
+        )
+        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "frame 0 is due at media time 0")
+
+            var leaked: Long = -1
+            val frozen = (1..15).none {
+                Thread.sleep(20)
+                player.acquireFrame()?.let { f -> leaked = f.ptsNanos }
+                leaked > 100_000_000L
+            }
+            assertTrue(frozen, "with the DAC frozen at 0 no frame past 0.1s may appear, saw pts=$leaked")
+
+            // Let the "DAC" consume half a second of samples.
+            sink.positionFrames.set(44_100 / 2)
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.ptsNanos?.let { it in 300_000_000L..500_000_000L } == true
+                },
+                "advancing the device clock must release the frames up to it",
+            )
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->

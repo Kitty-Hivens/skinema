@@ -47,9 +47,15 @@ int main(void) {
     P(offsetof(AVFrame, format));
     P(offsetof(AVFrame, pts));
     P(offsetof(AVFrame, best_effort_timestamp));
+    P(offsetof(AVFrame, nb_samples));
+    P(offsetof(AVFrame, sample_rate));
+    P(offsetof(AVFrame, ch_layout));
+    P(offsetof(AVChannelLayout, nb_channels));
     P(sizeof(AVFrame));
 
     P(AVMEDIA_TYPE_VIDEO);
+    P(AVMEDIA_TYPE_AUDIO);
+    P(AV_SAMPLE_FMT_S16);
     P(AV_PIX_FMT_RGBA);
     P(SWS_BILINEAR);
     P(AVSEEK_FLAG_BACKWARD);

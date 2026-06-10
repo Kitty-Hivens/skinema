@@ -339,12 +339,23 @@ README once the library is usable.
   `publishToMavenCentral -PappVersion=X.Y.Z --no-configuration-cache`.
   The adoption bar now lacks only its last clause: an API that holds
   still for a full milestone, counting from 0.1.0.
-- **M5 -- audio.** Audio stream decode + swresample to PCM, one
-  javax.sound.sampled sink per player, the sink-backed MediaClock takes
-  over pacing, A/V sync across seek/loop/underrun. Consumer: the
-  music-player direction in the primary consumer's backlog. The seam
-  already exists (section 3), so nothing inverts -- this is addition,
-  not surgery.
+- **M5 -- audio: core DONE (2026-06-10).** AudioDecoder (decode +
+  swresample to S16LE stereo at the source rate; flac decodes
+  sample-exact, aac with its priming/padding), PcmSink (JavaSound in
+  production, a deterministic fake for CI -- runners have no audio
+  device), AudioClock (media time = samples the DAC consumed; pause and
+  underrun freeze it by construction; detachToWallTime is the failure
+  hatch so a dead audio thread cannot freeze video), AudioPipeline (own
+  thread + confined arena, blocking sink writes ARE the pacing,
+  sample-precise seek cropping, drain-then-wrap looping). VideoPlayer
+  grows `audio` and `setVolume`; with sound on, the audio clock masters
+  pacing and video never re-anchors it -- loop wraps wait for the audio
+  side to restart time. Audio-only files play frameless through the
+  normal lifecycle. The sync proof is a test: a manually-advanced fake
+  DAC releases exactly the frames up to its position. The video-facing
+  API gained only additive parameters with defaults -- the adoption
+  bar's stability clause holds. Remaining: a live listen on real
+  hardware, then 0.2.0.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

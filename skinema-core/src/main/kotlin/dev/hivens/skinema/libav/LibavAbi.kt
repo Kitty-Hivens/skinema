@@ -37,13 +37,23 @@ object LibavAbi {
         const val LINESIZE = 64L
         const val WIDTH = 104L
         const val HEIGHT = 108L
+        const val NB_SAMPLES = 112L
         const val FORMAT = 116L
         const val PTS = 136L
+        const val SAMPLE_RATE = 180L
         const val BEST_EFFORT_TIMESTAMP = 304L
+        const val CH_LAYOUT = 384L
         const val SIZEOF = 424L
     }
 
+    object ChannelLayout {
+        const val NB_CHANNELS = 4L
+        const val SIZEOF = 24L
+    }
+
     const val AVMEDIA_TYPE_VIDEO = 0
+    const val AVMEDIA_TYPE_AUDIO = 1
+    const val AV_SAMPLE_FMT_S16 = 1
     const val AV_PIX_FMT_RGBA = 26
     const val SWS_BILINEAR = 2
     const val AVSEEK_FLAG_BACKWARD = 1

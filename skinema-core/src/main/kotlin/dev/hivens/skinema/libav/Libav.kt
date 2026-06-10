@@ -67,10 +67,21 @@ object Libav {
     private val hAvStrerror = fn(LibavLibrary.AVUTIL, "av_strerror", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG))
     private val hAvFrameAlloc = fn(LibavLibrary.AVUTIL, "av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvFrameFree = fn(LibavLibrary.AVUTIL, "av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvChannelLayoutDefault = fn(LibavLibrary.AVUTIL, "av_channel_layout_default", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
 
-    // -- swresample (version probe only until audio lands) --------------------
+    // -- swresample --------------------------------------------------------------
 
     private val hSwresampleVersion = fn(LibavLibrary.SWRESAMPLE, "swresample_version", FunctionDescriptor.of(JAVA_INT))
+    private val hSwrAllocSetOpts2 = fn(
+        LibavLibrary.SWRESAMPLE, "swr_alloc_set_opts2",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS),
+    )
+    private val hSwrInit = fn(LibavLibrary.SWRESAMPLE, "swr_init", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+    private val hSwrConvert = fn(
+        LibavLibrary.SWRESAMPLE, "swr_convert",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT),
+    )
+    private val hSwrFree = fn(LibavLibrary.SWRESAMPLE, "swr_free", FunctionDescriptor.ofVoid(ADDRESS))
 
     // -- swscale ---------------------------------------------------------------
 
@@ -149,6 +160,18 @@ object Libav {
 
     fun avFrameAlloc(): MemorySegment = hAvFrameAlloc.invoke() as MemorySegment
     fun avFrameFree(framePtrPtr: MemorySegment) { hAvFrameFree.invoke(framePtrPtr) }
+    fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
+
+    fun swrAllocSetOpts2(
+        ctxOut: MemorySegment,
+        outLayout: MemorySegment, outFormat: Int, outRate: Int,
+        inLayout: MemorySegment, inFormat: Int, inRate: Int,
+    ): Int = hSwrAllocSetOpts2.invoke(ctxOut, outLayout, outFormat, outRate, inLayout, inFormat, inRate, 0, MemorySegment.NULL) as Int
+
+    fun swrInit(ctx: MemorySegment): Int = hSwrInit.invoke(ctx) as Int
+    fun swrConvert(ctx: MemorySegment, outData: MemorySegment, outCount: Int, inData: MemorySegment, inCount: Int): Int =
+        hSwrConvert.invoke(ctx, outData, outCount, inData, inCount) as Int
+    fun swrFree(ctxPtrPtr: MemorySegment) { hSwrFree.invoke(ctxPtrPtr) }
 
     fun swsGetContext(srcW: Int, srcH: Int, srcFormat: Int, dstW: Int, dstH: Int, dstFormat: Int, flags: Int): MemorySegment =
         hSwsGetContext.invoke(srcW, srcH, srcFormat, dstW, dstH, dstFormat, flags, MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL) as MemorySegment
