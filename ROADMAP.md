@@ -187,6 +187,14 @@ Audio is not in v0.1 but is no longer indefinite: the clock seam is in
 place (section 3) and audio lands as milestone M5 with its own consumer,
 at an unhurried pace.
 
+Known upstream limitation: FFmpeg decodes only STILL WebP -- animated
+WebP support has never been merged upstream, and even a full build
+refuses files its own encoder produced. skinema inherits that: still
+WebP yields its single frame, animated WebP fails closed into the
+consumer's fallback. The animated-background category is therefore
+GIF + APNG (+ real video); both are covered by tests, APNG including
+alpha.
+
 ## 8. Edge-case policy ("the circus")
 
 The compatibility surface is a bounded list, not an open-ended swamp --
