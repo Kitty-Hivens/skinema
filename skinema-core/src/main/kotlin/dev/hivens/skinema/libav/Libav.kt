@@ -32,13 +32,15 @@ object Libav {
 
     private val linker = Linker.nativeLinker()
 
-    // Optional directory holding a bundled libav* set -- the release path,
-    // where the pinned build ships with the application. System property
-    // wins over the environment variable; without either, the system
-    // loader's search path applies (dev mode on a matching system FFmpeg).
+    // Where the pinned libraries come from, in precedence order: the
+    // skinema.libav.dir system property, the SKINEMA_LIBAV_DIR environment
+    // variable, a natives bundle on the classpath ([NativeBundle]), and
+    // finally the system loader's search path (dev mode on a matching
+    // system FFmpeg).
     private val libavDir: String? =
         (System.getProperty("skinema.libav.dir") ?: System.getenv("SKINEMA_LIBAV_DIR"))
             ?.takeIf { it.isNotBlank() }
+            ?: NativeBundle.deployIfBundled()?.toString()
 
     private fun libraryPath(lib: LibavLibrary): String {
         val name = lib.fileName(Os.current())
