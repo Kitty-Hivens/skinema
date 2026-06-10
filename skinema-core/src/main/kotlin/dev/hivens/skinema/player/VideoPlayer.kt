@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
 import dev.hivens.skinema.libav.VideoDecoder
@@ -25,7 +26,7 @@ import java.util.concurrent.TimeUnit
 class VideoPlayer(
     private val path: Path,
     private val loop: Boolean = true,
-    private val clock: PlaybackClock = PlaybackClock(),
+    private val clock: MediaClock = PlaybackClock(),
 ) : AutoCloseable {
 
     sealed interface State {
