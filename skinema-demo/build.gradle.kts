@@ -53,15 +53,16 @@ tasks.withType<JavaExec>().configureEach {
 }
 
 // Windowed background harness (several players, unmount/remount, fallback):
-//   ./gradlew :skinema-demo:harness -Pvideo=/path/file.mp4
+//   ./gradlew :skinema-demo:harness -Pvideo=/path/file.mp4 [-Pplayers=N]
+val harnessPlayers = providers.gradleProperty("players")
 tasks.register<JavaExec>("harness") {
     group = "skinema"
-    description = "Windowed consumer-shaped harness: -Pvideo=<file>"
+    description = "Windowed consumer-shaped harness: -Pvideo=<file> [-Pplayers=N]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.HarnessMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     argumentProviders.add {
-        listOfNotNull(demoVideo.orNull)
+        listOfNotNull(demoVideo.orNull, harnessPlayers.orNull)
     }
 }
 
