@@ -40,12 +40,13 @@ import kotlinx.coroutines.delay
  *   ./gradlew :skinema-demo:harness -Pvideo=<file>
  */
 fun main(args: Array<String>) {
-    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: harness <video>" })
+    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: harness <video> [players]" })
+    val playerCount = args.getOrNull(1)?.toInt() ?: 3
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema harness") {
-            // Three live players plus one doomed source: the fallback cell
+            // N live players plus one doomed source: the fallback cell
             // must come from state, not from a crash.
-            val players = remember { List(3) { VideoPlayer(video, loop = true) } }
+            val players = remember { List(playerCount) { VideoPlayer(video, loop = true) } }
             val doomed = remember { VideoPlayer(video.resolveSibling("does-not-exist.mp4"), loop = true) }
             DisposableEffect(Unit) {
                 onDispose {
@@ -82,14 +83,14 @@ fun main(args: Array<String>) {
                 }
 
                 if (surfacesMounted) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            PlayerCell(players[0], Modifier.weight(1f))
-                            PlayerCell(players[1], Modifier.weight(1f))
-                        }
-                        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            PlayerCell(players[2], Modifier.weight(1f))
-                            PlayerCell(doomed, Modifier.weight(1f))
+                    val all = players + doomed
+                    val columns = generateSequence(1) { it + 1 }.first { it * it >= all.size }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        all.chunked(columns).forEach { row ->
+                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                row.forEach { player -> PlayerCell(player, Modifier.weight(1f)) }
+                                repeat(columns - row.size) { Box(Modifier.weight(1f)) }
+                            }
                         }
                     }
                 } else {
