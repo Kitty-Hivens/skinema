@@ -68,6 +68,17 @@ tasks.register<JavaExec>("harness") {
     }
 }
 
+// Headless seek diagnostic:
+//   SKINEMA_DEBUG_SEEK=1 ./gradlew :skinema-demo:seekbench -Pvideo=/path/file.mp4
+tasks.register<JavaExec>("seekbench") {
+    group = "skinema"
+    description = "Scripted seeks against a real file with landing-cost output: -Pvideo=<file>"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("dev.hivens.skinema.demo.SeekBenchMainKt")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    argumentProviders.add { listOfNotNull(demoVideo.orNull) }
+}
+
 // Headless soak for the adoption bar:
 //   ./gradlew :skinema-demo:soak -Pvideo=/path/file.mp4 [-Pminutes=N]
 val soakMinutes = providers.gradleProperty("minutes")

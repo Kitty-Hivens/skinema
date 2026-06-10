@@ -97,12 +97,20 @@ class VideoPlayer(
     private val commands = LinkedBlockingQueue<Command>()
     private var seekGeneration = 0
 
-    // Where the in-flight (or most recent) seek is headed. [seekBy] adds to
-    // this rather than to the clock, so a burst of presses faster than a
-    // landing takes accumulates to the final destination instead of all
-    // resolving against the same stale clock position. -1 = no seek yet.
+    // The intended playhead: the frame on screen during normal playback,
+    // the accumulating destination during a seek burst. [seekBy] adds to
+    // this rather than to the live clock, so presses faster than a landing
+    // takes still sum to the final destination -- the clock stands at the
+    // old anchor mid-landing, and reading it (or worse, resetting to -1 on
+    // each landing) made bursts resolve to the wrong place. Always valid.
     @Volatile
-    private var pendingTargetNanos = -1L
+    private var intendedPositionNanos = 0L
+
+    // True between issuing a seek and its landing; while set, the decode
+    // loop must not overwrite [intendedPositionNanos] with the frame it
+    // publishes (the accumulated burst target wins).
+    @Volatile
+    private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
         if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop) else null
@@ -133,20 +141,18 @@ class VideoPlayer(
     /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */
     fun seek(ptsNanos: Long) {
         val target = ptsNanos.coerceAtLeast(0)
-        pendingTargetNanos = target
+        seekInFlight = true
+        intendedPositionNanos = target
         commands.put(Command.Seek(target))
     }
 
     /**
-     * Seeks [deltaNanos] relative to the seek already in flight (or the
-     * current position if none) -- the right primitive for +N/-N buttons.
-     * Rapid presses accumulate to one destination regardless of how far
-     * behind the clock's anchor is lagging during a landing.
+     * Seeks [deltaNanos] relative to the intended playhead -- the right
+     * primitive for +N/-N buttons. Rapid presses accumulate to one
+     * destination regardless of how far behind the clock's anchor lags
+     * during a landing.
      */
-    fun seekBy(deltaNanos: Long) {
-        val base = pendingTargetNanos.takeIf { it >= 0 } ?: positionNanos()
-        seek(base + deltaNanos)
-    }
+    fun seekBy(deltaNanos: Long) = seek(intendedPositionNanos + deltaNanos)
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -291,7 +297,7 @@ class VideoPlayer(
                 performSeek(decoder, cmd.ptsNanos)
             } else {
                 // Frameless (audio-only): no landing to wait for.
-                pendingTargetNanos = -1L
+                seekInFlight = false
                 if (state is State.Ended) state = State.Playing
                 true
             }
@@ -335,6 +341,9 @@ class VideoPlayer(
         state = State.Seeking
         var target = targetNanos
         decoder.seekTo(target)
+        val debugStart = if (DEBUG_SEEK) System.nanoTime() else 0L
+        var dropped = 0
+        var landedFromKeyframe = Long.MIN_VALUE
         while (true) {
             when (val next = commands.peek()) {
                 is Command.Seek -> {
@@ -342,6 +351,8 @@ class VideoPlayer(
                     target = next.ptsNanos
                     audioPipeline?.seek(target)
                     decoder.seekTo(target)
+                    dropped = 0
+                    landedFromKeyframe = Long.MIN_VALUE
                     continue
                 }
                 Command.Close -> return false
@@ -350,6 +361,10 @@ class VideoPlayer(
             // Bare decode while dropping: converting frames that are thrown
             // away costs several times the decode itself.
             val f = decoder.nextFrame(convert = false)
+            if (DEBUG_SEEK && f != null) {
+                if (landedFromKeyframe == Long.MIN_VALUE) landedFromKeyframe = f.ptsNanos
+                dropped++
+            }
             if (f == null) {
                 // Seeked past the last frame: same treatment as EOF.
                 if (loop) {
@@ -364,6 +379,13 @@ class VideoPlayer(
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
                 publish(decoder.convertLast(buffer?.writing?.rgba))
+                if (DEBUG_SEEK) {
+                    val ms = (System.nanoTime() - debugStart) / 1_000_000
+                    val kfGapMs = (target - landedFromKeyframe) / 1_000_000
+                    System.err.println(
+                        "[seek] target=${target / 1_000_000}ms keyframeGap=${kfGapMs}ms decoded=$dropped frames in ${ms}ms",
+                    )
+                }
                 finishSeek(State.Playing)
                 return true
             }
@@ -377,7 +399,7 @@ class VideoPlayer(
      * the fallback when there was no prior state to restore.
      */
     private fun finishSeek(landed: State) {
-        pendingTargetNanos = -1L
+        seekInFlight = false
         val prior = stateBeforeSeek.getAndSet(null)
         state = when {
             prior == State.Paused && landed != State.Ended -> State.Paused
@@ -411,5 +433,13 @@ class VideoPlayer(
         slot.height = frame.height
         slot.ptsNanos = frame.ptsNanos
         lastPublishedPts = frame.ptsNanos
+        // During normal playback the intended playhead tracks the screen;
+        // during a seek burst it is the accumulating target, which the
+        // landing's own publish must not clobber.
+        if (!seekInFlight) intendedPositionNanos = frame.ptsNanos
+    }
+
+    private companion object {
+        val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
 }

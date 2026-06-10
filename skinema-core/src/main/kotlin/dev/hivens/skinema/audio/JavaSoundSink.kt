@@ -26,11 +26,12 @@ class JavaSoundSink : PcmSink {
             // second, and everything queued in it is past the point of no
             // return: it keeps sounding after stop() on some backends
             // (the not-abrupt pause), plays at the old gain after a volume
-            // change, and holds blocking writes -- which is the command
-            // latency of the whole audio thread. 200 ms still rides out
-            // scheduling hiccups; underruns just freeze the clock, and
-            // video freezes in sync with it by design.
-            open(format, (sampleRate / 5) * BYTES_PER_FRAME)
+            // change, holds the blocking writes that gate the audio
+            // thread's commands, and -- because the device reports no
+            // progress until the buffer first drains -- sets how long the
+            // clock (and the video with it) stalls after a seek flush.
+            // 100 ms still rides out scheduling hiccups.
+            open(format, (sampleRate / 10) * BYTES_PER_FRAME)
             start()
         }
         applyVolume()

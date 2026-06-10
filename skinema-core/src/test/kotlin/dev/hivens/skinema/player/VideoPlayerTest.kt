@@ -226,6 +226,31 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `backward seekBy bursts accumulate monotonically, not against the lagging clock`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("backaccum.mp4", "30"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // Jump near the end, settle, then crank backward in a burst.
+            player.seek(25_000_000_000L)
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Playing && player.positionNanos() >= 25_000_000_000L })
+
+            // Six -3s presses. The earlier bug read the frozen clock during
+            // each landing and could even walk the target upward; correct
+            // accumulation lands near 25 - 18 = 7s.
+            repeat(6) { player.seekBy(-3_000_000_000L) }
+
+            var landedPts = Long.MAX_VALUE
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { landedPts = it.ptsNanos }
+                    landedPts in 6_000_000_000L..8_000_000_000L
+                },
+                "six -3s presses from 25s must reach ~7s, landed at ${landedPts / 1_000_000}ms",
+            )
+        }
+    }
+
+    @Test
     fun `a seek advertises the Seeking state and resolves out of it`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("seekstate.mp4", "10"), loop = false).use { player ->
