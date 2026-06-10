@@ -39,6 +39,19 @@ tasks.withType<JavaExec>().configureEach {
     }
 }
 
+// Extra jar(s) on manual runs -- e.g. a skinema-natives classifier jar to
+// exercise the bundled-natives path end to end:
+//   -PextraClasspath=/path/skinema-natives-...-linux-x64.jar
+// doFirst, not configuration: the tasks assign `classpath =` in their own
+// config blocks, and configure-action ordering would let that overwrite
+// the addition.
+val extraClasspath = providers.gradleProperty("extraClasspath")
+tasks.withType<JavaExec>().configureEach {
+    doFirst {
+        extraClasspath.orNull?.let { classpath += files(it) }
+    }
+}
+
 // Headless soak for the adoption bar:
 //   ./gradlew :skinema-demo:soak -Pvideo=/path/file.mp4 [-Pminutes=N]
 val soakMinutes = providers.gradleProperty("minutes")

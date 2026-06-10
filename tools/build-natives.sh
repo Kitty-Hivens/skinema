@@ -122,6 +122,38 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
 fi
 
-echo "== installed libraries =="
-du -sh "$PREFIX"/lib* 2>/dev/null || true
-ls -la "$PREFIX"/lib/*.so* "$PREFIX"/lib/*.dylib "$PREFIX"/bin/*.dll 2>/dev/null | grep -v '\->' || true
+# Flatten into the bundle layout NativeBundle deploys: real files under
+# the soname-level names the loader asks for (jars cannot carry the
+# symlink chains a normal install uses), licenses, and an index.txt whose
+# first line is the content fingerprint -- a jar cannot enumerate its own
+# resources, so the index is the bundle's table of contents.
+BUNDLE="$PREFIX/bundle"
+rm -rf "$BUNDLE"
+mkdir -p "$BUNDLE/licenses"
+cp "$PREFIX"/licenses/* "$BUNDLE/licenses/"
+shopt -s nullglob
+for f in "$PREFIX"/lib/*.so.*.*.*; do
+    base="$(basename "$f")"
+    cp "$f" "$BUNDLE/${base%.*.*}"
+done
+for f in "$PREFIX"/lib/*.*.*.*.dylib; do
+    base="$(basename "$f")"
+    name="${base%.dylib}"
+    cp "$f" "$BUNDLE/${name%.*.*}.dylib"
+done
+for f in "$PREFIX"/bin/*-*.dll; do
+    cp "$f" "$BUNDLE/"
+done
+shopt -u nullglob
+
+if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
+(
+    cd "$BUNDLE"
+    files="$(find . -type f ! -name index.txt | sed 's|^\./||' | LC_ALL=C sort)"
+    fingerprint="$(printf '%s\n' "$files" | xargs cat | $SHA | cut -c1-16)"
+    { echo "$fingerprint"; printf '%s\n' "$files"; } > index.txt
+)
+
+echo "== bundle =="
+du -sh "$BUNDLE"
+ls "$BUNDLE"
