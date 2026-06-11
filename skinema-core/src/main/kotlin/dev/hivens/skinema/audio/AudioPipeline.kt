@@ -50,6 +50,14 @@ internal class AudioPipeline(
     // is exactly the "freeze, then fast-forward chase" artifact.
     private var awaitingLanding = false
 
+    // The seek's cropped remainder, held until the sink runs again. It must
+    // not be written while the sink is stopped: a blocking write only
+    // returns as the device drains the buffer, a stopped device never
+    // drains, and the start() that would revive it lives on this same
+    // thread -- a chunk larger than the line's buffer would deadlock the
+    // pipeline for good.
+    private var pendingPcm: ByteArray? = null
+
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
         start()
@@ -125,6 +133,12 @@ internal class AudioPipeline(
                 continue
             }
 
+            pendingPcm?.let {
+                pendingPcm = null
+                sink.write(it, 0, it.size)
+                continue
+            }
+
             val chunk = decoder.nextChunk()
             if (chunk == null) {
                 // Let the buffered tail play out before deciding the time.
@@ -177,15 +191,16 @@ internal class AudioPipeline(
     /**
      * Sample-precise seek: freeze the sink, land on the chunk covering the
      * target, crop the leading samples, re-anchor the clock at the exact
-     * crop point, and prefill the remainder into the stopped device. Sound
-     * resumes when the video side reports its own landing ([videoLanded])
-     * -- the frozen sink freezes the clock, so video lands against a
-     * standing target instead of chasing a running one. Revives an ended
-     * pipeline.
+     * crop point, and hold the remainder as [pendingPcm] for the first
+     * write after the sink runs again. Sound resumes when the video side
+     * reports its own landing ([videoLanded]) -- the frozen sink freezes
+     * the clock, so video lands against a standing target instead of
+     * chasing a running one. Revives an ended pipeline.
      */
     private fun performSeek(decoder: AudioDecoder, clock: AudioClock, targetNanos: Long) {
         sink.stop()
         sink.flush()
+        pendingPcm = null
         awaitingLanding = true
         isEnded = false
         decoder.seekTo(targetNanos)
@@ -210,7 +225,8 @@ internal class AudioPipeline(
                 .toInt()
                 .coerceAtMost(samples)
             clock.seek(chunk.ptsNanos + skipSamples * 1_000_000_000L / chunk.sampleRate)
-            sink.write(chunk.pcm, skipSamples * BYTES_PER_FRAME, chunk.byteCount - skipSamples * BYTES_PER_FRAME)
+            // Copied out because the decoder reuses chunk.pcm.
+            pendingPcm = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount)
             return
         }
     }
