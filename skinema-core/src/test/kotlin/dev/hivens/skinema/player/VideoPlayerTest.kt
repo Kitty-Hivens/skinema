@@ -1,9 +1,11 @@
 package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.BoundedPcmSink
+import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -313,18 +315,18 @@ class VideoPlayerTest {
         val sink = BoundedPcmSink(capacityFrames = 22_050)
         VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
             try {
-                // Drive the "DAC" past the video's last frame, leaving the
-                // audio stream unfinished.
-                var lastSeen = -1L
+                // Drive the "DAC" past the video's end (2s), leaving the
+                // audio stream unfinished. The gate is the played position,
+                // not a published pts: frames late beyond the drop
+                // threshold legitimately skip publishing, so the tail of
+                // the footage may never surface in the mailbox.
                 assertTrue(
                     awaitTrue {
                         sink.consumeAllButTail(2_205)
-                        player.acquireFrame()?.let { lastSeen = it.ptsNanos }
-                        // The very last frame (20 frames at 10 fps): only
-                        // past it does the decode thread hit EOF and park.
-                        lastSeen >= 1_900_000_000L
+                        player.acquireFrame()
+                        sink.framePosition() >= 88_200L
                     },
-                    "video must reach its last frame, saw ${lastSeen}ns",
+                    "the played position must pass the video's end, at ${sink.framePosition()}",
                 )
                 // Let the decode thread hit EOF and enter the park, then
                 // drain anything published on the way -- the assertion
@@ -349,6 +351,42 @@ class VideoPlayerTest {
             } finally {
                 sink.release()
             }
+        }
+    }
+
+    @Test
+    fun `a clock jump far ahead is caught up and frames keep flowing`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Liveness for the catch-up path: late frames drop unconverted
+        // behind shouldPublishLateFrame, and a broken policy would starve
+        // the mailbox forever. An AudioClock over a manual frame counter
+        // is a thread-safe controllable clock. The rate must stay
+        // realistic: mediaNanos multiplies the frame delta by 1e9 before
+        // dividing, so a made-up rate like 1e9 overflows Long.
+        val frames = AtomicLong(0)
+        val clock = AudioClock(48_000) { frames.get() }
+        VideoPlayer(shortVideo("chase.mp4", "30"), loop = false, explicitClock = clock).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            frames.set(24_000)
+            var seen = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 500_000_000L
+                },
+                "normal pacing must follow the clock, saw ${seen}ns",
+            )
+
+            // The jump: every frame for the next ~19.5s of footage is now
+            // late beyond the drop threshold.
+            frames.set(960_000)
+            assertTrue(
+                awaitTrue(deadlineMs = 5_000) {
+                    player.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 20_000_000_000L
+                },
+                "the catch-up run must reach the clock, saw ${seen}ns, state=${player.state}",
+            )
         }
     }
 

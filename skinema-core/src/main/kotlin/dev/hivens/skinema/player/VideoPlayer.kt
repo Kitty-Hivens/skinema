@@ -122,6 +122,9 @@ class VideoPlayer(
     private var ownsClock = true
     private var lastPublishedPts = 0L
 
+    // Wall time of the last publish; feeds the late-frame starvation guard.
+    private var lastPublishWallNanos = 0L
+
     private val thread = Thread(::run, "skinema-decode").apply {
         isDaemon = true
         start()
@@ -229,7 +232,7 @@ class VideoPlayer(
                 continue
             }
 
-            val frame = decoder.nextFrame(buffer?.writing?.rgba)
+            val frame = decoder.nextFrame(convert = false)
             if (frame == null) {
                 if (loop) {
                     decoder.seekTo(0)
@@ -242,6 +245,14 @@ class VideoPlayer(
                     state = State.Ended
                 }
                 continue
+            }
+
+            // An on-time frame converts before the pace sleep, so its
+            // pixels are ready at the due moment; a late frame defers
+            // conversion to the publish policy after the pace loop.
+            var converted: VideoDecoder.RgbaFrame? = null
+            if (clock.nanosUntilDue(frame.ptsNanos) > 0) {
+                converted = decoder.convertLast(buffer?.writing?.rgba)
             }
 
             // Pace: sleep until the frame is due, waking early for commands.
@@ -267,7 +278,17 @@ class VideoPlayer(
             // too -- one missing frame around a pause is invisible.
             if (seekGeneration != generation || state !is State.Playing) continue
 
-            publish(frame)
+            if (converted == null) {
+                // The frame missed its time: part of a catch-up run (the
+                // clock jumped past it -- a loop wrap, an audio re-anchor).
+                // Converting frames the mailbox would drop costs several
+                // times their bare decode; the policy keeps one per
+                // interval so a long run reads as motion.
+                val lateNanos = -clock.nanosUntilDue(frame.ptsNanos)
+                if (!shouldPublishLateFrame(lateNanos, System.nanoTime() - lastPublishWallNanos)) continue
+                converted = decoder.convertLast(buffer?.writing?.rgba)
+            }
+            publish(converted)
         }
     }
 
@@ -427,6 +448,7 @@ class VideoPlayer(
     }
 
     private fun publish(frame: VideoDecoder.RgbaFrame) {
+        lastPublishWallNanos = System.nanoTime()
         val buf = buffer
         if (buf == null || buf.writing.rgba.size != frame.rgba.size) {
             // First frame, or a mid-stream geometry change: rebuild the
@@ -475,3 +497,24 @@ class VideoPlayer(
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
 }
+
+/**
+ * Lateness past frame-rate jitter: a frame this overdue belongs to a
+ * catch-up run, not to normal pacing slack.
+ */
+internal const val CHASE_DROP_NANOS = 250_000_000L
+
+/**
+ * The starvation guard's cadence: during a catch-up run one frame per
+ * this interval still publishes, so the run reads as motion and an
+ * overloaded machine degrades to a slideshow, not a freeze.
+ */
+internal const val CHASE_PUBLISH_INTERVAL_NANOS = 150_000_000L
+
+/**
+ * Whether a frame that missed its presentation time still converts and
+ * publishes. Pure -- the policy half of the catch-up handling in
+ * [VideoPlayer]'s decode loop.
+ */
+internal fun shouldPublishLateFrame(lateNanos: Long, sincePublishNanos: Long): Boolean =
+    lateNanos <= CHASE_DROP_NANOS || sincePublishNanos >= CHASE_PUBLISH_INTERVAL_NANOS
