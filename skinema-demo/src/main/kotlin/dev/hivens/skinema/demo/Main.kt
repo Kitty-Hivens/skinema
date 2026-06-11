@@ -37,9 +37,10 @@ private const val SEEK_STEP_NANOS = 10_000_000_000L
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound]" })
     val sound = args.getOrNull(1) == "sound"
+    val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema demo") {
-            val player = remember { VideoPlayer(video, loop = true, audio = sound) }
+            val player = remember { VideoPlayer(video, loop = true, audio = sound, readAheadFrames = readAhead) }
             DisposableEffect(player) {
                 onDispose { player.close() }
             }

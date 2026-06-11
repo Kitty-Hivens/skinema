@@ -11,13 +11,14 @@ import java.nio.file.Path
  * (ROADMAP.md, milestones) wants a long run with flat RSS; this is the
  * tool that measures it.
  *
- *   ./gradlew :skinema-demo:soak -Pvideo=<file> [-Pminutes=N]
+ *   ./gradlew :skinema-demo:soak -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N]
  */
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: soak <video> [minutes]" })
     val minutes = args.getOrNull(1)?.toLong() ?: 10L
+    val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
 
-    VideoPlayer(video, loop = true).use { player ->
+    VideoPlayer(video, loop = true, readAheadFrames = readAhead).use { player ->
         val deadline = System.nanoTime() + minutes * 60_000_000_000L
         var frames = 0L
         var nextReport = System.nanoTime()
