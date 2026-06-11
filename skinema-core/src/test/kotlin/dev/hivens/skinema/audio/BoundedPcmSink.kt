@@ -3,10 +3,10 @@ package dev.hivens.skinema.audio
 /**
  * [PcmSink] with a real line's blocking shape, which [FakePcmSink]'s
  * instant writes cannot model: a bounded buffer that [write] fills and
- * blocks on, [drain] that parks until the buffer empties, and a played
- * position that advances only when the test consumes frames by hand.
- * Built for scenarios that need the audio thread genuinely stuck --
- * pinning the loop-wrap park open, proving stopped-write invariants.
+ * blocks on, and a played position that advances only when the test
+ * consumes frames by hand. Built for scenarios that need the audio
+ * thread genuinely stuck -- pinning the loop-wrap park open, proving
+ * stopped-write invariants.
  */
 class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
 
@@ -50,12 +50,6 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
         synchronized(lock) {
             writtenFrames = consumedFrames
             lock.notifyAll()
-        }
-    }
-
-    override fun drain() {
-        synchronized(lock) {
-            while (!released && writtenFrames > consumedFrames) lock.wait(100)
         }
     }
 

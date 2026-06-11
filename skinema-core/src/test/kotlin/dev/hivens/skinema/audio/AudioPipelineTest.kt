@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -43,7 +44,6 @@ class AudioPipelineTest {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a tone has audio")
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
             assertEquals(44_100 * 4, sink.totalBytes, "every sample reaches the sink")
-            assertTrue(sink.drainCount >= 1, "EOF must drain the buffered tail")
             assertEquals(44_100, sink.sampleRate)
             // FakePcmSink reports everything written as played.
             assertEquals(1_000_000_000L, clock.mediaNanos())
@@ -124,6 +124,32 @@ class AudioPipelineTest {
 
             pipeline.videoLanded()
             assertTrue(awaitTrue { !sink.stopped }, "the landing releases the resumed sink")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `the EOF tail wait ends on the device clock and stays responsive`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        // Manual play position: everything is written near-instantly, but
+        // the "DAC" stands at 0, so the buffered tail has not sounded yet.
+        sink.positionFrames.set(0)
+        val pipeline = AudioPipeline(tone("tail.flac"), sink, loop = false)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.totalBytes == 44_100 * 4 }, "the file must be fully written")
+            assertFalse(pipeline.isEnded, "the tail has not played; ended must wait for the device")
+
+            // The old sink.drain() deafened the thread here; a seek must be
+            // served mid-tail instead of queueing behind it.
+            pipeline.seek(250_000_000L)
+            assertTrue(awaitTrue { sink.stopped }, "a seek must interrupt the tail wait")
+
+            pipeline.videoLanded()
+            sink.positionFrames.set(44_100)
+            assertTrue(awaitTrue { pipeline.isEnded }, "playback ends once the device played the tail")
         } finally {
             pipeline.close()
         }

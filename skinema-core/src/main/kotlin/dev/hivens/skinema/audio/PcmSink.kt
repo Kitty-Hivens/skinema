@@ -22,9 +22,6 @@ interface PcmSink : AutoCloseable {
     /** Discards buffered-but-unplayed data (seek). */
     fun flush()
 
-    /** Blocks until everything written has actually played (EOF). */
-    fun drain()
-
     /** Sample frames played since [open]; freezes while stopped. */
     fun framePosition(): Long
 

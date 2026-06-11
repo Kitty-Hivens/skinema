@@ -58,10 +58,6 @@ class JavaSoundSink : PcmSink {
         line?.flush()
     }
 
-    override fun drain() {
-        line?.drain()
-    }
-
     override fun framePosition(): Long = line?.longFramePosition ?: 0L
 
     override fun setVolume(volume: Float) {
