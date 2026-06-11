@@ -21,6 +21,14 @@ class FakePcmSink : PcmSink {
     var drainCount = 0
         private set
 
+    /**
+     * Writes that arrived while the line was stopped. A stopped line never
+     * drains, so on real hardware such a write can block its thread for
+     * good; the pipeline must keep this at zero.
+     */
+    var writesWhileStopped = 0
+        private set
+
     /** When set, [framePosition] returns this instead of frames written. */
     val positionFrames = AtomicLong(-1)
 
@@ -36,6 +44,7 @@ class FakePcmSink : PcmSink {
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
         synchronized(all) {
+            if (stopped) writesWhileStopped++
             all.write(data, offset, length)
             sinceFlush.write(data, offset, length)
         }

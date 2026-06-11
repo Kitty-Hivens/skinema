@@ -81,6 +81,7 @@ class AudioPipelineTest {
             // 0.25s into 1s of 44.1kHz: the post-flush write is the cropped
             // remainder, sample-exact.
             assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
+            assertEquals(0, sink.writesWhileStopped, "a stopped line must never be written to")
         } finally {
             pipeline.close()
         }
@@ -94,17 +95,14 @@ class AudioPipelineTest {
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
-            assertTrue(
-                awaitTrue { sink.stopped && sink.bytesSinceLastFlush > 0 },
-                "the sink must freeze at the anchor, prefilled with the cropped chunk",
-            )
-            val prefilled = sink.bytesSinceLastFlush
+            assertTrue(awaitTrue { sink.stopped }, "the sink must freeze at the anchor")
             Thread.sleep(150)
-            assertEquals(prefilled, sink.bytesSinceLastFlush, "no audio may flow while the video is landing")
+            assertEquals(0, sink.bytesSinceLastFlush, "no audio may flow while the video is landing")
 
             pipeline.videoLanded()
             assertTrue(awaitTrue { !sink.stopped }, "the landing must release the sink")
-            assertTrue(awaitTrue { sink.bytesSinceLastFlush > prefilled }, "audio must flow again")
+            assertTrue(awaitTrue { sink.bytesSinceLastFlush > 0 }, "audio must flow again")
+            assertEquals(0, sink.writesWhileStopped, "a stopped line must never be written to")
         } finally {
             pipeline.close()
         }
