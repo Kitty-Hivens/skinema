@@ -458,10 +458,12 @@ without breaking changes. Not before.
   is a separate candidate: the player decodes one frame ahead today, so
   any decode hiccup is immediately visible; a small queue would absorb
   jitter. Not needed for backgrounds (the latest-frame mailbox is
-  deliberate there), but it is the player-scenario knob. Related residue:
-  the post-wrap catch-up chase converts every late frame it publishes --
-  the convert=false drop-run only covers seek landings today; fold the
-  chase into it when the queue work happens.
+  deliberate there), but it is the player-scenario knob. The catch-up
+  residue is resolved (2026-06-11): runs ride the convert=false
+  drop-run behind a pure publish policy -- frames later than 250 ms
+  drop unconverted, a starvation guard surfaces one per 150 ms, so a
+  chase costs bare decode and an overloaded machine degrades to a
+  slideshow instead of a freeze.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
 - HDR: today's reality is a naive swscale conversion (PQ content plays
