@@ -18,6 +18,11 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
     var sampleRate = 0
         private set
 
+    /** True while a writer waits for buffer space -- the audio thread is parked. */
+    @Volatile
+    var writerParked = false
+        private set
+
     override fun open(sampleRate: Int) {
         this.sampleRate = sampleRate
     }
@@ -27,14 +32,17 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
         synchronized(lock) {
             while (remaining > 0) {
                 if (released) {
+                    writerParked = false
                     writtenFrames += remaining
                     return
                 }
                 val free = capacityFrames - (writtenFrames - consumedFrames)
                 if (free <= 0) {
+                    writerParked = true
                     lock.wait(100)
                     continue
                 }
+                writerParked = false
                 val accepted = minOf(free, remaining)
                 writtenFrames += accepted
                 remaining -= accepted
