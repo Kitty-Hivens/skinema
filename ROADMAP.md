@@ -399,14 +399,29 @@ README once the library is usable.
   flush/restart). SKINEMA_DEBUG_SEEK additionally prints the sink
   position at flush/anchor/start for anchor forensics.
 
+  A SECOND root surfaced minutes into the live listen (2026-06-11,
+  reproduced headless by seekbench with the new diagnostics): when the
+  video landing finishes BEFORE the audio thread processes its half of
+  the seek (it reads commands only between blocking writes), the pace
+  loop computes the next frame's wait against the still-running
+  pre-seek clock and sleeps the whole seek distance -- a +10s press
+  froze the picture for exactly ten seconds over normally playing
+  sound, and nothing wakes that sleep when the audio anchors the clock
+  moments later. Codec asymmetry explained the "mp4 freezes, webm does
+  not" observation: sparse-keyframe h264 lands in tens of milliseconds
+  and loses the race; av1/vp9 landings are slower and win it. Fixed:
+  pace sleeps cap at 50 ms (PACE_RECHECK_NANOS), so a mid-sleep
+  re-anchor is noticed within one period. The anchor-jump theory took
+  its first data hit the same session: posAtFlush == posAtAnchor ==
+  posAtStart on every observed seek.
+
   STILL OPEN: the deterministic ~one-buffer hold after a seek (the
   device reports no progress until the line refills). The wall-time
   spin-up extrapolation in AudioClock would mask it at the cost of up to
   ~one-buffer picture-ahead-of-sound drift -- that decision still waits,
-  and may no longer be worth taking now that the intermittent component
-  had a different, fixed root. Remaining for 0.2.0: a live listen on
-  real hardware to confirm the freeze is gone (and to confirm or retire
-  the anchor-jump theory via the new diagnostics).
+  and may no longer be worth taking now that both intermittent
+  components had different, fixed roots. Remaining for 0.2.0: a live
+  listen on real hardware to confirm the freezes are gone.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
