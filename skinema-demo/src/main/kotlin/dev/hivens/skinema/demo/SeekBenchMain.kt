@@ -47,5 +47,41 @@ fun main(args: Array<String>) {
             println("t=${it * 50}ms pos=${ms}ms d=${delta}ms state=${player.state::class.simpleName}")
             prev = ms
         }
+
+        // What the demo's buttons actually feel like: wall time from seek()
+        // to the landing frame being acquirable. The clock samples above
+        // cannot see publish latency.
+        println("== seek-to-frame latency: alternating far targets ==")
+        val latencies = mutableListOf<Long>()
+        val targets = (0 until 24).map { i ->
+            if (i % 2 == 0) (5_000 + i * 2_100).toLong() * 1_000_000L
+            else (48_000 - i * 1_700).toLong() * 1_000_000L
+        }
+        for (target in targets) {
+            while (player.acquireFrame() != null) Unit
+            val t0 = System.nanoTime()
+            player.seek(target)
+            val deadline = t0 + 5_000_000_000L
+            var landedAt = -1L
+            while (System.nanoTime() < deadline) {
+                val f = player.acquireFrame()
+                if (f != null && f.ptsNanos in target..(target + 500_000_000L)) {
+                    landedAt = System.nanoTime()
+                    break
+                }
+                Thread.sleep(1)
+            }
+            val ms = if (landedAt < 0) -1 else (landedAt - t0) / 1_000_000
+            latencies += ms
+            println("seek=${target / 1_000_000}ms latency=${ms}ms")
+            Thread.sleep(60)
+        }
+        val ok = latencies.filter { it >= 0 }.sorted()
+        if (ok.isNotEmpty()) {
+            println(
+                "landed=${ok.size}/${latencies.size} median=${ok[ok.size / 2]}ms " +
+                    "p90=${ok[ok.size * 9 / 10]}ms max=${ok.last()}ms",
+            )
+        }
     }
 }
