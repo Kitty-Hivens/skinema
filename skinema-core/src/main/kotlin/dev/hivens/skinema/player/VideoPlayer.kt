@@ -246,9 +246,18 @@ class VideoPlayer(
 
             // Pace: sleep until the frame is due, waking early for commands.
             val generation = seekGeneration
+            var starveWarned = false
             while (state is State.Playing) {
                 val wait = clock.nanosUntilDue(frame.ptsNanos)
                 if (wait <= 0) break
+                // A frame standing more than a second ahead of the clock is
+                // a frozen picture with running sound -- name both sides.
+                if (DEBUG_SEEK && !starveWarned && wait > 1_000_000_000L) {
+                    System.err.println(
+                        "[pace] frame=${frame.ptsNanos / 1_000_000}ms waits ${wait / 1_000_000}ms for the clock (${clock.mediaNanos() / 1_000_000}ms)",
+                    )
+                    starveWarned = true
+                }
                 val c = commands.poll(wait, TimeUnit.NANOSECONDS) ?: continue
                 if (!handle(c, decoder)) return
                 if (seekGeneration != generation) break
