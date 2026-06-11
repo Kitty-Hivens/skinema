@@ -432,13 +432,14 @@ README once the library is usable.
   fiction. Nothing blocks 0.2.0 anymore.
 
 - **M6 -- in progress (2026-06-11):** the real-life audio codec set --
-  ac3/eac3, alac, 24/32-bit and float WAV pcm -- joins the trimmed
-  whitelist, so files from the wild (movie-rip audio tracks, m4a
-  lossless, DAW exports) play instead of failing closed. Natives rebuild
-  onto the rolling release; decoder tests follow once every platform's
-  asset is replaced (the build matrix dogfoods the shipped bundles, so
-  tests for codecs the old bundles lack would land red). Next in M6: the
-  read-ahead frame queue (section 13's player-scenario knob).
+  ac3/eac3, alac, 24/32-bit and float WAV pcm -- is DONE: whitelisted,
+  natives rebuilt on all four platforms onto the rolling release (each
+  through its on-runner acceptance gate), decoder tests dogfooding the
+  shipped bundles green across the test matrix. Files from the wild
+  (movie-rip audio tracks, m4a lossless, DAW exports) decode instead of
+  failing closed; consumers get the new bundles with the next natives
+  publish (0.3.0). Remaining in M6: the read-ahead frame queue
+  (section 13's player-scenario knob).
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
