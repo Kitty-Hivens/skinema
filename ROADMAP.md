@@ -416,13 +416,16 @@ README once the library is usable.
   posAtStart on every observed seek.
 
   The live listen on real hardware (2026-06-11, the same mp4 that froze)
-  confirms both fixes: the intermittent freeze is gone. STILL OPEN, now
-  cosmetic: the deterministic ~one-buffer hold after a seek (the device
-  reports no progress until the line refills). The wall-time spin-up
-  extrapolation in AudioClock would mask it at the cost of up to
-  ~one-buffer picture-ahead-of-sound drift -- that decision still waits,
-  and may no longer be worth taking now that both intermittent
-  components had different, fixed roots. Nothing blocks 0.2.0 anymore.
+  confirms both fixes: the intermittent freeze is gone. The wall-time
+  spin-up extrapolation is REJECTED (decided 2026-06-11): during the
+  line refill no sound is audible, so the standing clock is honest --
+  extrapolating would run the picture ahead of sound that has not
+  started yet and leave a persistent ~fill-length A/V offset after
+  every seek unless slew-back compensation is added on top. The
+  deterministic ~one-buffer post-seek hold therefore stays, documented
+  as the cost of the underrun-proof 200 ms buffer; if it ever matters,
+  the lever is a smaller buffer on a lower-latency backend, not clock
+  fiction. Nothing blocks 0.2.0 anymore.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
@@ -452,9 +455,9 @@ without breaking changes. Not before.
 - Windows/macOS arena + library unloading behavior on session close --
   verify during M3, libraryLookup lifetime is tied to an Arena.
 - ~~The intermittent post-seek freeze~~ root-caused and fixed 2026-06-11
-  (the awaitClockWrap park hole -- M5 section). Left behind: the
-  deterministic ~one-buffer post-seek hold and the extrapolation
-  decision. A read-ahead frame queue (decode 3-5 frames instead of one)
+  (the awaitClockWrap park hole -- M5 section). The extrapolation
+  question is decided against (M5 section); the ~one-buffer post-seek
+  hold stays by choice. A read-ahead frame queue (decode 3-5 frames instead of one)
   is a separate candidate: the player decodes one frame ahead today, so
   any decode hiccup is immediately visible; a small queue would absorb
   jitter. Not needed for backgrounds (the latest-frame mailbox is
