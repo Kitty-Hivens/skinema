@@ -12,10 +12,14 @@ import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 
 /**
- * Plays one video file on a dedicated decode thread, publishing frames
- * into a tear-free [TripleBuffer] paced by each frame's pts.
+ * Plays one video file: a dedicated decode thread keeps a small queue
+ * stocked with converted frames, and a pacer thread publishes each one
+ * into a tear-free [TripleBuffer] at its pts. Presentation living on
+ * its own thread is what makes the queue worth having -- a decode stall
+ * cannot stall the screen while inventory lasts.
  *
  * Core stays dependency-free by design (ROADMAP.md section 3): no
  * coroutines, no UI types. The consumer polls [acquireFrame] on its own
@@ -23,7 +27,8 @@ import java.util.concurrent.TimeUnit
  * newer than what you already hold" -- and reads [state] for lifecycle.
  *
  * Everything libav happens on the decode thread, open and close
- * included: the decoder's arena is confined to it. Open failures
+ * included: the decoder's arena is confined to it (the pacer touches
+ * only heap arrays, the clock, and the mailbox). Open failures
  * therefore surface as [State.Failed] rather than a constructor throw --
  * the fail-closed path (ROADMAP.md section 2) a consumer answers with a
  * static fallback.
@@ -90,8 +95,8 @@ class VideoPlayer internal constructor(
 
     /**
      * One presented frame. The consumer owns the returned slot until its
-     * next [acquireFrame] call; the decode thread never writes into it
-     * during that window.
+     * next [acquireFrame] call; the player never writes into it during
+     * that window.
      */
     class FrameSlot internal constructor(size: Int = 0) {
         var width = 0
@@ -120,21 +125,19 @@ class VideoPlayer internal constructor(
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
     private val commands = LinkedBlockingQueue<Command>()
-    private var seekGeneration = 0
 
-    // The intended playhead: the frame on screen during normal playback,
-    // the accumulating destination during a seek burst. SeekBy adds to
+    // The intended playhead while a seek burst accumulates. SeekBy adds to
     // this rather than to the live clock, so presses faster than a landing
     // takes still sum to the final destination -- the clock stands at the
     // old anchor mid-landing, and reading it (or worse, resetting to -1 on
-    // each landing) made bursts resolve to the wrong place. Owned by the
-    // decode thread: relative seeks travel as SeekBy commands and resolve
-    // against it here, so no other thread ever writes it.
+    // each landing) made bursts resolve to the wrong place. Outside a
+    // burst relative seeks base on [lastPublishedPts] (the frame on
+    // screen); frameless players, which never publish, keep their last
+    // target here. Owned by the decode thread.
     private var intendedPositionNanos = 0L
 
-    // True between issuing a seek and its landing; while set, the decode
-    // loop must not overwrite [intendedPositionNanos] with the frame it
-    // publishes (the accumulated burst target wins).
+    // True between issuing a seek and its landing; a SeekBy mid-burst
+    // accumulates on [intendedPositionNanos] instead of the on-screen pts.
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
@@ -144,10 +147,21 @@ class VideoPlayer internal constructor(
     // When audio masters the clock, video never re-anchors it: seeks and
     // loop wraps are anchored by the audio thread at its actual landing.
     private var ownsClock = true
+
+    // The pts on screen. Written by the pacer's publish; the decode
+    // thread reads it for the resume re-anchor, the loop-wrap park, and
+    // relative-seek bases.
+    @Volatile
     private var lastPublishedPts = 0L
 
-    // Wall time of the last publish; feeds the late-frame starvation guard.
+    // Wall time of the last publish; feeds the late-frame starvation
+    // guard on both threads.
+    @Volatile
     private var lastPublishWallNanos = 0L
+
+    // Decode ran out of stream but the pacer may still hold the tail;
+    // the EOF actions (loop wrap, park, Ended) wait for that drain.
+    private var eofPending = false
 
     private val thread = Thread(::run, "skinema-decode").apply {
         isDaemon = true
@@ -216,6 +230,10 @@ class VideoPlayer internal constructor(
             audioPipeline?.close()
             return
         }
+        val pacer = Thread(::paceLoop, "skinema-pace").apply {
+            isDaemon = true
+            start()
+        }
         try {
             if (ownsClock) clock.start(0)
             state = State.Playing
@@ -224,6 +242,8 @@ class VideoPlayer internal constructor(
         } catch (t: Throwable) {
             state = State.Failed(t)
         } finally {
+            queue.close()
+            pacer.join(1_000)
             runCatching { decoder.close() }
             runCatching { audioPipeline?.close() }
         }
@@ -241,6 +261,11 @@ class VideoPlayer internal constructor(
         }
     }
 
+    /**
+     * The fill side: keeps the queue stocked with converted frames while
+     * the pacer presents them. One decode per pass, commands drained at
+     * the top, so a command never waits behind more than a single frame.
+     */
     private fun decodeLoop(decoder: FrameSource) {
         while (true) {
             var cmd = commands.poll()
@@ -256,8 +281,15 @@ class VideoPlayer internal constructor(
                 continue
             }
 
-            val frame = decoder.nextFrame(convert = false)
-            if (frame == null) {
+            if (eofPending) {
+                if (!queue.isEmpty) {
+                    // The pacer is still presenting the tail; stay on the
+                    // command queue while it drains.
+                    val c = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
+                    if (!handle(c, decoder)) return
+                    continue
+                }
+                eofPending = false
                 if (loop) {
                     decoder.seekTo(0)
                     if (ownsClock) {
@@ -271,49 +303,50 @@ class VideoPlayer internal constructor(
                 continue
             }
 
-            // An on-time frame converts before the pace sleep, so its
-            // pixels are ready at the due moment; a late frame defers
-            // conversion to the publish policy after the pace loop.
-            var converted: VideoDecoder.RgbaFrame? = null
-            if (clock.nanosUntilDue(frame.ptsNanos) > 0) {
-                converted = decoder.convertLast(buffer?.writing?.rgba)
-            }
-
-            // Pace: sleep until the frame is due, waking early for commands.
-            val generation = seekGeneration
-            var starveWarned = false
-            while (state is State.Playing) {
-                val wait = clock.nanosUntilDue(frame.ptsNanos)
-                if (wait <= 0) break
-                // A frame standing more than a second ahead of the clock is
-                // a frozen picture with running sound -- name both sides.
-                if (DEBUG_SEEK && !starveWarned && wait > 1_000_000_000L) {
-                    System.err.println(
-                        "[pace] frame=${frame.ptsNanos / 1_000_000}ms waits ${wait / 1_000_000}ms for the clock (${clock.mediaNanos() / 1_000_000}ms)",
-                    )
-                    starveWarned = true
-                }
-                val c = commands.poll(wait.coerceAtMost(PACE_RECHECK_NANOS), TimeUnit.NANOSECONDS) ?: continue
+            if (!queue.hasRoom) {
+                // Inventory full; room appears as the pacer publishes.
+                val c = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
                 if (!handle(c, decoder)) return
-                if (seekGeneration != generation) break
+                continue
             }
-            // A seek published its own target frame and moved the decoder;
-            // the in-flight frame is stale. A pause mid-pace drops the frame
-            // too -- one missing frame around a pause is invisible.
-            if (seekGeneration != generation || state !is State.Playing) continue
 
-            if (converted == null) {
-                // The frame missed its time: part of a catch-up run (the
-                // clock jumped past it -- a loop wrap, an audio re-anchor).
-                // Converting frames the mailbox would drop costs several
-                // times their bare decode; the policy keeps one per
-                // interval so a long run reads as motion.
-                val lateNanos = -clock.nanosUntilDue(frame.ptsNanos)
-                if (!shouldPublishLateFrame(lateNanos, System.nanoTime() - lastPublishWallNanos)) continue
-                converted = decoder.convertLast(buffer?.writing?.rgba)
+            val frame = decoder.nextFrame(convert = false)
+            if (frame == null) {
+                eofPending = true
+                continue
             }
-            publish(converted)
+
+            val lateNanos = -clock.nanosUntilDue(frame.ptsNanos)
+            if (lateNanos > CHASE_DROP_NANOS) {
+                // Catch-up run (the clock jumped past this frame -- a loop
+                // wrap, an audio re-anchor). Converting frames the policy
+                // would drop costs several times their bare decode; one
+                // converted guard per interval keeps the run reading as
+                // motion. The guard ships forced so the pacer does not
+                // re-judge -- deciding twice double-drops.
+                if (!shouldPublishLateFrame(lateNanos, System.nanoTime() - lastPublishWallNanos)) continue
+                enqueue(decoder, frame, forced = true)
+                continue
+            }
+            enqueue(decoder, frame, forced = false)
         }
+    }
+
+    /** Converts the decoder's current frame into a queue cell. */
+    private fun enqueue(decoder: FrameSource, raw: VideoDecoder.RgbaFrame, forced: Boolean) {
+        val cell = queue.writeCell()
+        val bytes = raw.width * raw.height * 4
+        if (cell.rgba.size != bytes) cell.rgba = ByteArray(bytes)
+        val converted = decoder.convertLast(cell.rgba)
+        // On a size mismatch convertLast falls back to its internal reused
+        // buffer, which must never be enqueued -- the next decode would
+        // overwrite it. The pre-sizing above makes this branch dead in
+        // practice; the copy keeps it correct if a source ever disagrees.
+        if (converted.rgba !== cell.rgba) cell.rgba = converted.rgba.copyOf()
+        cell.width = converted.width
+        cell.height = converted.height
+        cell.ptsNanos = converted.ptsNanos
+        queue.commit(forced)
     }
 
     private fun handle(cmd: Command, decoder: FrameSource?): Boolean = when (cmd) {
@@ -344,7 +377,14 @@ class VideoPlayer internal constructor(
             true
         }
         is Command.Seek -> handleSeek(cmd.ptsNanos, decoder)
-        is Command.SeekBy -> handleSeek((intendedPositionNanos + cmd.deltaNanos).coerceAtLeast(0), decoder)
+        is Command.SeekBy -> {
+            // Outside a burst the playhead is the frame on screen; mid-burst
+            // the accumulated target wins (the clock stands at the old
+            // anchor and must not be consulted). Frameless players never
+            // publish, so their last target carries the playhead.
+            val base = if (seekInFlight || decoder == null) intendedPositionNanos else lastPublishedPts
+            handleSeek((base + cmd.deltaNanos).coerceAtLeast(0), decoder)
+        }
     }
 
     private fun handleSeek(targetNanos: Long, decoder: FrameSource?): Boolean {
@@ -395,7 +435,11 @@ class VideoPlayer internal constructor(
      * a landing each. Returns false when a Close arrived mid-landing.
      */
     private fun performSeek(decoder: FrameSource, targetNanos: Long): Boolean {
-        seekGeneration++
+        // Whatever inventory was decoded toward the old position is stale;
+        // the landing must be the next thing on screen. Repositioning the
+        // decoder also voids a pending EOF.
+        queue.clear()
+        eofPending = false
         // Remember what to return to (Playing/Paused/Ended) and advertise
         // the landing so a consumer can show a loading affordance.
         stateBeforeSeek.compareAndSet(null, state.takeIf { it != State.Seeking } ?: State.Playing)
@@ -442,7 +486,9 @@ class VideoPlayer internal constructor(
             }
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
-                publish(decoder.convertLast(buffer?.writing?.rgba))
+                // Forced: the pacer publishes the landing immediately, even
+                // while the player resolves back to Paused.
+                enqueue(decoder, f, forced = true)
                 if (DEBUG_SEEK) {
                     val ms = (System.nanoTime() - debugStart) / 1_000_000
                     val kfGapMs = (target - landedFromKeyframe) / 1_000_000
@@ -471,37 +517,113 @@ class VideoPlayer internal constructor(
         }
     }
 
-    private fun publish(frame: VideoDecoder.RgbaFrame) {
-        lastPublishWallNanos = System.nanoTime()
-        val buf = buffer
-        if (buf == null || buf.writing.rgba.size != frame.rgba.size) {
-            // First frame, or a mid-stream geometry change: rebuild the
-            // slots around the new size and copy this one frame over.
-            val fresh = TripleBuffer(
-                FrameSlot(frame.rgba.size),
-                FrameSlot(frame.rgba.size),
-                FrameSlot(frame.rgba.size),
-            )
-            frame.rgba.copyInto(fresh.writing.rgba)
-            stamp(fresh.writing, frame)
-            fresh.publish()
-            buffer = fresh
-            return
+    // -- Pacer thread ---------------------------------------------------------
+
+    /**
+     * Owns presentation: waits out each queued frame's pts against the
+     * clock and publishes it into the mailbox. Living on its own thread
+     * is the point of the queue -- a stalled decode is no longer the
+     * publisher, so whatever inventory exists keeps presenting through
+     * the stall. Exits when the decode thread closes the queue.
+     */
+    private fun paceLoop() {
+        var lastFlushes = queue.flushCount
+        var lastClockReading = Long.MIN_VALUE
+        var starveWarnedPts = Long.MIN_VALUE
+        while (!queue.isClosed) {
+            val head = queue.peekHead()
+            if (head == null) {
+                queue.awaitNonEmpty(PACE_RECHECK_NANOS)
+                continue
+            }
+            if (head.forced) {
+                // Seek landings and chase guards: the decode side already
+                // decided these publish, state gate and late policy aside.
+                publishFromQueue()
+                continue
+            }
+            if (state !is State.Playing) {
+                // Paused, or a landing resolving: hold the inventory.
+                LockSupport.parkNanos(IDLE_RECHECK_NANOS)
+                continue
+            }
+
+            val flushes = queue.flushCount
+            if (flushes != lastFlushes) {
+                lastFlushes = flushes
+                lastClockReading = Long.MIN_VALUE
+            }
+            val clockNow = clock.mediaNanos()
+            val regressed = lastClockReading != Long.MIN_VALUE &&
+                clockNow < lastClockReading - REGRESSION_NANOS
+            lastClockReading = clockNow
+            if (regressed) {
+                // The clock only jumps backward like this on a loop wrap (a
+                // seek flushes the queue first, resetting the tracking
+                // above): the queued tail belongs to the lap that just
+                // ended -- show it now, not a lap later.
+                while (true) {
+                    val h = queue.peekHead() ?: break
+                    if (h.forced || h.ptsNanos <= clockNow + REGRESSION_NANOS) break
+                    publishFromQueue()
+                }
+                continue
+            }
+
+            val wait = head.ptsNanos - clockNow
+            if (wait > 0) {
+                // A frame standing more than a second ahead of the clock is
+                // a frozen picture with running sound -- name both sides.
+                if (DEBUG_SEEK && wait > 1_000_000_000L && starveWarnedPts != head.ptsNanos) {
+                    starveWarnedPts = head.ptsNanos
+                    System.err.println(
+                        "[pace] frame=${head.ptsNanos / 1_000_000}ms waits ${wait / 1_000_000}ms for the clock (${clockNow / 1_000_000}ms)",
+                    )
+                }
+                // Capped: the audio thread can re-anchor the clock at any
+                // moment, and a sleep taken against a stale reading must
+                // notice within one period.
+                LockSupport.parkNanos(wait.coerceAtMost(PACE_RECHECK_NANOS))
+                continue
+            }
+
+            if (!shouldPublishLateFrame(-wait, System.nanoTime() - lastPublishWallNanos)) {
+                queue.dropHead()
+                continue
+            }
+            publishFromQueue()
         }
-        // Sizes match, so the decoder wrote straight into buf.writing.rgba.
-        stamp(buf.writing, frame)
-        buf.publish()
     }
 
-    private fun stamp(slot: FrameSlot, frame: VideoDecoder.RgbaFrame) {
+    /**
+     * Pops the queue head into the mailbox by swapping arrays with the
+     * writing slot -- no pixel copy; the arrays cycle between the queue
+     * and the mailbox. A geometry change rebuilds the mailbox around the
+     * new size, as publish always has.
+     */
+    private fun publishFromQueue(): Boolean {
+        val head = queue.peekHead() ?: return false
+        val current = buffer
+        val target = if (current == null || current.writing.rgba.size != head.byteCount) {
+            TripleBuffer(
+                FrameSlot(head.byteCount),
+                FrameSlot(head.byteCount),
+                FrameSlot(head.byteCount),
+            )
+        } else {
+            current
+        }
+        val slot = target.writing
+        val frame = queue.poll(slot.rgba) ?: return false
+        slot.rgba = frame.rgba
         slot.width = frame.width
         slot.height = frame.height
         slot.ptsNanos = frame.ptsNanos
         lastPublishedPts = frame.ptsNanos
-        // During normal playback the intended playhead tracks the screen;
-        // during a seek burst it is the accumulating target, which the
-        // landing's own publish must not clobber.
-        if (!seekInFlight) intendedPositionNanos = frame.ptsNanos
+        lastPublishWallNanos = System.nanoTime()
+        target.publish()
+        if (target !== current) buffer = target
+        return true
     }
 
     private companion object {
@@ -517,6 +639,18 @@ class VideoPlayer internal constructor(
          * period is noise.
          */
         const val PACE_RECHECK_NANOS = 50_000_000L
+
+        /** The pacer's pause-hold re-check cadence. */
+        const val IDLE_RECHECK_NANOS = 20_000_000L
+
+        /**
+         * A backward clock jump bigger than this, with no seek flush in
+         * between, is a loop wrap. AudioClock clamps device-position
+         * noise to monotonic, and a seek empties the queue before the
+         * pacer can act on its re-anchor, so nothing else moves time
+         * backward under live inventory.
+         */
+        const val REGRESSION_NANOS = 1_000_000_000L
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
@@ -537,8 +671,8 @@ internal const val CHASE_PUBLISH_INTERVAL_NANOS = 150_000_000L
 
 /**
  * Whether a frame that missed its presentation time still converts and
- * publishes. Pure -- the policy half of the catch-up handling in
- * [VideoPlayer]'s decode loop.
+ * publishes. Pure -- the policy half of the catch-up handling, applied
+ * at decode time (convert or drop) and at pace time (publish or drop).
  */
 internal fun shouldPublishLateFrame(lateNanos: Long, sincePublishNanos: Long): Boolean =
     lateNanos <= CHASE_DROP_NANOS || sincePublishNanos >= CHASE_PUBLISH_INTERVAL_NANOS
