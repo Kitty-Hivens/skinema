@@ -36,15 +36,18 @@ fine for development, not what you ship.
 
 |                 |                                                                                      |
 |-----------------|--------------------------------------------------------------------------------------|
-| Containers      | mp4/mov, webm/mkv, gif, apng, webp, ogg                                              |
+| Containers      | mp4/mov/m4a, webm/mkv, gif, apng, webp, ogg, mp3, flac, wav, raw ac3/eac3            |
 | Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                         |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode |
-| Audio           | AAC, Opus, Vorbis, MP3, FLAC -- the device clock masters A/V sync                    |
+| Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                           |
 
-Audio: pass `audio = true` to `VideoPlayer` -- aac, opus, vorbis, mp3
-and flac decode through the same bindings, and the audio device becomes
-the player's clock (video follows sound, never the reverse).
+Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
+opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
+through the same bindings, multichannel downmixes to stereo, and the
+audio device becomes the player's clock (video follows sound, never the
+reverse). The ac3/eac3, alac and extended-pcm decoders ship in the
+natives jars from 0.3.0; the 0.2.0 jars carry the original set.
 Audio-only files play frameless. HDR content plays through a naive SDR
 conversion for now -- washed out, not tone-mapped; proper tone-mapping
 is a roadmap item.

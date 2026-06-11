@@ -110,12 +110,16 @@ drag a dependency tree and are not redistributable as-is. macOS support
 therefore arrives together with our own trimmed builds.
 
 Trimmed build configure baseline: `--disable-everything --enable-shared
---disable-programs --disable-network`, then a whitelist: demuxers
-mov/mp4, matroska/webm, gif, apng, image2; video decoders h264, hevc,
-vp8, vp9, av1 (libdav1d -- the native decoder is too slow for 1080p),
-mjpeg, png, webp; audio decoders aac, opus, vorbis, mp3, flac (cheap now,
-needed when audio lands); libswscale + libswresample. Expected size:
-8-12 MB per platform against ~70 MB for a full build.
+--disable-programs --disable-network`, then a whitelist (the script,
+tools/build-natives.sh, is authoritative): demuxers mov/mp4,
+matroska/webm, gif, apng, image2 and the still pipes, plus the
+standalone-audio set (ogg, mp3, flac, wav, ac3, eac3); video decoders
+h264, hevc, vp8, vp9, av1 (libdav1d -- the native decoder is too slow
+for 1080p), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
+vorbis, mp3, flac and WAV pcm (s16/s24/s32/float -- the real-life set
+added 2026-06-11: movie-rip tracks, m4a lossless, DAW exports);
+libswscale + libswresample. Expected size: 8-12 MB per platform against
+~70 MB for a full build.
 
 ## 5. Bindings
 
@@ -426,6 +430,15 @@ README once the library is usable.
   as the cost of the underrun-proof 200 ms buffer; if it ever matters,
   the lever is a smaller buffer on a lower-latency backend, not clock
   fiction. Nothing blocks 0.2.0 anymore.
+
+- **M6 -- in progress (2026-06-11):** the real-life audio codec set --
+  ac3/eac3, alac, 24/32-bit and float WAV pcm -- joins the trimmed
+  whitelist, so files from the wild (movie-rip audio tracks, m4a
+  lossless, DAW exports) play instead of failing closed. Natives rebuild
+  onto the rolling release; decoder tests follow once every platform's
+  asset is replaced (the build matrix dogfoods the shipped bundles, so
+  tests for codecs the old bundles lack would land red). Next in M6: the
+  read-ahead frame queue (section 13's player-scenario knob).
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
