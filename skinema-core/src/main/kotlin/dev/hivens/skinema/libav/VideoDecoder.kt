@@ -243,6 +243,13 @@ class VideoDecoder private constructor(
                 codecCtx = Libav.avcodecAllocContext3(decoder)
                 if (codecCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3 returned NULL")
                 Libav.checkAv(Libav.avcodecParametersToContext(codecCtx, codecpar), "avcodec_parameters_to_context")
+                // The context defaults to a single decode thread; "auto"
+                // sizes to the machine. On 1080p AV1 that is the difference
+                // between a multi-second seek landing and a sub-second one.
+                Libav.checkAv(
+                    Libav.avOptSet(codecCtx, arena.allocateFrom("threads"), arena.allocateFrom("auto")),
+                    "av_opt_set(threads)",
+                )
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)

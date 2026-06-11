@@ -64,6 +64,7 @@ object Libav {
 
     private val hAvutilVersion = fn(LibavLibrary.AVUTIL, "avutil_version", FunctionDescriptor.of(JAVA_INT))
     private val hAvLogSetLevel = fn(LibavLibrary.AVUTIL, "av_log_set_level", FunctionDescriptor.ofVoid(JAVA_INT))
+    private val hAvOptSet = fn(LibavLibrary.AVUTIL, "av_opt_set", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvStrerror = fn(LibavLibrary.AVUTIL, "av_strerror", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG))
     private val hAvFrameAlloc = fn(LibavLibrary.AVUTIL, "av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvFrameFree = fn(LibavLibrary.AVUTIL, "av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
@@ -157,6 +158,9 @@ object Libav {
     }
 
     // Thin typed wrappers -- one per native function, no logic.
+
+    fun avOptSet(obj: MemorySegment, name: MemorySegment, value: MemorySegment): Int =
+        hAvOptSet.invoke(obj, name, value, 0) as Int
 
     fun avFrameAlloc(): MemorySegment = hAvFrameAlloc.invoke() as MemorySegment
     fun avFrameFree(framePtrPtr: MemorySegment) { hAvFrameFree.invoke(framePtrPtr) }
