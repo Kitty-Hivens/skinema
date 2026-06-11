@@ -114,6 +114,15 @@ class VideoPlayer internal constructor(
         data class Seek(val ptsNanos: Long) : Command
         data class SeekBy(val deltaNanos: Long) : Command
         data object Close : Command
+
+        /**
+         * The pacer freed a queue cell. Without this token the fill side
+         * discovers room only when its command poll times out, putting
+         * dead time on every frame of full-queue (steady-state) playback
+         * -- which caps production below the frame rate of 60 fps
+         * content. Handled as a no-op; its arrival is the point.
+         */
+        data object RoomFreed : Command
     }
 
     @Volatile
@@ -350,6 +359,7 @@ class VideoPlayer internal constructor(
 
     private fun handle(cmd: Command, decoder: FrameSource?): Boolean = when (cmd) {
         Command.Close -> false
+        Command.RoomFreed -> true
         Command.Pause -> {
             if (state is State.Playing) {
                 audioPipeline?.pause()
@@ -449,6 +459,9 @@ class VideoPlayer internal constructor(
         var dropped = 0
         var landedFromKeyframe = Long.MIN_VALUE
         while (true) {
+            // Room tokens carry no payload and must not hide a queued
+            // seek behind them.
+            while (commands.peek() == Command.RoomFreed) commands.poll()
             val superseded = when (val next = commands.peek()) {
                 is Command.Seek -> next.ptsNanos
                 is Command.SeekBy -> (intendedPositionNanos + next.deltaNanos).coerceAtLeast(0)
@@ -592,6 +605,7 @@ class VideoPlayer internal constructor(
 
             if (!shouldPublishLateFrame(-wait, System.nanoTime() - lastPublishWallNanos)) {
                 queue.dropHead()
+                commands.put(Command.RoomFreed)
                 continue
             }
             publishFromQueue()
@@ -626,6 +640,7 @@ class VideoPlayer internal constructor(
         lastPublishWallNanos = System.nanoTime()
         target.publish()
         if (target !== current) buffer = target
+        commands.put(Command.RoomFreed)
         return true
     }
 

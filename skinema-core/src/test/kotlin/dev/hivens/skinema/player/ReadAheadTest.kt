@@ -145,19 +145,28 @@ class ReadAheadTest {
         val source = ScriptedFrameSource(frameCount = 4)
         player(source, depth = 4, loop = true).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            var seen = -1L
-            for (ms in longArrayOf(100, 200, 300)) {
-                frames.set(framesFor(ms))
+            // Hold the second lap's first decode: the wrap is otherwise
+            // fast enough that frame 0 overwrites the final tail frame in
+            // the latest-wins mailbox before this test can acquire it.
+            val lap2 = source.blockAt(0)
+            try {
+                var seen = -1L
+                for (ms in longArrayOf(100, 200, 300)) {
+                    frames.set(framesFor(ms))
+                    assertTrue(
+                        awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == ms * 1_000_000L },
+                        "the tail frame at ${ms}ms must present before the wrap, saw ${seen}ns",
+                    )
+                }
+                // Tail done; the wrap re-anchors the clock and frame 0 is due.
+                lap2.countDown()
                 assertTrue(
-                    awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == ms * 1_000_000L },
-                    "the tail frame at ${ms}ms must present before the wrap, saw ${seen}ns",
+                    awaitTrue { p.acquireFrame()?.ptsNanos == 0L },
+                    "the wrap must come around to frame 0 after the tail",
                 )
+            } finally {
+                lap2.countDown()
             }
-            // Tail done; the wrap re-anchors the clock and frame 0 is due.
-            assertTrue(
-                awaitTrue { p.acquireFrame()?.ptsNanos == 0L },
-                "the wrap must come around to frame 0 after the tail",
-            )
         }
     }
 
@@ -194,6 +203,30 @@ class ReadAheadTest {
             } finally {
                 latch.countDown()
             }
+        }
+    }
+
+    @Test
+    fun `steady-state production is not gated on the room poll`() {
+        // 125 fps scripted stream against the wall clock at depth 1. The
+        // fill side discovers a freed cell through the pacer's RoomFreed
+        // token; discovering it by poll timeout instead caps production
+        // near 50 fps, and the drop policy eats the difference -- high
+        // frame rates degrade to a guard-frame slideshow. Healthy runs
+        // publish nearly all 480 frames; the gated regime stays under
+        // ~200. The threshold leaves room for CI stalls (a stalled wall
+        // clock legitimately drops frames).
+        val source = ScriptedFrameSource(frameCount = 480, periodNanos = 8_000_000L)
+        VideoPlayer(Path.of("scripted"), false, false, null, null, 1) { source }.use { p ->
+            val seen = HashSet<Long>()
+            val deadline = System.currentTimeMillis() + 30_000
+            while (p.state !is VideoPlayer.State.Ended && System.currentTimeMillis() < deadline) {
+                p.acquireFrame()?.let { seen += it.ptsNanos }
+                Thread.sleep(1)
+            }
+            p.acquireFrame()?.let { seen += it.ptsNanos }
+            assertIs<VideoPlayer.State.Ended>(p.state, "the stream must play out")
+            assertTrue(seen.size > 300, "production must hold the frame rate, published ${seen.size}/480")
         }
     }
 
