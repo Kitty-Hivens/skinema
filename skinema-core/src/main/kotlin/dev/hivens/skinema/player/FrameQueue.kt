@@ -46,6 +46,7 @@ internal class FrameQueue(depth: Int) {
     private var count = 0
     private var closed = false
     private var flushes = 0
+    private var changes = 0L
 
     // -- Producer (decode thread) ---------------------------------------------
 
@@ -72,15 +73,22 @@ internal class FrameQueue(depth: Int) {
             check(count < cells.size) { "commit without a writeCell" }
             forcedFlags[(head + count) % cells.size] = forced
             count++
+            changes++
             lock.notifyAll()
         }
     }
 
-    /** Drops every committed frame (seek flush). Producer-side only. */
+    /**
+     * Drops every committed frame (seek flush). Producer-side only.
+     * Wakes the consumer: a pacer sleeping out a stale head's wait must
+     * notice the flush -- the landing that follows publishes immediately.
+     */
     fun clear() {
         synchronized(lock) {
             count = 0
             flushes++
+            changes++
+            lock.notifyAll()
         }
     }
 
@@ -88,6 +96,7 @@ internal class FrameQueue(depth: Int) {
     fun close() {
         synchronized(lock) {
             closed = true
+            changes++
             lock.notifyAll()
         }
     }
@@ -106,10 +115,19 @@ internal class FrameQueue(depth: Int) {
         Head(cell.ptsNanos, forcedFlags[head], cell.rgba.size)
     }
 
-    /** Blocks until a commit, [close], or the timeout. */
-    fun awaitNonEmpty(timeoutNanos: Long) {
+    /**
+     * The mutation counter: read it before a peek, then sleep with
+     * [awaitChange] -- any commit/clear/close since that reading returns
+     * immediately instead of sleeping out a stale timeout. This is the
+     * pacer's wake-up seam; an uninterruptible sleep here puts its full
+     * length onto every seek landing.
+     */
+    fun changeTick(): Long = synchronized(lock) { changes }
+
+    /** Blocks until the queue mutates past [sinceTick], or the timeout. */
+    fun awaitChange(sinceTick: Long, timeoutNanos: Long) {
         synchronized(lock) {
-            if (count > 0 || closed) return
+            if (changes != sinceTick || closed) return
             lock.wait(timeoutNanos / 1_000_000L, (timeoutNanos % 1_000_000L).toInt())
         }
     }

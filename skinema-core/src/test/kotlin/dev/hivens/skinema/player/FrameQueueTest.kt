@@ -130,11 +130,10 @@ class FrameQueueTest {
     }
 
     @Test
-    fun `awaitNonEmpty wakes on commit`() {
+    fun `awaitChange wakes on commit`() {
         val q = FrameQueue(1)
-        val waiter = thread {
-            while (q.isEmpty && !q.isClosed) q.awaitNonEmpty(5_000_000_000L)
-        }
+        val tick = q.changeTick()
+        val waiter = thread { q.awaitChange(tick, 5_000_000_000L) }
         Thread.sleep(50)
         assertTrue(waiter.isAlive, "the consumer must be parked")
         q.put(1)
@@ -143,11 +142,38 @@ class FrameQueueTest {
     }
 
     @Test
+    fun `awaitChange wakes on clear`() {
+        // The seek case: a consumer sleeping out a stale head's wait must
+        // notice the flush immediately, or the landing pays the timeout.
+        val q = FrameQueue(2)
+        q.put(1)
+        val tick = q.changeTick()
+        val waiter = thread { q.awaitChange(tick, 5_000_000_000L) }
+        Thread.sleep(50)
+        assertTrue(waiter.isAlive, "the consumer must be parked")
+        q.clear()
+        waiter.join(2_000)
+        assertFalse(waiter.isAlive, "a flush must wake the waiter")
+    }
+
+    @Test
+    fun `awaitChange returns at once when the queue already moved`() {
+        val q = FrameQueue(1)
+        val tick = q.changeTick()
+        q.put(1)
+        val start = System.nanoTime()
+        q.awaitChange(tick, 5_000_000_000L)
+        assertTrue(
+            System.nanoTime() - start < 1_000_000_000L,
+            "a stale tick must not sleep",
+        )
+    }
+
+    @Test
     fun `close wakes and releases a parked consumer`() {
         val q = FrameQueue(1)
-        val waiter = thread {
-            while (q.isEmpty && !q.isClosed) q.awaitNonEmpty(5_000_000_000L)
-        }
+        val tick = q.changeTick()
+        val waiter = thread { q.awaitChange(tick, 5_000_000_000L) }
         Thread.sleep(50)
         assertTrue(waiter.isAlive)
         q.close()

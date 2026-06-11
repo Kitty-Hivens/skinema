@@ -12,7 +12,6 @@ import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.locks.LockSupport
 
 /**
  * Plays one video file: a dedicated decode thread keeps a small queue
@@ -531,9 +530,12 @@ class VideoPlayer internal constructor(
         var lastClockReading = Long.MIN_VALUE
         var starveWarnedPts = Long.MIN_VALUE
         while (!queue.isClosed) {
+            // The tick reads before the peek: a mutation in between makes
+            // the next wait return immediately instead of sleeping stale.
+            val tick = queue.changeTick()
             val head = queue.peekHead()
             if (head == null) {
-                queue.awaitNonEmpty(PACE_RECHECK_NANOS)
+                queue.awaitChange(tick, PACE_RECHECK_NANOS)
                 continue
             }
             if (head.forced) {
@@ -544,7 +546,7 @@ class VideoPlayer internal constructor(
             }
             if (state !is State.Playing) {
                 // Paused, or a landing resolving: hold the inventory.
-                LockSupport.parkNanos(IDLE_RECHECK_NANOS)
+                queue.awaitChange(tick, IDLE_RECHECK_NANOS)
                 continue
             }
 
@@ -582,8 +584,9 @@ class VideoPlayer internal constructor(
                 }
                 // Capped: the audio thread can re-anchor the clock at any
                 // moment, and a sleep taken against a stale reading must
-                // notice within one period.
-                LockSupport.parkNanos(wait.coerceAtMost(PACE_RECHECK_NANOS))
+                // notice within one period. A queue mutation (a seek's
+                // flush-and-landing) cuts the sleep short entirely.
+                queue.awaitChange(tick, wait.coerceAtMost(PACE_RECHECK_NANOS))
                 continue
             }
 
