@@ -85,6 +85,7 @@ class VideoPlayer(
         data object Pause : Command
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
+        data class SeekBy(val deltaNanos: Long) : Command
         data object Close : Command
     }
 
@@ -98,18 +99,18 @@ class VideoPlayer(
     private var seekGeneration = 0
 
     // The intended playhead: the frame on screen during normal playback,
-    // the accumulating destination during a seek burst. [seekBy] adds to
+    // the accumulating destination during a seek burst. SeekBy adds to
     // this rather than to the live clock, so presses faster than a landing
     // takes still sum to the final destination -- the clock stands at the
     // old anchor mid-landing, and reading it (or worse, resetting to -1 on
-    // each landing) made bursts resolve to the wrong place. Always valid.
-    @Volatile
+    // each landing) made bursts resolve to the wrong place. Owned by the
+    // decode thread: relative seeks travel as SeekBy commands and resolve
+    // against it here, so no other thread ever writes it.
     private var intendedPositionNanos = 0L
 
     // True between issuing a seek and its landing; while set, the decode
     // loop must not overwrite [intendedPositionNanos] with the frame it
     // publishes (the accumulated burst target wins).
-    @Volatile
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
@@ -139,20 +140,17 @@ class VideoPlayer(
     fun resume() = commands.put(Command.Resume)
 
     /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */
-    fun seek(ptsNanos: Long) {
-        val target = ptsNanos.coerceAtLeast(0)
-        seekInFlight = true
-        intendedPositionNanos = target
-        commands.put(Command.Seek(target))
-    }
+    fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos.coerceAtLeast(0)))
 
     /**
      * Seeks [deltaNanos] relative to the intended playhead -- the right
      * primitive for +N/-N buttons. Rapid presses accumulate to one
      * destination regardless of how far behind the clock's anchor lags
-     * during a landing.
+     * during a landing. The delta resolves on the decode thread, against
+     * its own playhead state -- resolving here would race the publish
+     * loop's bookkeeping.
      */
-    fun seekBy(deltaNanos: Long) = seek(intendedPositionNanos + deltaNanos)
+    fun seekBy(deltaNanos: Long) = commands.put(Command.SeekBy(deltaNanos))
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -291,21 +289,26 @@ class VideoPlayer(
             }
             true
         }
-        is Command.Seek -> {
-            audioPipeline?.seek(cmd.ptsNanos)
-            val keepRunning = if (decoder != null) {
-                performSeek(decoder, cmd.ptsNanos)
-            } else {
-                // Frameless (audio-only): no landing to wait for.
-                seekInFlight = false
-                if (state is State.Ended) state = State.Playing
-                true
-            }
-            // Sound stays frozen at the anchor until the landing is done;
-            // released here even when the landing ended the stream.
-            audioPipeline?.videoLanded()
-            keepRunning
+        is Command.Seek -> handleSeek(cmd.ptsNanos, decoder)
+        is Command.SeekBy -> handleSeek((intendedPositionNanos + cmd.deltaNanos).coerceAtLeast(0), decoder)
+    }
+
+    private fun handleSeek(targetNanos: Long, decoder: FrameSource?): Boolean {
+        seekInFlight = true
+        intendedPositionNanos = targetNanos
+        audioPipeline?.seek(targetNanos)
+        val keepRunning = if (decoder != null) {
+            performSeek(decoder, targetNanos)
+        } else {
+            // Frameless (audio-only): no landing to wait for.
+            seekInFlight = false
+            if (state is State.Ended) state = State.Playing
+            true
         }
+        // Sound stays frozen at the anchor until the landing is done;
+        // released here even when the landing ended the stream.
+        audioPipeline?.videoLanded()
+        return keepRunning
     }
 
     /**
@@ -320,7 +323,7 @@ class VideoPlayer(
         val wrapped = lastPublishedPts / 2
         while (state is State.Playing && lastPublishedPts > 0 && clock.mediaNanos() > wrapped) {
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
-            val seeked = cmd is Command.Seek
+            val seeked = cmd is Command.Seek || cmd is Command.SeekBy
             if (!handle(cmd, decoder)) return false
             if (seeked || state !is State.Playing) break
         }
@@ -349,18 +352,21 @@ class VideoPlayer(
         var dropped = 0
         var landedFromKeyframe = Long.MIN_VALUE
         while (true) {
-            when (val next = commands.peek()) {
-                is Command.Seek -> {
-                    commands.poll()
-                    target = next.ptsNanos
-                    audioPipeline?.seek(target)
-                    decoder.seekTo(target)
-                    dropped = 0
-                    landedFromKeyframe = Long.MIN_VALUE
-                    continue
-                }
+            val superseded = when (val next = commands.peek()) {
+                is Command.Seek -> next.ptsNanos
+                is Command.SeekBy -> (intendedPositionNanos + next.deltaNanos).coerceAtLeast(0)
                 Command.Close -> return false
-                else -> {}
+                else -> null
+            }
+            if (superseded != null) {
+                commands.poll()
+                target = superseded
+                intendedPositionNanos = target
+                audioPipeline?.seek(target)
+                decoder.seekTo(target)
+                dropped = 0
+                landedFromKeyframe = Long.MIN_VALUE
+                continue
             }
             // Bare decode while dropping: converting frames that are thrown
             // away costs several times the decode itself.
