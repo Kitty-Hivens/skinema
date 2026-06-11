@@ -204,9 +204,16 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `seekBy accumulates against the pending target, not the lagging clock`() {
+    fun `seekBy accumulates against the pending target, not the lagging clock`() =
+        seekByAccumulationScenario(readAheadFrames = 1)
+
+    @Test
+    fun `seekBy accumulates against the pending target at depth 4`() =
+        seekByAccumulationScenario(readAheadFrames = 4)
+
+    private fun seekByAccumulationScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("accum.mp4", "30"), loop = false).use { player ->
+        VideoPlayer(shortVideo("accum.mp4", "30"), loop = false, readAheadFrames = readAheadFrames).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             awaitTrue { player.state is VideoPlayer.State.Paused }
@@ -269,9 +276,16 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `rapid seeks coalesce into a landing at the final target`() {
+    fun `rapid seeks coalesce into a landing at the final target`() =
+        seekCoalescingScenario(readAheadFrames = 1)
+
+    @Test
+    fun `rapid seeks coalesce into a landing at depth 4`() =
+        seekCoalescingScenario(readAheadFrames = 4)
+
+    private fun seekCoalescingScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("spam.mp4", "3"), loop = false).use { player ->
+        VideoPlayer(shortVideo("spam.mp4", "3"), loop = false, readAheadFrames = readAheadFrames).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             awaitTrue { player.state is VideoPlayer.State.Paused }
@@ -296,7 +310,14 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `a seek during the loop-wrap park repositions the video`() {
+    fun `a seek during the loop-wrap park repositions the video`() =
+        parkSeekScenario(readAheadFrames = 1)
+
+    @Test
+    fun `a seek during the loop-wrap park repositions the video at depth 4`() =
+        parkSeekScenario(readAheadFrames = 4)
+
+    private fun parkSeekScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
         // The audio stream outlives the video: after the video's EOF the
         // audio thread is still mid-stream, blocked in the bounded write
@@ -313,7 +334,7 @@ class VideoPlayerTest {
         // Half a second of buffer; the audio thread blocks on write like a
         // real line and the played position is the test's hands.
         val sink = BoundedPcmSink(capacityFrames = 22_050)
-        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+        VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
             try {
                 // Drive the "DAC" past the video's end (2s), leaving the
                 // audio stream unfinished. The gate is the played position,
@@ -355,7 +376,14 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `a clock jump far ahead is caught up and frames keep flowing`() {
+    fun `a clock jump far ahead is caught up and frames keep flowing`() =
+        chaseLivenessScenario(readAheadFrames = 1)
+
+    @Test
+    fun `a clock jump far ahead is caught up at depth 4`() =
+        chaseLivenessScenario(readAheadFrames = 4)
+
+    private fun chaseLivenessScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
         // Liveness for the catch-up path: late frames drop unconverted
         // behind shouldPublishLateFrame, and a broken policy would starve
@@ -365,7 +393,12 @@ class VideoPlayerTest {
         // dividing, so a made-up rate like 1e9 overflows Long.
         val frames = AtomicLong(0)
         val clock = AudioClock(48_000) { frames.get() }
-        VideoPlayer(shortVideo("chase.mp4", "30"), loop = false, explicitClock = clock).use { player ->
+        VideoPlayer(
+            shortVideo("chase.mp4", "30"),
+            loop = false,
+            explicitClock = clock,
+            readAheadFrames = readAheadFrames,
+        ).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             frames.set(24_000)
             var seen = -1L
@@ -391,7 +424,14 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `a clock re-anchored mid-sleep is noticed without a command`() {
+    fun `a clock re-anchored mid-sleep is noticed without a command`() =
+        staleClockScenario(readAheadFrames = 1)
+
+    @Test
+    fun `a clock re-anchored mid-sleep is noticed at depth 4`() =
+        staleClockScenario(readAheadFrames = 4)
+
+    private fun staleClockScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
         val av = Fixtures.generate(
             dir.resolve("stale.mp4"),
@@ -402,7 +442,7 @@ class VideoPlayerTest {
             "-c:a", "aac",
         )
         val sink = BoundedPcmSink(capacityFrames = 8_820)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(av, loop = false, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
                 // Nothing is consumed, so the buffer fills and the audio
