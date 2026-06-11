@@ -20,11 +20,11 @@ player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.1.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.1.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.1.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.1.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.1.0:macos-x64")
+implementation("dev.hivens:skinema-compose:0.2.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.2.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.2.0:windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.2.0:macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.2.0:macos-x64")
 ```
 
 The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
