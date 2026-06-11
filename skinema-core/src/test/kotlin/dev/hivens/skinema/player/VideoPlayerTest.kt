@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
@@ -289,6 +290,54 @@ class VideoPlayerTest {
                 "the final target must land, saw $landed",
             )
             assertTrue(landed.size <= 5, "ten queued seeks must coalesce, saw ${landed.size} landings: $landed")
+        }
+    }
+
+    @Test
+    fun `a seek during the loop-wrap park repositions the video`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("park.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", "-shortest",
+        )
+        // Half a second of buffer; the audio thread blocks on write like a
+        // real line and the played position is the test's hands.
+        val sink = BoundedPcmSink(capacityFrames = 22_050)
+        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+            try {
+                // Drive the "DAC" to the end of the stream, holding back a
+                // tail so the audio thread parks in drain() instead of
+                // wrapping the clock -- the loop-wrap park, pinned open.
+                var lastSeen = -1L
+                assertTrue(
+                    awaitTrue {
+                        sink.consumeAllButTail(2_205)
+                        player.acquireFrame()?.let { lastSeen = it.ptsNanos }
+                        lastSeen >= 1_800_000_000L
+                    },
+                    "video must reach its last frames, saw ${lastSeen}ns",
+                )
+                // Let the decode thread hit EOF and enter the park.
+                Thread.sleep(200)
+
+                // The bug: a parked seek was handled decoder-less, so the
+                // video never repositioned and nothing published until the
+                // audio side wrapped. The landing frame itself races the
+                // late-frame catch-up in the mailbox, so assert that
+                // publishing resumes at all -- the broken path publishes
+                // nothing within any deadline.
+                player.seek(500_000_000L)
+                assertTrue(
+                    awaitTrue { player.acquireFrame() != null },
+                    "a parked player must land a seek instead of freezing",
+                )
+            } finally {
+                sink.release()
+            }
         }
     }
 

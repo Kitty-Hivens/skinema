@@ -237,7 +237,7 @@ class VideoPlayer(
                     decoder.seekTo(0)
                     if (ownsClock) {
                         clock.seek(0)
-                    } else if (!awaitClockWrap()) {
+                    } else if (!awaitClockWrap(decoder)) {
                         return
                     }
                 } else {
@@ -311,14 +311,18 @@ class VideoPlayer(
     /**
      * The audio side wraps the clock on ITS end-of-stream; video parks
      * here after its own EOF until time restarts, staying responsive to
-     * commands. Returns false on Close.
+     * commands. Commands are handled with the real decoder -- a seek
+     * handled decoder-less would re-anchor the audio and leave the video
+     * frozen on its last frame until the wrap. A landed seek repositioned
+     * the decoder, so it also ends the park. Returns false on Close.
      */
-    private fun awaitClockWrap(): Boolean {
+    private fun awaitClockWrap(decoder: FrameSource): Boolean {
         val wrapped = lastPublishedPts / 2
         while (state is State.Playing && lastPublishedPts > 0 && clock.mediaNanos() > wrapped) {
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
-            if (!handle(cmd, decoder = null)) return false
-            if (state !is State.Playing) break
+            val seeked = cmd is Command.Seek
+            if (!handle(cmd, decoder)) return false
+            if (seeked || state !is State.Playing) break
         }
         return true
     }
