@@ -47,6 +47,27 @@ class AudioClockTest {
     }
 
     @Test
+    fun `a backward device-position wobble does not run media time backward`() {
+        clock.start(0)
+        frames = 9_600
+        assertEquals(200_000_000L, clock.mediaNanos())
+        // Driver reconciliation glitch: the reported position dips.
+        frames = 9_000
+        assertEquals(200_000_000L, clock.mediaNanos(), "the wobble must be clamped, not shown")
+        frames = 10_000
+        assertEquals(208_333_333L, clock.mediaNanos(), "real progress resumes past the clamp")
+    }
+
+    @Test
+    fun `a backward seek legitimately moves media time backward`() {
+        clock.start(0)
+        frames = 48_000
+        assertEquals(1_000_000_000L, clock.mediaNanos())
+        clock.seek(250_000_000L)
+        assertEquals(250_000_000L, clock.mediaNanos(), "a re-anchor resets the monotonic floor")
+    }
+
+    @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)
         frames = 48_000

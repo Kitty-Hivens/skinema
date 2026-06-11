@@ -21,6 +21,14 @@ class AudioClock(
     private var baseMediaNanos = 0L
     private var baseFrames = 0L
 
+    // The device's position report is only trusted forward: around a
+    // flush/restart some backends reconcile their frame counter
+    // non-monotonically, and a transient backward step would walk media
+    // time below frames already shown -- video treats them as "not due"
+    // and stalls. A re-anchor (start/seek) legitimately moves time
+    // backward and resets the floor.
+    private var floorNanos = Long.MIN_VALUE
+
     @Volatile
     override var isPaused = true
         private set
@@ -29,6 +37,7 @@ class AudioClock(
         synchronized(lock) {
             baseMediaNanos = atMediaNanos
             baseFrames = positionFrames()
+            floorNanos = Long.MIN_VALUE
             isPaused = false
         }
     }
@@ -46,14 +55,21 @@ class AudioClock(
         synchronized(lock) {
             baseMediaNanos = mediaNanos
             baseFrames = positionFrames()
+            floorNanos = Long.MIN_VALUE
         }
     }
 
     override fun mediaNanos(): Long = synchronized(lock) {
-        if (detachedAtWall >= 0) {
+        val raw = if (detachedAtWall >= 0) {
             detachedMedia + (System.nanoTime() - detachedAtWall)
         } else {
             baseMediaNanos + (positionFrames() - baseFrames) * 1_000_000_000L / sampleRate
+        }
+        if (raw < floorNanos) {
+            floorNanos
+        } else {
+            floorNanos = raw
+            raw
         }
     }
 
@@ -68,7 +84,8 @@ class AudioClock(
      */
     fun detachToWallTime() {
         synchronized(lock) {
-            detachedMedia = baseMediaNanos + (positionFrames() - baseFrames) * 1_000_000_000L / sampleRate
+            val raw = baseMediaNanos + (positionFrames() - baseFrames) * 1_000_000_000L / sampleRate
+            detachedMedia = maxOf(raw, floorNanos)
             detachedAtWall = System.nanoTime()
         }
     }

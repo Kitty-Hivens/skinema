@@ -183,6 +183,7 @@ internal class AudioPipeline(
             if (awaitingLanding) {
                 awaitingLanding = false
                 if (!paused && !isEnded) sink.start()
+                if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
             }
             true
         }
@@ -200,6 +201,7 @@ internal class AudioPipeline(
     private fun performSeek(decoder: AudioDecoder, clock: AudioClock, targetNanos: Long) {
         sink.stop()
         sink.flush()
+        if (DEBUG_SEEK) System.err.println("[audio-seek] target=${targetNanos / 1_000_000}ms posAtFlush=${sink.framePosition()}")
         pendingPcm = null
         awaitingLanding = true
         isEnded = false
@@ -224,9 +226,15 @@ internal class AudioPipeline(
             val skipSamples = ((targetNanos - chunk.ptsNanos).coerceAtLeast(0) * chunk.sampleRate / 1_000_000_000L)
                 .toInt()
                 .coerceAtMost(samples)
-            clock.seek(chunk.ptsNanos + skipSamples * 1_000_000_000L / chunk.sampleRate)
+            val anchorNanos = chunk.ptsNanos + skipSamples * 1_000_000_000L / chunk.sampleRate
+            clock.seek(anchorNanos)
             // Copied out because the decoder reuses chunk.pcm.
             pendingPcm = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount)
+            if (DEBUG_SEEK) {
+                System.err.println(
+                    "[audio-seek] anchored=${anchorNanos / 1_000_000}ms posAtAnchor=${sink.framePosition()} pending=${chunk.byteCount - skipSamples * BYTES_PER_FRAME}B",
+                )
+            }
             return
         }
     }
@@ -234,5 +242,11 @@ internal class AudioPipeline(
     private companion object {
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         const val BYTES_PER_FRAME = 4
+
+        // Same switch as VideoPlayer's landing diagnostics: the anchor
+        // positions printed here are the forensics for the remaining
+        // intermittent-freeze theory (device position reconciling around
+        // a flush/restart).
+        val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
 }
