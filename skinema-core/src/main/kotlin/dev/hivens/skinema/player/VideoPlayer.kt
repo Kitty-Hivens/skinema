@@ -258,7 +258,7 @@ class VideoPlayer(
                     )
                     starveWarned = true
                 }
-                val c = commands.poll(wait, TimeUnit.NANOSECONDS) ?: continue
+                val c = commands.poll(wait.coerceAtMost(PACE_RECHECK_NANOS), TimeUnit.NANOSECONDS) ?: continue
                 if (!handle(c, decoder)) return
                 if (seekGeneration != generation) break
             }
@@ -459,6 +459,19 @@ class VideoPlayer(
     }
 
     private companion object {
+        /**
+         * Longest uninterrupted pace sleep. The wait is computed from one
+         * clock reading, and the audio thread re-anchors the clock from
+         * its own seek handling -- which can run AFTER a fast video
+         * landing, since it only reads its command queue between blocking
+         * writes. A sleep taken against the stale reading is a frozen
+         * picture over running sound for the whole seek distance; capping
+         * it bounds that to one re-check period. Frame-rate waits exceed
+         * the cap only on low-fps content, where an extra wakeup per
+         * period is noise.
+         */
+        const val PACE_RECHECK_NANOS = 50_000_000L
+
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
 }
