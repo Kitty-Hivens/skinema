@@ -18,8 +18,6 @@ class FakePcmSink : PcmSink {
         private set
     var volume = 1f
         private set
-    var drainCount = 0
-        private set
 
     /**
      * Writes that arrived while the line was stopped. A stopped line never
@@ -60,10 +58,6 @@ class FakePcmSink : PcmSink {
 
     override fun flush() {
         synchronized(all) { sinceFlush.reset() }
-    }
-
-    override fun drain() {
-        drainCount++
     }
 
     override fun framePosition(): Long {

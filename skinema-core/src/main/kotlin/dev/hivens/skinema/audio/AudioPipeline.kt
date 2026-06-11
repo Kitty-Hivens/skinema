@@ -58,6 +58,10 @@ internal class AudioPipeline(
     // pipeline for good.
     private var pendingPcm: ByteArray? = null
 
+    // End pts of the last PCM handed to the sink; the EOF tail wait runs
+    // until the clock (= the device) reaches it.
+    private var lastWrittenEndNanos = 0L
+
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
         start()
@@ -119,6 +123,7 @@ internal class AudioPipeline(
         clock = theClock
         theClock.start(first.ptsNanos)
         clockFuture.complete(theClock)
+        lastWrittenEndNanos = first.ptsNanos + (first.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / first.sampleRate
         sink.write(first.pcm, 0, first.byteCount)
 
         while (true) {
@@ -142,15 +147,19 @@ internal class AudioPipeline(
             val chunk = decoder.nextChunk()
             if (chunk == null) {
                 // Let the buffered tail play out before deciding the time.
-                sink.drain()
-                if (loop) {
-                    decoder.seekTo(0)
-                    theClock.seek(0)
-                } else {
-                    isEnded = true
+                when (awaitTailPlayedOut(decoder, theClock)) {
+                    TailWait.PLAYED_OUT -> if (loop) {
+                        decoder.seekTo(0)
+                        theClock.seek(0)
+                    } else {
+                        isEnded = true
+                    }
+                    TailWait.INTERRUPTED -> {}
+                    TailWait.CLOSE -> return
                 }
                 continue
             }
+            lastWrittenEndNanos = chunk.ptsNanos + (chunk.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / chunk.sampleRate
             // Blocking write -- this IS the pacing.
             sink.write(chunk.pcm, 0, chunk.byteCount)
         }
@@ -230,6 +239,7 @@ internal class AudioPipeline(
             clock.seek(anchorNanos)
             // Copied out because the decoder reuses chunk.pcm.
             pendingPcm = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount)
+            lastWrittenEndNanos = chunkEnd
             if (DEBUG_SEEK) {
                 System.err.println(
                     "[audio-seek] anchored=${anchorNanos / 1_000_000}ms posAtAnchor=${sink.framePosition()} pending=${chunk.byteCount - skipSamples * BYTES_PER_FRAME}B",
@@ -239,9 +249,33 @@ internal class AudioPipeline(
         }
     }
 
+    private enum class TailWait { PLAYED_OUT, INTERRUPTED, CLOSE }
+
+    /**
+     * Waits until the clock -- and therefore the device -- reaches the end
+     * of the last written chunk, while staying on the command queue. The
+     * old sink.drain() deafened this thread for the whole buffered tail,
+     * so a seek pressed near a loop wrap waited the tail out for nothing
+     * (its first act is flushing that tail). A wall deadline bounds the
+     * wait against a stalled device; past it the tail is declared played.
+     */
+    private fun awaitTailPlayedOut(decoder: AudioDecoder, clock: AudioClock): TailWait {
+        val deadline = System.nanoTime() +
+            (lastWrittenEndNanos - clock.mediaNanos()).coerceAtLeast(0) + TAIL_GRACE_NANOS
+        while (clock.mediaNanos() < lastWrittenEndNanos) {
+            if (System.nanoTime() >= deadline) break
+            val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
+            return if (handle(cmd, decoder, clock)) TailWait.INTERRUPTED else TailWait.CLOSE
+        }
+        return TailWait.PLAYED_OUT
+    }
+
     private companion object {
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         const val BYTES_PER_FRAME = 4
+
+        /** Slack past the tail's nominal duration before giving up on the device. */
+        const val TAIL_GRACE_NANOS = 500_000_000L
 
         // Same switch as VideoPlayer's landing diagnostics: the anchor
         // positions printed here are the forensics for the remaining
