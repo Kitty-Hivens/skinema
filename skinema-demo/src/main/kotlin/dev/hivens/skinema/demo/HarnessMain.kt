@@ -39,17 +39,18 @@ import kotlin.time.Duration.Companion.seconds
  * composition while players keep running, and a failed source rendering
  * as the consumer's fallback, all next to a live RSS/heap ticker.
  *
- *   ./gradlew :skinema-demo:harness -Pvideo=<file>
+ *   ./gradlew :skinema-demo:harness -Pvideo=<file> [-Pplayers=N] [-PreadAhead=N]
  */
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: harness <video> [players] [churn-seconds]" })
     val playerCount = args.getOrNull(1)?.toInt() ?: 3
     val churnSeconds = args.getOrNull(2)?.toLong() ?: 0L
+    val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema harness") {
             // N live players plus one doomed source: the fallback cell
             // must come from state, not from a crash.
-            val players = remember { List(playerCount) { VideoPlayer(video, loop = true) } }
+            val players = remember { List(playerCount) { VideoPlayer(video, loop = true, readAheadFrames = readAhead) } }
             val doomed = remember { VideoPlayer(video.resolveSibling("does-not-exist.mp4"), loop = true) }
             DisposableEffect(Unit) {
                 onDispose {

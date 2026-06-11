@@ -159,8 +159,10 @@ Known traps (each verified the hard way elsewhere; do not rediscover):
 
 ```
 decode thread:  av_read_frame -> send_packet -> receive_frame (YUV)
-                -> sws_scale into a reused RGBA buffer -> publish
-UI side:        latest-frame mailbox; present when pts <= now; drop late
+                -> sws_scale into a queue cell (RGBA, reused)
+pacer thread:   wait until the head cell's pts is due -> swap its array
+                into the mailbox's writing slot -> publish
+UI side:        latest-frame mailbox; acquire the freshest; drop late
 ```
 
 - Decoded video is YUV; swscale converts to RGBA at one chokepoint. The
@@ -431,15 +433,40 @@ README once the library is usable.
   the lever is a smaller buffer on a lower-latency backend, not clock
   fiction. Nothing blocks 0.2.0 anymore.
 
-- **M6 -- in progress (2026-06-11):** the real-life audio codec set --
-  ac3/eac3, alac, 24/32-bit and float WAV pcm -- is DONE: whitelisted,
-  natives rebuilt on all four platforms onto the rolling release (each
-  through its on-runner acceptance gate), decoder tests dogfooding the
-  shipped bundles green across the test matrix. Files from the wild
-  (movie-rip audio tracks, m4a lossless, DAW exports) decode instead of
-  failing closed; consumers get the new bundles with the next natives
-  publish (0.3.0). Remaining in M6: the read-ahead frame queue
-  (section 13's player-scenario knob).
+- **M6 -- feature work DONE (2026-06-11); closes with the 0.3.0
+  release.** The real-life audio codec set -- ac3/eac3, alac, 24/32-bit
+  and float WAV pcm -- is in: whitelisted, natives rebuilt on all four
+  platforms onto the rolling release (each through its on-runner
+  acceptance gate), decoder tests dogfooding the shipped bundles green
+  across the test matrix. Files from the wild (movie-rip audio tracks,
+  m4a lossless, DAW exports) decode instead of failing closed;
+  consumers get the new bundles with the next natives publish (0.3.0).
+
+  The read-ahead frame queue (section 13's player-scenario knob) landed
+  the same day: `readAheadFrames` (default 1, coerced 1..8) holds N
+  converted frames of inventory between decode and presentation, so a
+  decode stall (slow frame, disk, GC) stops costing the screen while
+  inventory lasts. The architecture is a third actor: presentation
+  moved off the decode thread to a per-player pacer thread that waits
+  out each queued frame's pts and publishes by swapping arrays with
+  the mailbox's writing slot -- no pixel copy anywhere on the path. A
+  single-threaded queue (fill and release interleaved on the decode
+  thread) was designed first and REJECTED on review: a stalled decode
+  blocks the publisher itself, so inventory cannot present during the
+  stall, which is the entire point. The pacer touches only heap
+  arrays, the clock and the mailbox; the FFM arena stays confined to
+  the decode thread. Rules that came with inventory: seeks flush the
+  queue and land through it as forced frames (published past the
+  pacer's state gate and late policy); EOF actions -- loop wrap, the
+  clock-wrap park, Ended -- first wait for the pacer to drain the
+  tail; a backward clock jump without a seek is a loop wrap, and a
+  stranded pre-wrap tail (video outlasting audio) presents at the wrap
+  instead of a lap later. One deliberate behavior change at any depth:
+  pause no longer drops the in-flight frame -- it presents after
+  resume from inventory, which is strictly better. Depth 1 is
+  otherwise today's semantics and stays the default; backgrounds keep
+  it, a player scenario passes 3-5 (each step of depth is a full RGBA
+  frame of memory, 8.3 MB at 1080p).
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
@@ -471,16 +498,14 @@ without breaking changes. Not before.
 - ~~The intermittent post-seek freeze~~ root-caused and fixed 2026-06-11
   (the awaitClockWrap park hole -- M5 section). The extrapolation
   question is decided against (M5 section); the ~one-buffer post-seek
-  hold stays by choice. A read-ahead frame queue (decode 3-5 frames instead of one)
-  is a separate candidate: the player decodes one frame ahead today, so
-  any decode hiccup is immediately visible; a small queue would absorb
-  jitter. Not needed for backgrounds (the latest-frame mailbox is
-  deliberate there), but it is the player-scenario knob. The catch-up
-  residue is resolved (2026-06-11): runs ride the convert=false
-  drop-run behind a pure publish policy -- frames later than 250 ms
-  drop unconverted, a starvation guard surfaces one per 150 ms, so a
-  chase costs bare decode and an overloaded machine degrades to a
-  slideshow instead of a freeze.
+  hold stays by choice. ~~A read-ahead frame queue~~ shipped in M6
+  (`readAheadFrames` and the pacer-thread architecture; reasoning in
+  the M6 milestone entry). The catch-up residue is resolved
+  (2026-06-11): runs ride the convert=false drop-run behind a pure
+  publish policy -- frames later than 250 ms drop unconverted, a
+  starvation guard surfaces one per 150 ms, so a chase costs bare
+  decode and an overloaded machine degrades to a slideshow instead of
+  a freeze.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
 - HDR: today's reality is a naive swscale conversion (PQ content plays

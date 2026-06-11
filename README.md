@@ -34,13 +34,13 @@ fine for development, not what you ship.
 
 ## What it plays
 
-|                 |                                                                                      |
-|-----------------|--------------------------------------------------------------------------------------|
-| Containers      | mp4/mov/m4a, webm/mkv, gif, apng, webp, ogg, mp3, flac, wav, raw ac3/eac3            |
-| Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                         |
-| Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode |
+|                 |                                                                                               |
+|-----------------|-----------------------------------------------------------------------------------------------|
+| Containers      | mp4/mov/m4a, webm/mkv, gif, apng, webp, ogg, mp3, flac, wav, raw ac3/eac3                     |
+| Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                                  |
+| Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
 | Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
-| Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                           |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                                    |
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
@@ -58,9 +58,15 @@ is a roadmap item.
   `VideoPlayer.State.Failed` -- show your fallback. No partial recovery,
   no garbage frames, no hangs.
 - **Drop late.** A slow consumer skips frames; the clock never lags.
-- **One decode thread per player.** Players are independent and
+- **Two threads per player** (a third with audio): decode fills a small
+  frame queue, a pacer presents from it. Players are independent and
   self-synced; play as many as your CPU affords (a desktop comfortably
   runs dozens of 1080p30 streams).
+- **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
+  many decoded frames of inventory, so a decode stall does not stall
+  the screen while inventory lasts. Each step of depth costs one full
+  RGBA frame of memory -- 8.3 MB at 1080p. Backgrounds stay at 1; a
+  player UI wants 3-5.
 
 ## Modules
 

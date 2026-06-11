@@ -31,6 +31,12 @@ compose.desktop {
 // Demo runner: ./gradlew :skinema-demo:run -Pvideo=/path/file.mp4 [-Psound]
 val demoVideo = providers.gradleProperty("video")
 val demoSound = providers.gradleProperty("sound")
+
+// Read-ahead depth for every demo task: -PreadAhead=N (default 1).
+val demoReadAhead = providers.gradleProperty("readAhead")
+tasks.withType<JavaExec>().configureEach {
+    demoReadAhead.orNull?.let { systemProperty("skinema.demo.readAhead", it) }
+}
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
@@ -59,7 +65,7 @@ val harnessPlayers = providers.gradleProperty("players")
 val harnessChurn = providers.gradleProperty("churn")
 tasks.register<JavaExec>("harness") {
     group = "skinema"
-    description = "Windowed consumer-shaped harness: -Pvideo=<file> [-Pplayers=N] [-Pchurn=seconds]"
+    description = "Windowed consumer-shaped harness: -Pvideo=<file> [-Pplayers=N] [-Pchurn=seconds] [-PreadAhead=N]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.HarnessMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
@@ -84,7 +90,7 @@ tasks.register<JavaExec>("seekbench") {
 val soakMinutes = providers.gradleProperty("minutes")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
