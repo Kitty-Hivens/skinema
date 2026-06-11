@@ -353,6 +353,57 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `a clock re-anchored mid-sleep is noticed without a command`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("stale.mp4"),
+            "-f", "lavfi", "-t", "30", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-t", "31", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac",
+        )
+        val sink = BoundedPcmSink(capacityFrames = 8_820)
+        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+            try {
+                assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+                // Nothing is consumed, so the buffer fills and the audio
+                // thread parks inside write -- its half of the next seek
+                // will run late, which is the race: a fast video landing
+                // finishing before the audio side anchors the clock.
+                assertTrue(awaitTrue { sink.writerParked }, "the audio thread must park in write")
+
+                player.seek(20_000_000_000L)
+                var landed = -1L
+                assertTrue(
+                    awaitTrue {
+                        player.acquireFrame()?.let { landed = it.ptsNanos }
+                        landed >= 20_000_000_000L
+                    },
+                    "the landing must publish against the stale clock, saw ${landed}ns",
+                )
+
+                // Release the audio thread: it now anchors the clock at the
+                // target and restarts the sink. The pace loop sleeps on a
+                // wait computed BEFORE the anchor (~20s of stale distance);
+                // it must notice the re-anchor on its own, with no command
+                // arriving to wake it.
+                var next = -1L
+                assertTrue(
+                    awaitTrue(deadlineMs = 3_000) {
+                        sink.consumeAllButTail(0)
+                        player.acquireFrame()?.let { next = it.ptsNanos }
+                        next > 20_000_000_000L
+                    },
+                    "frames past the landing must flow once the clock anchors, saw ${next}ns",
+                )
+            } finally {
+                sink.release()
+            }
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->
