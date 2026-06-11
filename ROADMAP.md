@@ -415,13 +415,14 @@ README once the library is usable.
   its first data hit the same session: posAtFlush == posAtAnchor ==
   posAtStart on every observed seek.
 
-  STILL OPEN: the deterministic ~one-buffer hold after a seek (the
-  device reports no progress until the line refills). The wall-time
-  spin-up extrapolation in AudioClock would mask it at the cost of up to
+  The live listen on real hardware (2026-06-11, the same mp4 that froze)
+  confirms both fixes: the intermittent freeze is gone. STILL OPEN, now
+  cosmetic: the deterministic ~one-buffer hold after a seek (the device
+  reports no progress until the line refills). The wall-time spin-up
+  extrapolation in AudioClock would mask it at the cost of up to
   ~one-buffer picture-ahead-of-sound drift -- that decision still waits,
   and may no longer be worth taking now that both intermittent
-  components had different, fixed roots. Remaining for 0.2.0: a live
-  listen on real hardware to confirm the freezes are gone.
+  components had different, fixed roots. Nothing blocks 0.2.0 anymore.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
