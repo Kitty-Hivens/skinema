@@ -101,7 +101,13 @@ fun main(args: Array<String>) {
                             modifier = Modifier.width(120.dp),
                         )
                     }
-                    Text("state: ${rememberPlayerState(player)::class.simpleName}", color = Color.Gray)
+                    when (val state = rememberPlayerState(player)) {
+                        is VideoPlayer.State.Failed -> Text(
+                            "failed: ${state.cause.message}",
+                            color = Color(0xFFFF6B6B),
+                        )
+                        else -> Text("state: ${state::class.simpleName}", color = Color.Gray)
+                    }
                 }
             }
         }
