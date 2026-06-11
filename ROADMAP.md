@@ -370,24 +370,43 @@ README once the library is usable.
   affordance; and the landing drop-run decoding without converting
   (`FrameSource.convertLast`).
 
-  OPEN (deferred, not root-caused): an INTERMITTENT post-seek freeze with
-  audio on -- "то работает, то нет", load-dependent, present at both the
-  100 ms and 200 ms line buffers (so it is NOT the buffer-underrun theory
-  that the 100->200 ms revert was meant to test). Measured facts: bare
-  decode is fast (~0.7 ms/frame at 720p, 14-136 ms per landing); the
-  deterministic part of the hold is the line's buffer-drain latency after
-  a flush (the device reports no frame progress until the buffer first
-  fills, ~one buffer's worth). The intermittent part is unexplained --
-  candidate roots still to probe: the AudioClock handoff right after a
-  re-anchor (framePosition vs baseFrames timing), a race between the
-  GUI-thread seekBy and the decode/audio threads, or device-level
-  scheduling jitter. The honest next step is a wall-time spin-up
-  extrapolation in AudioClock (advance media time on the wall clock for
-  the bounded device warm-up window after a flush, then hand back to the
-  device) -- but that trades a freeze for up to ~one-buffer of
-  picture-ahead-of-sound drift, so it waits for a decision rather than a
-  third blind pivot. Remaining for 0.2.0: root-cause this, then a live
-  listen on real hardware.
+  The intermittent post-seek freeze ("то работает, то нет",
+  load-dependent, present at both the 100 ms and 200 ms line buffers) is
+  ROOT-CAUSED as of 2026-06-11 -- a full-library audit found it in plain
+  logic, not device jitter. With an audio-mastered clock, video parks in
+  awaitClockWrap after its EOF until the audio wraps time; commands
+  arriving during the park were handled with decoder = null, so a seek
+  re-anchored the audio but never repositioned the video. A target past
+  half the duration froze the picture until the audio reached its own
+  end of stream; a nearer target self-healed behind a catch-up chase.
+  The window opens on every loop wrap (the audio tail plus its drain
+  latency, which stretches under load -- hence the load dependence), so
+  live seeking hit it intermittently. Fixed: park commands run against
+  the real decoder and a landed seek ends the park, with a deterministic
+  regression test built on a bounded blocking sink.
+
+  The same audit hardened the rest of the seek path: relative seeks now
+  resolve on the decode thread (a seekBy/stamp TOCTOU could eat one
+  press of a burst); the seek prefill is deferred until the sink runs
+  again (a cropped remainder larger than the line buffer block-wrote a
+  stopped line -- a self-deadlock, since the start() that frees it lives
+  on the same thread, and FLAC allows 65535-sample blocks); the EOF
+  drain became a clock-based wait that stays on the command queue
+  (sink.drain() deafened the audio thread for the whole buffered tail,
+  exactly inside the wrap window -- drain() left PcmSink with it); and
+  AudioClock clamps media time monotonic between re-anchors (some
+  backends reconcile framePosition non-monotonically around a
+  flush/restart). SKINEMA_DEBUG_SEEK additionally prints the sink
+  position at flush/anchor/start for anchor forensics.
+
+  STILL OPEN: the deterministic ~one-buffer hold after a seek (the
+  device reports no progress until the line refills). The wall-time
+  spin-up extrapolation in AudioClock would mask it at the cost of up to
+  ~one-buffer picture-ahead-of-sound drift -- that decision still waits,
+  and may no longer be worth taking now that the intermittent component
+  had a different, fixed root. Remaining for 0.2.0: a live listen on
+  real hardware to confirm the freeze is gone (and to confirm or retire
+  the anchor-jump theory via the new diagnostics).
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
@@ -416,13 +435,17 @@ without breaking changes. Not before.
   alpha path requires.
 - Windows/macOS arena + library unloading behavior on session close --
   verify during M3, libraryLookup lifetime is tied to an Arena.
-- The intermittent post-seek freeze (M5 section) -- root cause, then
-  decide whether the wall-time spin-up extrapolation is worth its sync
-  drift. A read-ahead frame queue (decode 3-5 frames instead of one) is a
-  separate candidate: the player decodes one frame ahead today, so any
-  decode hiccup is immediately visible; a small queue would absorb
+- ~~The intermittent post-seek freeze~~ root-caused and fixed 2026-06-11
+  (the awaitClockWrap park hole -- M5 section). Left behind: the
+  deterministic ~one-buffer post-seek hold and the extrapolation
+  decision. A read-ahead frame queue (decode 3-5 frames instead of one)
+  is a separate candidate: the player decodes one frame ahead today, so
+  any decode hiccup is immediately visible; a small queue would absorb
   jitter. Not needed for backgrounds (the latest-frame mailbox is
-  deliberate there), but it is the player-scenario knob.
+  deliberate there), but it is the player-scenario knob. Related residue:
+  the post-wrap catch-up chase converts every late frame it publishes --
+  the convert=false drop-run only covers seek landings today; fold the
+  chase into it when the queue work happens.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
 - HDR: today's reality is a naive swscale conversion (PQ content plays
