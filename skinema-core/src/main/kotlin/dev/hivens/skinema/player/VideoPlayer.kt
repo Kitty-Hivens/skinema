@@ -28,21 +28,44 @@ import java.util.concurrent.TimeUnit
  * the fail-closed path (ROADMAP.md section 2) a consumer answers with a
  * static fallback.
  */
-class VideoPlayer(
+class VideoPlayer internal constructor(
     private val path: Path,
-    private val loop: Boolean = true,
-    /**
-     * Decode and play the file's audio stream. The audio sink then
-     * masters the player's clock (ROADMAP.md section 3); files without
-     * an audio stream -- and machines without an audio device -- degrade
-     * to silent wall-clock playback. Audio-only files play frameless:
-     * [acquireFrame] stays null while [state] runs the usual lifecycle.
-     */
-    private val audio: Boolean = false,
-    /** Overrides the clock entirely; with audio on, prefer not to. */
-    private val explicitClock: MediaClock? = null,
-    sink: PcmSink? = null,
+    private val loop: Boolean,
+    private val audio: Boolean,
+    private val explicitClock: MediaClock?,
+    sink: PcmSink?,
+    readAheadFrames: Int,
+    // The test seam: a Path is the only public way in, so deterministic
+    // sources (scripted hiccups) enter here. No defaults on this
+    // constructor -- the test source set sees internal members, and a
+    // second defaulted overload would make every call ambiguous.
+    private val frameSourceFactory: (Path) -> FrameSource,
 ) : AutoCloseable {
+
+    constructor(
+        path: Path,
+        loop: Boolean = true,
+        /**
+         * Decode and play the file's audio stream. The audio sink then
+         * masters the player's clock (ROADMAP.md section 3); files without
+         * an audio stream -- and machines without an audio device -- degrade
+         * to silent wall-clock playback. Audio-only files play frameless:
+         * [acquireFrame] stays null while [state] runs the usual lifecycle.
+         */
+        audio: Boolean = false,
+        /** Overrides the clock entirely; with audio on, prefer not to. */
+        explicitClock: MediaClock? = null,
+        sink: PcmSink? = null,
+        /**
+         * How many decoded frames the player holds ahead of the clock,
+         * 1..8. At 1 (the default) decode runs a single frame ahead --
+         * the right footprint for backgrounds; 3-5 lets a player scenario
+         * ride out decode stalls up to that many frame periods. Each step
+         * of depth costs one full RGBA frame of memory (8.3 MB at 1080p)
+         * on top of the mailbox's three slots.
+         */
+        readAheadFrames: Int = 1,
+    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, FrameSources::open)
 
     sealed interface State {
         data object Opening : State
@@ -95,6 +118,7 @@ class VideoPlayer(
 
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
+    private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
     private val commands = LinkedBlockingQueue<Command>()
     private var seekGeneration = 0
 
@@ -180,7 +204,7 @@ class VideoPlayer(
         ownsClock = explicitClock != null || audioClock == null
 
         val decoder = try {
-            FrameSources.open(path)
+            frameSourceFactory(path)
         } catch (t: Throwable) {
             if (audioClock != null) {
                 // No video stream but the audio plays: frameless mode.
