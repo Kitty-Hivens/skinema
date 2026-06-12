@@ -49,7 +49,10 @@ Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
 through the same bindings, multichannel downmixes to stereo, and the
 audio device becomes the player's clock (video follows sound, never the
-reverse). Audio-only files play frameless. HDR content plays through a
+reverse). Audio-only files play frameless. Files with several audio
+tracks expose them (`audioTracks`, language and title included) and
+switch in place (`selectAudioTrack`) -- the picture keeps playing and
+the sound re-anchors at the playhead. HDR content plays through a
 naive SDR conversion for now -- washed out, not tone-mapped; proper
 tone-mapping is a roadmap item.
 
