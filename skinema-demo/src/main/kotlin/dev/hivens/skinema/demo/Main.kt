@@ -48,9 +48,12 @@ fun main(args: Array<String>) {
             var paused by remember { mutableStateOf(false) }
             var volume by remember { mutableFloatStateOf(1f) }
             var positionMs by remember { mutableLongStateOf(0L) }
+            var durationMs by remember { mutableLongStateOf(0L) }
+            var dragMs by remember { mutableStateOf<Long?>(null) }
             LaunchedEffect(player) {
                 while (true) {
                     positionMs = player.positionNanos() / 1_000_000
+                    durationMs = (player.durationNanos ?: 0) / 1_000_000
                     kotlinx.coroutines.delay(200.milliseconds)
                 }
             }
@@ -68,6 +71,24 @@ fun main(args: Array<String>) {
                                 .background(Color(0xAA000000)).padding(12.dp),
                         )
                     }
+                }
+
+                if (durationMs > 0) {
+                    // Timeline: dragging scrubs with instant keyframe
+                    // landings; letting go settles on the exact frame.
+                    Slider(
+                        value = (dragMs ?: positionMs).coerceIn(0, durationMs).toFloat() / durationMs,
+                        onValueChange = {
+                            val target = (it * durationMs).toLong()
+                            dragMs = target
+                            player.seek(target * 1_000_000, exact = false)
+                        },
+                        onValueChangeFinished = {
+                            dragMs?.let { player.seek(it * 1_000_000, exact = true) }
+                            dragMs = null
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
                 }
 
                 Row(
@@ -89,8 +110,13 @@ fun main(args: Array<String>) {
                     Button(onClick = { player.seekBy(SEEK_STEP_NANOS, exact = false) }) {
                         Text("+10s")
                     }
+                    val total = if (durationMs > 0) {
+                        " / %d:%02d".format(durationMs / 60_000, durationMs / 1_000 % 60)
+                    } else {
+                        ""
+                    }
                     Text(
-                        "%d:%02d.%03d".format(positionMs / 60_000, positionMs / 1_000 % 60, positionMs % 1_000),
+                        "%d:%02d.%03d".format(positionMs / 60_000, positionMs / 1_000 % 60, positionMs % 1_000) + total,
                         color = Color.White,
                     )
                     if (sound) {

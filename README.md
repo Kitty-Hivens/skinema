@@ -17,6 +17,9 @@ VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
 player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ```
 
+`positionNanos()` and `durationNanos` carry a timeline; duration is
+null for animated webp, which declares none.
+
 ## Dependencies
 
 ```kotlin
