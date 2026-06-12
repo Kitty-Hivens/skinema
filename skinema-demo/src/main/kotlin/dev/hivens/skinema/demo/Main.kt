@@ -41,6 +41,11 @@ import org.jetbrains.skia.Image as SkiaImage
 
 private const val SEEK_STEP_NANOS = 10_000_000_000L
 
+private val RATE_STEPS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f)
+
+private fun rateLabel(rate: Float): String =
+    if (rate % 1f == 0f) "${rate.toInt()}x" else "${rate}x"
+
 private fun trackLabel(track: AudioTrack): String = buildString {
     append(track.language ?: "und")
     track.title?.let { append(" ").append(it) }
@@ -67,6 +72,7 @@ fun main(args: Array<String>) {
             var activeTrack by remember { mutableStateOf<Int?>(null) }
             var coverBytes by remember { mutableStateOf<ByteArray?>(null) }
             var chapterTitle by remember { mutableStateOf("") }
+            var rate by remember { mutableFloatStateOf(1f) }
             LaunchedEffect(player) {
                 while (true) {
                     positionMs = player.positionNanos() / 1_000_000
@@ -74,6 +80,7 @@ fun main(args: Array<String>) {
                     tracks = player.audioTracks
                     activeTrack = player.activeAudioTrack
                     coverBytes = player.coverArt
+                    rate = player.rate
                     chapterTitle = player.chapters
                         .lastOrNull { it.startNanos <= positionMs * 1_000_000 }?.title ?: ""
                     kotlinx.coroutines.delay(200.milliseconds)
@@ -140,6 +147,22 @@ fun main(args: Array<String>) {
                     }
                     Button(onClick = { player.seekBy(SEEK_STEP_NANOS, exact = false) }) {
                         Text("+10s")
+                    }
+                    Box {
+                        var rateMenu by remember { mutableStateOf(false) }
+                        Button(onClick = { rateMenu = true }) {
+                            Text(rateLabel(rate))
+                        }
+                        DropdownMenu(expanded = rateMenu, onDismissRequest = { rateMenu = false }) {
+                            RATE_STEPS.forEach { step ->
+                                DropdownMenuItem(onClick = {
+                                    player.setRate(step)
+                                    rateMenu = false
+                                }) {
+                                    Text((if (step == rate) "* " else "  ") + rateLabel(step))
+                                }
+                            }
+                        }
                     }
                     val total = if (durationMs > 0) {
                         " / %d:%02d".format(durationMs / 60_000, durationMs / 1_000 % 60)

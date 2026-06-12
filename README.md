@@ -56,7 +56,8 @@ audio device becomes the player's clock (video follows sound, never the
 reverse). Audio-only files play frameless. Files with several audio
 tracks expose them (`audioTracks`, language and title included) and
 switch in place (`selectAudioTrack`) -- the picture keeps playing and
-the sound re-anchors at the playhead. HDR content plays through a
+the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with
+the pitch preserved (FFmpeg's atempo). HDR content plays through a
 naive SDR conversion for now -- washed out, not tone-mapped; proper
 tone-mapping is a roadmap item.
 

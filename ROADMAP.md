@@ -545,8 +545,25 @@ README once the library is usable.
   that declare nothing take the convention players agree on: HD
   geometry means BT.709, smaller means BT.601. Sources with no YUV
   matrix at all (paletted gif, rgba apng) refuse the details call and
-  keep swscale's defaults, which is correct there. Still in the
-  milestone: playback rate and frame stepping.
+  keep swscale's defaults, which is correct there.
+
+  Playback rate followed: `setRate`, 0.5x-4x, pitch preserved. The
+  engine is atempo behind hand-written avfilter bindings (the pin's
+  sixth library; the trim carries exactly the atempo chain), wrapped
+  as TempoFilter on the audio thread's one write path -- at 1.0 the
+  stretcher does not exist and PCM flows untouched. The clocks gained
+  the factor (AudioClock: media advance = device frames x tempo/rate;
+  PlaybackClock scales wall deltas) with the same re-anchor rule as
+  every other mutation: the new scale applies only forward. A live
+  change is handled as a mini-seek -- freeze the sink, read the
+  playhead, rebuild the stretcher, re-scale the clock, re-crop the
+  stream -- because the line's buffered tail was stretched at the OLD
+  tempo, and re-anchoring over it would leave a permanent A/V offset
+  of the tail length times the tempo delta. Rejected on the same
+  grounds: avfilter_graph_send_command for a smooth in-graph tempo
+  ramp (it preserves exactly the state the re-crop makes stale) and a
+  JVM-side WSOLA (more code to own for worse quality than atempo).
+  Still in the milestone: frame stepping.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
