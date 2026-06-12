@@ -337,6 +337,104 @@ class AudioPipelineTest {
     }
 
     @Test
+    fun `tempo 2 roughly halves what reaches the device`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone("tempo.flac"), sink, loop = false)
+        try {
+            // Enqueued before the thread leaves its first write, so all but
+            // one decoder chunk flows through the stretcher.
+            pipeline.setTempo(2.0)
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
+            val full = 44_100 * 4
+            assertTrue(
+                sink.totalBytes in (full * 45 / 100)..(full * 70 / 100),
+                "1s at tempo 2 should reach the device roughly halved, got ${sink.totalBytes} of $full",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `the clock runs at tempo against the device position`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        // 30s of footage: the frozen fake device makes the EOF tail-wait
+        // give up on its wall deadline and wrap the clock to zero -- keep
+        // that far outside the observation window.
+        val media = Fixtures.generate(
+            dir.resolve("tempoclock.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "flac",
+        )
+        val pipeline = AudioPipeline(media, sink, loop = true)
+        try {
+            val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.setTempo(2.0)
+            // Anchor deterministically: land a seek at 500ms (the anchor
+            // truncates to the sample grid), then play 100ms of device
+            // frames -- at tempo 2 that is exactly 200ms of media.
+            pipeline.seek(500_000_000L)
+            pipeline.videoLanded()
+            assertTrue(
+                awaitTrue { clock.mediaNanos() in 499_000_000L..501_000_000L },
+                "the seek must anchor, got ${clock.mediaNanos()}",
+            )
+            val anchor = clock.mediaNanos()
+            sink.positionFrames.addAndGet(4_410)
+            assertTrue(
+                awaitTrue { clock.mediaNanos() == anchor + 200_000_000L },
+                "100ms of device frames at tempo 2 must cover 200ms of media, got ${clock.mediaNanos()}",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a tempo change mid-landing keeps the sink frozen`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone("tempofrozen.flac"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.seek(250_000_000L)
+            assertTrue(awaitTrue { sink.stopped }, "the seek freezes the sink")
+            pipeline.setTempo(2.0)
+            Thread.sleep(150)
+            assertTrue(sink.stopped, "a rate change must not unfreeze a landing")
+            assertEquals(0, sink.writesWhileStopped, "a stopped line must never be written to")
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { !sink.stopped }, "videoLanded releases as usual")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `back to tempo 1 the path is sample-exact again`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone("temporound.flac"), sink, loop = false)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.setTempo(2.0)
+            pipeline.setTempo(1.0)
+            // The 1.0 path bypasses the stretcher entirely; a final seek's
+            // cropped remainder must reach the device sample-exact, the
+            // same arithmetic the plain crop test pins.
+            pipeline.seek(250_000_000L)
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { pipeline.isEnded }, "playback must finish after the seek")
+            assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `pause stops the sink and volume forwards to it`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
