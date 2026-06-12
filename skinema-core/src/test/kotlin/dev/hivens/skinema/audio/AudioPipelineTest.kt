@@ -342,15 +342,19 @@ class AudioPipelineTest {
         val sink = FakePcmSink()
         val pipeline = AudioPipeline(tone("tempo.flac"), sink, loop = false)
         try {
-            // Enqueued before the thread leaves its first write, so all but
-            // one decoder chunk flows through the stretcher.
-            pipeline.setTempo(2.0)
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // The flush counter is the applied-handshake; the seek then
+            // replays the WHOLE stream through the stretcher, so the
+            // measurement does not depend on where the change landed.
+            pipeline.setTempo(2.0)
+            assertTrue(awaitTrue { sink.flushes == 1 }, "the change must apply")
+            pipeline.seek(0)
+            pipeline.videoLanded()
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
             val full = 44_100 * 4
             assertTrue(
-                sink.totalBytes in (full * 45 / 100)..(full * 70 / 100),
-                "1s at tempo 2 should reach the device roughly halved, got ${sink.totalBytes} of $full",
+                sink.bytesSinceLastFlush in (full * 40 / 100)..(full * 60 / 100),
+                "1s at tempo 2 should reach the device roughly halved, got ${sink.bytesSinceLastFlush} of $full",
             )
         } finally {
             pipeline.close()
@@ -461,8 +465,15 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(tone("temporound.flac"), sink, loop = false)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // Each change must APPLY before the next command, or the seek
+            // can land while tempo is still 2.0 and the late roundtrip's
+            // own flush resets the byte accounting -- the interleaving a
+            // stalled runner actually produced. Every applyTempo flushes
+            // the sink; the counter is the handshake.
             pipeline.setTempo(2.0)
+            assertTrue(awaitTrue { sink.flushes == 1 }, "the first change must apply")
             pipeline.setTempo(1.0)
+            assertTrue(awaitTrue { sink.flushes == 2 }, "the roundtrip must apply")
             // The 1.0 path bypasses the stretcher entirely; a final seek's
             // cropped remainder must reach the device sample-exact, the
             // same arithmetic the plain crop test pins.
