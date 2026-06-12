@@ -206,40 +206,39 @@ class ReadAheadTest {
         }
     }
 
-    /** One wall-clock cadence run; returns the distinct frames published. */
-    private fun cadenceRun(): Int {
-        val source = ScriptedFrameSource(frameCount = 480, periodNanos = 8_000_000L)
-        VideoPlayer(Path.of("scripted"), false, false, null, null, 1, null) { source }.use { p ->
-            val seen = HashSet<Long>()
-            val deadline = System.currentTimeMillis() + 30_000
-            while (p.state !is VideoPlayer.State.Ended && System.currentTimeMillis() < deadline) {
-                p.acquireFrame()?.let { seen += it.ptsNanos }
-                Thread.sleep(1)
-            }
-            p.acquireFrame()?.let { seen += it.ptsNanos }
-            assertIs<VideoPlayer.State.Ended>(p.state, "the stream must play out")
-            return seen.size
-        }
-    }
-
     @Test
     fun `steady-state production is not gated on the room poll`() {
-        // 125 fps scripted stream against the wall clock at depth 1. The
-        // fill side discovers a freed cell through the pacer's RoomFreed
-        // token; discovering it by poll timeout instead caps production
-        // near 50 fps and the drop policy eats the difference -- high
-        // frame rates degrade to a guard-frame slideshow. Measured:
-        // healthy ~480 published, gated ~200 -- deterministically, on any
-        // machine. A wall-clock stall on a shared runner also drops
-        // frames, so a sub-threshold first run is sampled once more; the
-        // regression fails both, a stalled environment rarely repeats.
-        val first = cadenceRun()
-        if (first > 300) return
-        val second = cadenceRun()
-        assertTrue(
-            second > 300,
-            "production gated on the room poll twice: $first/480, then $second/480",
-        )
+        // The RoomFreed mechanism, measured machine-independently: at
+        // depth 1 the fill parks in its command poll whenever the queue
+        // is full, and every publish must wake it through the token --
+        // discovered by poll timeout instead, each of the 480 frames
+        // costs up to 20ms of dead time. The clock advances in 240ms
+        // steps (under the chase threshold, so every frame publishes
+        // through a room cycle) and the whole stream's wall time is the
+        // verdict: healthy is bounded by scheduling noise (~0.3s), the
+        // gated regime by 480 poll timeouts (~9.6s). The previous shape
+        // of this test paced 125 fps against the live wall clock;
+        // thrashed shared runners sank healthy runs below any fixed
+        // frame-count threshold.
+        val source = ScriptedFrameSource(frameCount = 480, periodNanos = 8_000_000L)
+        player(source, depth = 1).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            val started = System.currentTimeMillis()
+            for (chunk in 1..16) {
+                frames.set(framesFor(chunk * 240L))
+                val target = minOf(chunk * 30, 479)
+                assertTrue(
+                    awaitTrue { source.maxStartedIndex.get() >= target },
+                    "the fill must keep up with the clock, at ${source.maxStartedIndex.get()} of $target",
+                )
+            }
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Ended }, "the stream must play out")
+            val elapsedMs = System.currentTimeMillis() - started
+            assertTrue(
+                elapsedMs < 4_000,
+                "480 room cycles took ${elapsedMs}ms -- the poll timeout, not the token, woke the fill",
+            )
+        }
     }
 
     @Test

@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -28,6 +29,12 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    testLogging {
+        // CI logs carry only the console; without the message a failed
+        // assertion is a bare file:line.
+        events("failed")
+        exceptionFormat = TestExceptionFormat.FULL
+    }
 }
 
 // M0 decode spike (ROADMAP.md section 11). Linux + system FFmpeg:
