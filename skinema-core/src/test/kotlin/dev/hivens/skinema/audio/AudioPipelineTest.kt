@@ -156,6 +156,37 @@ class AudioPipelineTest {
     }
 
     @Test
+    fun `a seek burst coalesces into one landing at the final target`() {
+        Fixtures.assumeDecodeEnvironment()
+        // A small bounded buffer parks the thread inside write, so the
+        // burst queues up behind it like behind a real device.
+        val sink = BoundedPcmSink(capacityFrames = 4_410)
+        val pipeline = AudioPipeline(tone("burst.flac"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.writerParked }, "the writer must park")
+            val flushesBefore = sink.flushes
+            pipeline.seek(100_000_000L)
+            pipeline.videoLanded()
+            pipeline.seek(200_000_000L)
+            pipeline.videoLanded()
+            pipeline.seek(300_000_000L)
+            pipeline.videoLanded()
+            assertEquals(3, pipeline.pendingSeeks.get(), "the burst is owed")
+
+            sink.release()
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the burst must land")
+            assertEquals(
+                flushesBefore + 1,
+                sink.flushes,
+                "a burst lands once at the final target, not once per press",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `pause stops the sink and volume forwards to it`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()

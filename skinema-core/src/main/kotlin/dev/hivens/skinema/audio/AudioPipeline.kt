@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The audio half of a player: its own thread owns an [AudioDecoder]
@@ -52,6 +53,16 @@ internal class AudioPipeline(
     private var clock: AudioClock? = null
     private var paused = false
 
+    /**
+     * Seeks issued but not yet performed. While nonzero the clock's
+     * readings are stale -- it stands at a pre-seek anchor -- and the
+     * video side must not judge frame lateness against it: a backward
+     * burst otherwise reads as a forward chase and burns the decoder
+     * past the real position. Zeroed when the thread dies, so a dead
+     * pipeline cannot hold the video side hostage.
+     */
+    val pendingSeeks = AtomicInteger(0)
+
     // A seek freezes the sink at the target anchor until the video side
     // lands there: video seeks ride a keyframe jump plus a decode-forward
     // run that can take seconds, and audio running ahead through that gap
@@ -77,7 +88,11 @@ internal class AudioPipeline(
 
     fun pause() = commands.put(Command.Pause)
     fun resume() = commands.put(Command.Resume)
-    fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos))
+
+    fun seek(ptsNanos: Long) {
+        pendingSeeks.incrementAndGet()
+        commands.put(Command.Seek(ptsNanos))
+    }
 
     /** The video side finished its seek landing; sound may run again. */
     fun videoLanded() = commands.put(Command.VideoLanded)
@@ -108,6 +123,7 @@ internal class AudioPipeline(
         } catch (_: Throwable) {
             clock?.detachToWallTime()
         } finally {
+            pendingSeeks.set(0)
             runCatching { sink.close() }
             // A pipeline that never produced a clock must still unblock the
             // waiting player.
@@ -194,7 +210,36 @@ internal class AudioPipeline(
             true
         }
         is Command.Seek -> {
-            performSeek(decoder, clock, cmd.ptsNanos)
+            // Coalesce the backlog: a burst of seeks needs one landing at
+            // the final target, not a flush-and-anchor per press -- the
+            // intermediate anchors are stale clock readings the video
+            // side would chase. Landings interleaved in the burst only
+            // matter if one follows the LAST seek.
+            var target = cmd.ptsNanos
+            var consumed = 1
+            var landedAfter = false
+            while (true) {
+                when (val next = commands.peek()) {
+                    is Command.Seek -> {
+                        commands.poll()
+                        target = next.ptsNanos
+                        consumed++
+                        landedAfter = false
+                    }
+                    Command.VideoLanded -> {
+                        commands.poll()
+                        landedAfter = true
+                    }
+                    else -> break
+                }
+            }
+            performSeek(decoder, clock, target)
+            pendingSeeks.addAndGet(-consumed)
+            if (landedAfter) {
+                awaitingLanding = false
+                if (!paused && !isEnded) sink.start()
+                if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
+            }
             true
         }
         Command.VideoLanded -> {

@@ -350,7 +350,7 @@ class VideoPlayer internal constructor(
             }
 
             val lateNanos = -clock.nanosUntilDue(frame.ptsNanos)
-            if (lateNanos > CHASE_DROP_NANOS) {
+            if (lateNanos > CHASE_DROP_NANOS && !clockSettling()) {
                 // Catch-up run (the clock jumped past this frame -- a loop
                 // wrap, an audio re-anchor). Converting frames the policy
                 // would drop costs several times their bare decode; one
@@ -391,6 +391,19 @@ class VideoPlayer internal constructor(
         cell.ptsNanos = converted.ptsNanos
         queue.commit(forced)
     }
+
+    /**
+     * The audio thread anchors the clock from its own seek handling, and
+     * it reads commands only between blocking writes -- after a seek
+     * burst it can owe dozens of anchors while the clock still reads a
+     * pre-seek position. Lateness computed against that reading is
+     * fiction: a backward burst looks like a multi-second forward chase
+     * and burns the decoder past the real position (the picture then
+     * stands until the clock walks there). While seeks are owed, the
+     * fill must not chase and the pacer must not drop.
+     */
+    private fun clockSettling(): Boolean =
+        !ownsClock && (audioPipeline?.pendingSeeks?.get() ?: 0) > 0
 
     private fun handle(cmd: Command, decoder: FrameSource?): Boolean = when (cmd) {
         Command.Close -> false
@@ -687,6 +700,13 @@ class VideoPlayer internal constructor(
                 continue
             }
 
+            if (-wait > CHASE_DROP_NANOS && clockSettling()) {
+                // Deep lateness against a clock that still owes seek
+                // anchors is fiction; hold the inventory until the audio
+                // thread lands them.
+                queue.awaitChange(tick, IDLE_RECHECK_NANOS)
+                continue
+            }
             if (!shouldPublishLateFrame(-wait, System.nanoTime() - lastPublishWallNanos)) {
                 queue.dropHead()
                 commands.put(Command.RoomFreed)

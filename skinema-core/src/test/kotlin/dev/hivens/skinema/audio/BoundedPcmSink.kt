@@ -54,9 +54,15 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
 
     override fun start() = Unit
 
+    /** Flush count; seek coalescing shows up as one flush per burst. */
+    @Volatile
+    var flushes = 0
+        private set
+
     override fun flush() {
         synchronized(lock) {
             writtenFrames = consumedFrames
+            flushes++
             lock.notifyAll()
         }
     }
