@@ -79,6 +79,19 @@ internal class FrameQueue(depth: Int) {
     }
 
     /**
+     * Marks the head frame forced (a paused frame-step): the pacer
+     * publishes it immediately, state gate and late policy aside.
+     * Returns the head's pts, null when the queue is empty.
+     */
+    fun forceHead(): Long? = synchronized(lock) {
+        if (count == 0) return null
+        forcedFlags[head] = true
+        changes++
+        lock.notifyAll()
+        cells[head].ptsNanos
+    }
+
+    /**
      * Drops every committed frame (seek flush). Producer-side only.
      * Wakes the consumer: a pacer sleeping out a stale head's wait must
      * notice the flush -- the landing that follows publishes immediately.

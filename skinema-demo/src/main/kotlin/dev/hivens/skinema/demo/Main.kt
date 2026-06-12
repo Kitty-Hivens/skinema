@@ -148,6 +148,19 @@ fun main(args: Array<String>) {
                     Button(onClick = { player.seekBy(SEEK_STEP_NANOS, exact = false) }) {
                         Text("+10s")
                     }
+                    // Frame steps leave the player paused on the frame.
+                    Button(onClick = {
+                        player.stepBackward()
+                        paused = true
+                    }) {
+                        Text("<|")
+                    }
+                    Button(onClick = {
+                        player.stepForward()
+                        paused = true
+                    }) {
+                        Text("|>")
+                    }
                     Box {
                         var rateMenu by remember { mutableStateOf(false) }
                         Button(onClick = { rateMenu = true }) {

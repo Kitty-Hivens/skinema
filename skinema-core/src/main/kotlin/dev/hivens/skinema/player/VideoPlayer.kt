@@ -123,6 +123,8 @@ class VideoPlayer internal constructor(
         data class Seek(val ptsNanos: Long, val exact: Boolean) : Command
         data class SeekBy(val deltaNanos: Long, val exact: Boolean) : Command
         data class SetRate(val rate: Float) : Command
+        data object StepForward : Command
+        data object StepBackward : Command
         data object Close : Command
 
         /**
@@ -265,6 +267,23 @@ class VideoPlayer internal constructor(
      */
     fun seekBy(deltaNanos: Long, exact: Boolean = true) =
         commands.put(Command.SeekBy(deltaNanos, exact))
+
+    /**
+     * Advances exactly one frame and leaves the player paused on it --
+     * the frame-inspection gesture. A playing player pauses first; at
+     * the end of the stream the last frame stays. Time (sound included)
+     * re-anchors to the stepped frame, so [resume] continues from it.
+     */
+    fun stepForward() = commands.put(Command.StepForward)
+
+    /**
+     * Steps back to the previous frame, paused on it. The previous
+     * frame's timestamp is only knowable by decoding from the keyframe
+     * toward the shown one (frame rates vary mid-stream), so this costs
+     * a keyframe run like an exact seek -- instant on dense keyframes,
+     * advertised through [State.Seeking] on sparse ones.
+     */
+    fun stepBackward() = commands.put(Command.StepBackward)
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -488,13 +507,14 @@ class VideoPlayer internal constructor(
         Command.Close -> false
         Command.RoomFreed -> true
         Command.Pause -> {
-            if (state is State.Playing) {
-                audioPipeline?.pause()
-                clock.pause()
-                state = State.Paused
-            }
+            pauseNow()
             true
         }
+        Command.StepForward -> {
+            performStepForward(decoder)
+            true
+        }
+        Command.StepBackward -> performStepBackward(decoder)
         Command.Resume -> {
             if (state is State.Paused) {
                 // The sink's buffered tail keeps sounding (and advancing the
@@ -697,6 +717,88 @@ class VideoPlayer internal constructor(
                 }
             }
         }
+    }
+
+    private fun pauseNow() {
+        if (state is State.Playing) {
+            audioPipeline?.pause()
+            clock.pause()
+            state = State.Paused
+        }
+    }
+
+    /** Re-anchors time at a stepped frame while the player stays paused. */
+    private fun anchorPausedAt(pts: Long) {
+        intendedPositionNanos = pts
+        if (ownsClock) {
+            clock.seek(pts)
+        } else {
+            audioPipeline?.seek(pts)
+            audioPipeline?.videoLanded()
+        }
+    }
+
+    private fun performStepForward(decoder: FrameSource?) {
+        if (decoder == null) return
+        pauseNow()
+        if (state !is State.Paused) return
+        val forcedPts = queue.forceHead()
+        if (forcedPts == null) {
+            // Nothing in inventory: decode exactly one. EOF keeps the
+            // last frame on screen.
+            val f = decoder.nextFrame(convert = false) ?: return
+            enqueue(decoder, f, forced = true)
+            anchorPausedAt(f.ptsNanos)
+            return
+        }
+        // Wait out the pacer's pop: a rapid second step must not re-mark
+        // the same head and lose a press.
+        while (!queue.isClosed) {
+            val tick = queue.changeTick()
+            val head = queue.peekHead()
+            if (head == null || !head.forced || head.ptsNanos != forcedPts) break
+            queue.awaitChange(tick, PACE_RECHECK_NANOS)
+        }
+        anchorPausedAt(forcedPts)
+    }
+
+    private fun performStepBackward(decoder: FrameSource?): Boolean {
+        if (decoder == null) return true
+        pauseNow()
+        val shown = lastPublishedPts
+        if (shown <= 0) return true
+        // Pass 1: the predecessor's pts -- only knowable by decoding from
+        // the keyframe toward the shown frame.
+        var prev = -1L
+        decoder.seekTo(shown)
+        var f = decoder.nextFrame(convert = false)
+        if (f != null && f.ptsNanos >= shown) {
+            // The shown frame IS its keyframe; the predecessor lives
+            // behind the previous one.
+            decoder.seekTo(shown - 1)
+            f = decoder.nextFrame(convert = false)
+        }
+        while (f != null && f.ptsNanos < shown) {
+            prev = f.ptsNanos
+            f = decoder.nextFrame(convert = false)
+        }
+        // No predecessor (the shown frame is the first): pass 1 still
+        // moved the demuxer, so land back on the shown frame itself.
+        val target = if (prev >= 0) prev else shown
+        // From Ended there is no prior state to restore and finishSeek
+        // would resolve to Playing; a step always lands paused.
+        val fromEnded = state is State.Ended
+        if (fromEnded) stateBeforeSeek.set(State.Paused)
+        val keepRunning = handleSeek(target, exact = true, decoder)
+        when {
+            state is State.Playing -> pauseNow()
+            fromEnded && state is State.Paused -> {
+                // The landing revived the audio thread; freeze it back.
+                audioPipeline?.pause()
+                clock.pause()
+            }
+        }
+        return keepRunning
     }
 
     /**

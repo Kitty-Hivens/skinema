@@ -104,6 +104,37 @@ class FrameQueueTest {
     }
 
     @Test
+    fun `forceHead promotes the head and reports its pts`() {
+        val q = FrameQueue(2)
+        q.put(10)
+        q.put(20)
+        assertEquals(10L, q.forceHead())
+        assertTrue(q.peekHead()!!.forced, "the head must come out forced")
+        assertEquals(10L, q.poll(ByteArray(4))!!.ptsNanos)
+        assertFalse(q.peekHead()!!.forced, "only the head is promoted")
+    }
+
+    @Test
+    fun `forceHead on an empty queue is null`() {
+        assertNull(FrameQueue(1).forceHead())
+    }
+
+    @Test
+    fun `forceHead wakes a parked consumer`() {
+        // The paused frame-step: the pacer holds inventory on the state
+        // gate and must notice the promotion without a timeout.
+        val q = FrameQueue(1)
+        q.put(1)
+        val tick = q.changeTick()
+        val waiter = thread { q.awaitChange(tick, 5_000_000_000L) }
+        Thread.sleep(50)
+        assertTrue(waiter.isAlive, "the consumer must be parked")
+        q.forceHead()
+        waiter.join(2_000)
+        assertFalse(waiter.isAlive, "a promotion must wake the waiter")
+    }
+
+    @Test
     fun `peek snapshots the head without popping`() {
         val q = FrameQueue(2)
         q.put(5, size = 16)
