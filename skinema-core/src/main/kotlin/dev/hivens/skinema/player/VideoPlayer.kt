@@ -7,6 +7,7 @@ import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
 import dev.hivens.skinema.libav.AudioTrack
+import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.VideoDecoder
@@ -159,6 +160,25 @@ class VideoPlayer internal constructor(
     val activeAudioTrack: Int?
         get() = if (audioTracks.isEmpty()) null else audioPipeline?.activeAudioTrack
 
+    /** Format-level tags (title, artist, ...); empty when none or Opening. */
+    @Volatile
+    var tags: Map<String, String> = emptyMap()
+        private set
+
+    /** Container chapters -- timeline markers; empty when none or Opening. */
+    @Volatile
+    var chapters: List<Chapter> = emptyList()
+        private set
+
+    /**
+     * Encoded cover-art bytes (png/jpeg as stored in the file), null when
+     * none. The consumer decodes them with its own image stack; frameless
+     * playback typically shows this where frames would be.
+     */
+    @Volatile
+    var coverArt: ByteArray? = null
+        private set
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -291,6 +311,9 @@ class VideoPlayer internal constructor(
             if (audioClock != null) {
                 // No video stream but the audio plays: frameless mode.
                 durationNanos = audioPipeline?.durationNanos
+                tags = audioPipeline?.tags ?: emptyMap()
+                chapters = audioPipeline?.chapters ?: emptyList()
+                coverArt = audioPipeline?.coverArt
                 framelessLoop()
                 state = State.Closed
             } else {
@@ -300,6 +323,9 @@ class VideoPlayer internal constructor(
             return
         }
         durationNanos = decoder.durationNanos()
+        tags = decoder.tags()
+        chapters = decoder.chapters()
+        coverArt = decoder.coverArt()
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
             start()

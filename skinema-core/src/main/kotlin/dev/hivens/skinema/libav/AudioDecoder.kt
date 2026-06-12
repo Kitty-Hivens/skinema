@@ -31,6 +31,12 @@ class AudioDecoder private constructor(
     val durationNanos: Long?,
     /** Every audio stream the container carries, [streamIndex] included. */
     val tracks: List<AudioTrack>,
+    /** Format-level tags; the frameless player serves them from here. */
+    val tags: Map<String, String>,
+    /** Container chapters, same contract as the video side's. */
+    val chapters: List<Chapter>,
+    /** Encoded cover-art bytes; the frameless player's picture. */
+    val coverArt: ByteArray?,
 ) : AutoCloseable {
 
     class PcmChunk internal constructor(
@@ -248,7 +254,13 @@ class AudioDecoder private constructor(
                 val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
 
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
-                return AudioDecoder(arena, fmtCtx, codecCtx, packet, frame, chosen, timeBaseNum, timeBaseDen, duration, tracks)
+                return AudioDecoder(
+                    arena, fmtCtx, codecCtx, packet, frame, chosen, timeBaseNum, timeBaseDen,
+                    duration, tracks,
+                    containerTags(fmtCtx, arena),
+                    containerChapters(fmtCtx, arena),
+                    attachedCoverArt(fmtCtx),
+                )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
                 if (codecCtx != MemorySegment.NULL) {
@@ -262,12 +274,6 @@ class AudioDecoder private constructor(
                 arena.close()
                 throw t
             }
-        }
-
-        private fun streamAt(fmtCtx: MemorySegment, index: Int): MemorySegment {
-            val streams = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.STREAMS)
-                .reinterpret((index + 1L) * ADDRESS.byteSize())
-            return streams.getAtIndex(ADDRESS, index.toLong()).reinterpret(LibavAbi.Stream.SIZEOF)
         }
 
         private fun enumerateTracks(fmtCtx: MemorySegment, arena: Arena): List<AudioTrack> {
@@ -290,14 +296,6 @@ class AudioDecoder private constructor(
                 )
             }
             return tracks
-        }
-
-        private fun dictValue(dict: MemorySegment, key: MemorySegment): String? {
-            if (dict == MemorySegment.NULL) return null
-            val entry = Libav.avDictGet(dict, key)
-            if (entry == MemorySegment.NULL) return null
-            val value = entry.reinterpret(LibavAbi.DictEntry.SIZEOF).get(ADDRESS, LibavAbi.DictEntry.VALUE)
-            return if (value == MemorySegment.NULL) null else value.reinterpret(Long.MAX_VALUE).getString(0)
         }
     }
 }

@@ -28,7 +28,10 @@ int main(void) {
 
     P(offsetof(AVFormatContext, nb_streams));
     P(offsetof(AVFormatContext, streams));
+    P(offsetof(AVFormatContext, nb_chapters));
+    P(offsetof(AVFormatContext, chapters));
     P(offsetof(AVFormatContext, duration));
+    P(offsetof(AVFormatContext, metadata));
     P(sizeof(AVFormatContext));
 
     P(offsetof(AVStream, time_base));
@@ -36,10 +39,22 @@ int main(void) {
     P(offsetof(AVStream, duration));
     P(offsetof(AVStream, disposition));
     P(offsetof(AVStream, metadata));
+    P(offsetof(AVStream, attached_pic));
     P(sizeof(AVStream));
 
+    P(offsetof(AVChapter, time_base));
+    P(offsetof(AVChapter, start));
+    P(offsetof(AVChapter, end));
+    P(offsetof(AVChapter, metadata));
+    P(sizeof(AVChapter));
+
+    P(offsetof(AVPacket, data));
+    P(offsetof(AVPacket, size));
     P(offsetof(AVPacket, stream_index));
     P(sizeof(AVPacket));
+
+    P(AV_DISPOSITION_ATTACHED_PIC);
+    P(AV_DICT_IGNORE_SUFFIX);
 
     P(offsetof(AVCodecParameters, codec_type));
     P(offsetof(AVCodecParameters, codec_id));

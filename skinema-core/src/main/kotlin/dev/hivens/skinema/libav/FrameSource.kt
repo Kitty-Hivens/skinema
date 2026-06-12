@@ -38,4 +38,13 @@ interface FrameSource : AutoCloseable {
      * source cannot know it cheaply (animated webp declares none).
      */
     fun durationNanos(): Long? = null
+
+    /** Format-level tags (title, artist, ...); empty when none. */
+    fun tags(): Map<String, String> = emptyMap()
+
+    /** Container chapters; empty when none. */
+    fun chapters(): List<Chapter> = emptyList()
+
+    /** Encoded cover-art bytes (png/jpeg as stored); null when none. */
+    fun coverArt(): ByteArray? = null
 }

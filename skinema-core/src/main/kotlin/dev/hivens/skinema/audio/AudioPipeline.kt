@@ -3,6 +3,7 @@ package dev.hivens.skinema.audio
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
+import dev.hivens.skinema.libav.Chapter
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
@@ -46,6 +47,19 @@ internal class AudioPipeline(
     /** Every audio stream of the container; set before [clockFuture] resolves. */
     @Volatile
     var tracks: List<AudioTrack> = emptyList()
+        private set
+
+    /** Format-level tags, chapters and cover art for frameless playback. */
+    @Volatile
+    var tags: Map<String, String> = emptyMap()
+        private set
+
+    @Volatile
+    var chapters: List<Chapter> = emptyList()
+        private set
+
+    @Volatile
+    var coverArt: ByteArray? = null
         private set
 
     /** The stream actually playing -- always a member of [tracks]. */
@@ -142,6 +156,9 @@ internal class AudioPipeline(
         durationNanos = opened.durationNanos
         tracks = opened.tracks
         activeAudioTrack = opened.streamIndex
+        tags = opened.tags
+        chapters = opened.chapters
+        coverArt = opened.coverArt
         try {
             pump()
         } catch (_: Throwable) {

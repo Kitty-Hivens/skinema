@@ -239,6 +239,28 @@ class AudioDecoderTest {
     }
 
     @Test
+    fun `cover art ships as the stored bytes`() {
+        Fixtures.assumeDecodeEnvironment()
+        val png = Fixtures.generate(
+            dir.resolve("cover.png"),
+            "-f", "lavfi", "-i", "color=c=red:size=16x16", "-frames:v", "1",
+        )
+        val flac = Fixtures.generate(
+            dir.resolve("covered.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-i", png.toString(),
+            "-map", "0:a", "-map", "1:v", "-t", "1",
+            "-c:a", "flac", "-c:v", "png", "-disposition:v:0", "attached_pic",
+        )
+        AudioDecoder.openOrNull(flac)!!.use { decoder ->
+            val art = assertNotNull(decoder.coverArt, "the flac picture block must surface")
+            assertTrue(art.size > 8, "the encoded image travels whole")
+            assertEquals(0x89.toByte(), art[0], "png bytes ship exactly as stored")
+            assertEquals('P'.code.toByte(), art[1])
+        }
+    }
+
+    @Test
     fun `a silent video has no audio stream -- openOrNull says so`() {
         Fixtures.assumeDecodeEnvironment()
         val video = Fixtures.generate(
