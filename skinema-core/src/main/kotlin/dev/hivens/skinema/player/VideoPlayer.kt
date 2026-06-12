@@ -6,6 +6,7 @@ import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
+import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.VideoDecoder
@@ -39,6 +40,7 @@ class VideoPlayer internal constructor(
     private val explicitClock: MediaClock?,
     sink: PcmSink?,
     readAheadFrames: Int,
+    audioTrack: Int?,
     // The test seam: a Path is the only public way in, so deterministic
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
@@ -69,7 +71,13 @@ class VideoPlayer internal constructor(
          * on top of the mailbox's three slots.
          */
         readAheadFrames: Int = 1,
-    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, FrameSources::open)
+        /**
+         * Stream index of the audio track to open (one of [audioTracks]);
+         * null takes the demuxer's best pick. Switch later with
+         * [selectAudioTrack].
+         */
+        audioTrack: Int? = null,
+    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, FrameSources::open)
 
     sealed interface State {
         data object Opening : State
@@ -138,6 +146,19 @@ class VideoPlayer internal constructor(
     var durationNanos: Long? = null
         private set
 
+    /**
+     * The file's audio tracks. Empty while [State.Opening], without
+     * `audio = true`, and when the audio device failed to open -- a dead
+     * pipeline must not advertise a working selector.
+     */
+    @Volatile
+    var audioTracks: List<AudioTrack> = emptyList()
+        private set
+
+    /** Stream index of the track playing; null when no live audio. */
+    val activeAudioTrack: Int?
+        get() = if (audioTracks.isEmpty()) null else audioPipeline?.activeAudioTrack
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -158,7 +179,7 @@ class VideoPlayer internal constructor(
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
-        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop) else null
+        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop, audioTrack) else null
     private lateinit var clock: MediaClock
 
     // When audio masters the clock, video never re-anchors it: seeks and
@@ -229,6 +250,16 @@ class VideoPlayer internal constructor(
         audioPipeline?.setVolume(volume)
     }
 
+    /**
+     * Switches the sound to another of [audioTracks], in place: the
+     * picture keeps playing, the sound re-anchors at the playhead. A
+     * track that cannot open or that ends before the playhead is
+     * refused and the current one plays on.
+     */
+    fun selectAudioTrack(streamIndex: Int) {
+        audioPipeline?.selectTrack(streamIndex)
+    }
+
     /** Current media position in nanoseconds; zero until playback starts. */
     fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
 
@@ -247,6 +278,12 @@ class VideoPlayer internal constructor(
         }
         clock = explicitClock ?: audioClock ?: PlaybackClock()
         ownsClock = explicitClock != null || audioClock == null
+        // Tracks publish only over a LIVE pipeline (the no-device path
+        // enumerated them too, but nothing would serve a switch), and
+        // before the video open so the frameless branch sees them.
+        if (audioClock != null) {
+            audioTracks = audioPipeline?.tracks ?: emptyList()
+        }
 
         val decoder = try {
             frameSourceFactory(path)

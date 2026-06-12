@@ -1,6 +1,8 @@
 package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.BoundedPcmSink
+import dev.hivens.skinema.audio.FakePcmSink
+import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
@@ -122,7 +124,7 @@ class VideoPlayerTest {
             dir.resolve("tone.flac"),
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
         )
-        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        val sink = FakePcmSink()
         VideoPlayer(tone, loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "audio-only playback must reach Ended")
             assertEquals(null, player.acquireFrame(), "frameless mode serves no frames")
@@ -148,7 +150,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:a", "aac", "-shortest",
         )
-        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        val sink = FakePcmSink()
         sink.positionFrames.set(0)
         VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "frame 0 is due at media time 0")
@@ -183,7 +185,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:a", "aac", "-shortest",
         )
-        val sink = dev.hivens.skinema.audio.FakePcmSink()
+        val sink = FakePcmSink()
         sink.positionFrames.set(0)
         VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
             // Frame 0 publishing means the clock is anchored; only then may
@@ -496,6 +498,80 @@ class VideoPlayerTest {
             } finally {
                 sink.release()
             }
+        }
+    }
+
+    /** Video plus two flac tracks at different rates (the discriminator). */
+    private fun twoAudioTracks(name: String): Path = Fixtures.generate(
+        dir.resolve(name),
+        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-t", "30",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        "-c:a", "flac", "-disposition:a:0", "default",
+    )
+
+    @Test
+    fun `audio tracks surface and the constructor picks one`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(twoAudioTracks("pick.mkv"), loop = false, audio = true, sink = sink, audioTrack = 2).use { player ->
+            assertTrue(awaitTrue { player.audioTracks.size == 2 }, "both tracks must surface")
+            assertEquals(2, player.activeAudioTrack)
+            assertEquals(48_000, sink.sampleRate, "the requested track drives the line")
+        }
+    }
+
+    @Test
+    fun `a live track switch keeps the picture flowing`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(twoAudioTracks("switch.mkv"), loop = false, audio = true, sink = sink).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            assertEquals(1, player.activeAudioTrack, "the default disposition wins the pick")
+            assertEquals(44_100, sink.sampleRate)
+
+            player.selectAudioTrack(2)
+            assertTrue(awaitTrue { player.activeAudioTrack == 2 }, "the switch must land")
+            assertEquals(48_000, sink.sampleRate, "the line reopened at the new rate")
+
+            // The rebased clock masters the picture: advance the fresh
+            // line's DAC and frames must follow.
+            sink.positionFrames.set(48_000 / 2)
+            var seen = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 400_000_000L
+                },
+                "video must pace on the rebased clock, saw ${seen}ns",
+            )
+        }
+    }
+
+    @Test
+    fun `a dead audio pipeline advertises no tracks`() {
+        Fixtures.assumeDecodeEnvironment()
+        // The sink throws at open -- the no-audio-device machine. The
+        // player degrades to silent wall-clock playback and must not
+        // offer a selector nothing would serve.
+        val deaf = object : PcmSink {
+            override fun open(sampleRate: Int) = throw IllegalStateException("no audio device")
+            override fun write(data: ByteArray, offset: Int, length: Int) = Unit
+            override fun stop() = Unit
+            override fun start() = Unit
+            override fun flush() = Unit
+            override fun framePosition() = 0L
+            override fun setVolume(volume: Float) = Unit
+            override fun close() = Unit
+        }
+        VideoPlayer(twoAudioTracks("deaf.mkv"), loop = false, audio = true, sink = deaf).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "silent fallback must play")
+            assertTrue(player.audioTracks.isEmpty(), "a dead pipeline must not advertise tracks")
+            assertEquals(null, player.activeAudioTrack)
         }
     }
 
