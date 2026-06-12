@@ -10,6 +10,7 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
+import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
@@ -190,6 +191,17 @@ class VideoPlayer internal constructor(
      */
     @Volatile
     var rotationDegrees: Int = 0
+        private set
+
+    /**
+     * The container's subtitle streams (external files appended by
+     * [addExternalSubtitles] later). Empty while [State.Opening], for
+     * frameless playback, and when the file carries none. Selection is
+     * off by default; nothing subtitle-related runs until
+     * [selectSubtitleTrack].
+     */
+    @Volatile
+    var subtitleTracks: List<SubtitleTrack> = emptyList()
         private set
 
     @Volatile
@@ -380,6 +392,7 @@ class VideoPlayer internal constructor(
         chapters = decoder.chapters()
         coverArt = decoder.coverArt()
         rotationDegrees = decoder.rotationDegrees()
+        subtitleTracks = decoder.subtitleTracks()
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
             start()

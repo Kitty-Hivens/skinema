@@ -115,6 +115,7 @@ object Libav {
     private val hAvPacketFree = fn(LibavLibrary.AVCODEC, "av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvPacketSideDataGet = fn(
         LibavLibrary.AVCODEC, "av_packet_side_data_get",
         FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT),
@@ -252,6 +253,9 @@ object Libav {
 
     fun avcodecAllocContext3(codec: MemorySegment): MemorySegment = hAvcodecAllocContext3.invoke(codec) as MemorySegment
     fun avcodecFindDecoder(codecId: Int): MemorySegment = hAvcodecFindDecoder.invoke(codecId) as MemorySegment
+
+    /** A static string owned by avcodec; never "unknown_codec"-null. */
+    fun avcodecGetName(codecId: Int): MemorySegment = hAvcodecGetName.invoke(codecId) as MemorySegment
     fun avPacketSideDataGet(sideData: MemorySegment, count: Int, type: Int): MemorySegment =
         hAvPacketSideDataGet.invoke(sideData, count, type) as MemorySegment
     fun avcodecFindDecoderByName(name: MemorySegment): MemorySegment = hAvcodecFindDecoderByName.invoke(name) as MemorySegment

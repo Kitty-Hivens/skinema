@@ -408,6 +408,119 @@ class VideoDecoderTest {
         }
     }
 
+    private fun writeSrt(name: String): Path = dir.resolve(name).also {
+        Files.writeString(
+            it,
+            """
+            1
+            00:00:00,500 --> 00:00:02,000
+            Hello subs
+
+            """.trimIndent(),
+        )
+    }
+
+    private fun writeAss(name: String): Path = dir.resolve(name).also {
+        Files.writeString(
+            it,
+            """
+            [Script Info]
+            ScriptType: v4.00+
+            PlayResX: 640
+            PlayResY: 480
+
+            [V4+ Styles]
+            Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            Style: Default,Arial,24,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:00.50,0:00:02.00,Default,,0,0,0,,Styled subs
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun `subtitle streams enumerate with metadata and dispositions`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("subs.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", writeSrt("enum.srt").toString(),
+            "-i", writeAss("enum.ass").toString(),
+            "-map", "0:v", "-map", "1", "-map", "2", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s:0", "srt", "-c:s:1", "ass",
+            "-metadata:s:s:0", "language=eng", "-metadata:s:s:0", "title=English",
+            "-metadata:s:s:1", "language=jpn",
+            "-disposition:s:0", "default", "-disposition:s:1", "forced",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val tracks = decoder.subtitleTracks()
+            assertEquals(2, tracks.size, "both subtitle streams must enumerate")
+            val srt = tracks[0]
+            assertEquals("subrip", srt.codecName)
+            assertEquals("eng", srt.language)
+            assertEquals("English", srt.title)
+            assertTrue(srt.isText)
+            assertTrue(srt.isDefault)
+            assertTrue(!srt.isForced)
+            assertEquals(srt.streamIndex, srt.id, "embedded ids are stream indices")
+            assertNull(srt.externalPath)
+            val ass = tracks[1]
+            assertEquals("ass", ass.codecName)
+            assertEquals("jpn", ass.language)
+            assertTrue(ass.isText)
+            assertTrue(ass.isForced)
+            assertEquals(decoder.videoSize(), 64 to 48, "coded geometry surfaces for the renderer")
+        }
+    }
+
+    @Test
+    fun `mov_text in mp4 enumerates as a text track`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("movtext.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", writeSrt("movtext.srt").toString(),
+            "-map", "0:v", "-map", "1", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "mov_text",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val tracks = decoder.subtitleTracks()
+            assertEquals(1, tracks.size)
+            assertEquals("mov_text", tracks[0].codecName)
+            assertTrue(tracks[0].isText)
+        }
+    }
+
+    @Test
+    fun `attachments and plain files do not leak into subtitle tracks`() {
+        Fixtures.assumeDecodeEnvironment()
+        val plain = Fixtures.generate(
+            dir.resolve("nosubs.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoDecoder.open(plain).use { decoder ->
+            assertEquals(emptyList(), decoder.subtitleTracks())
+        }
+        // An attachment stream is a different codec type; the enumeration
+        // filter must not read it as a subtitle.
+        val attach = dir.resolve("attach.bin")
+        Files.write(attach, ByteArray(64) { it.toByte() })
+        val withAttachment = Fixtures.generate(
+            dir.resolve("attached.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-attach", attach.toString(), "-metadata:s:t:0", "mimetype=application/octet-stream",
+        )
+        VideoDecoder.open(withAttachment).use { decoder ->
+            assertEquals(emptyList(), decoder.subtitleTracks(), "attachments are not subtitle tracks")
+        }
+    }
+
     @Test
     fun `garbage input fails closed with LibavException`() {
         Fixtures.assumeDecodeEnvironment()

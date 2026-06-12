@@ -54,4 +54,10 @@ interface FrameSource : AutoCloseable {
      * metadata and the pixels arrive sideways.
      */
     fun rotationDegrees(): Int = 0
+
+    /** The container's subtitle streams; empty when none. */
+    fun subtitleTracks(): List<SubtitleTrack> = emptyList()
+
+    /** Coded video geometry (width to height); null when unknown. */
+    fun videoSize(): Pair<Int, Int>? = null
 }

@@ -30,6 +30,8 @@ class VideoDecoder private constructor(
     private val chapters: List<Chapter>,
     private val coverArt: ByteArray?,
     private val rotationDegrees: Int,
+    private val subtitleTracks: List<SubtitleTrack>,
+    private val videoSize: Pair<Int, Int>?,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = duration
@@ -37,6 +39,8 @@ class VideoDecoder private constructor(
     override fun chapters(): List<Chapter> = chapters
     override fun coverArt(): ByteArray? = coverArt
     override fun rotationDegrees(): Int = rotationDegrees
+    override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
+    override fun videoSize(): Pair<Int, Int>? = videoSize
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -304,6 +308,8 @@ class VideoDecoder private constructor(
                 }
 
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
+                val codedWidth = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.WIDTH)
+                val codedHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
                 return VideoDecoder(
                     arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen,
                     duration,
@@ -311,6 +317,8 @@ class VideoDecoder private constructor(
                     containerChapters(fmtCtx, arena),
                     attachedCoverArt(fmtCtx),
                     displayRotationDegrees(codecpar),
+                    enumerateSubtitleTracks(fmtCtx, arena),
+                    (codedWidth to codedHeight).takeIf { codedWidth > 0 && codedHeight > 0 },
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
@@ -439,6 +447,53 @@ internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena): List<Chapte
         )
     }
     return chapters
+}
+
+/** Codec ids whose subtitle decoders emit ASS event lines (text path). */
+private val TEXT_SUBTITLE_CODECS = setOf(
+    LibavAbi.AV_CODEC_ID_ASS,
+    LibavAbi.AV_CODEC_ID_SSA,
+    LibavAbi.AV_CODEC_ID_SUBRIP,
+    LibavAbi.AV_CODEC_ID_MOV_TEXT,
+    LibavAbi.AV_CODEC_ID_WEBVTT,
+)
+
+/**
+ * The container's subtitle streams. [idBase] offsets the ids: embedded
+ * tracks use their stream index as-is (base 0), external files get the
+ * player-assigned negative base. Attachment streams (fonts) are a
+ * different codec type and never appear here.
+ */
+internal fun enumerateSubtitleTracks(
+    fmtCtx: MemorySegment,
+    arena: Arena,
+    idBase: Int = 0,
+    externalPath: Path? = null,
+): List<SubtitleTrack> {
+    val languageKey = arena.allocateFrom("language")
+    val titleKey = arena.allocateFrom("title")
+    val tracks = mutableListOf<SubtitleTrack>()
+    for (i in 0 until fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)) {
+        val stream = streamAt(fmtCtx, i)
+        val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
+            .reinterpret(LibavAbi.CodecParameters.SIZEOF)
+        if (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_TYPE) != LibavAbi.AVMEDIA_TYPE_SUBTITLE) continue
+        val codecId = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)
+        val metadata = stream.get(ADDRESS, LibavAbi.Stream.METADATA)
+        val disposition = stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION)
+        tracks += SubtitleTrack(
+            id = if (externalPath == null) i else idBase - tracks.size,
+            streamIndex = i,
+            language = dictValue(metadata, languageKey),
+            title = dictValue(metadata, titleKey),
+            codecName = Libav.avcodecGetName(codecId).reinterpret(Long.MAX_VALUE).getString(0),
+            isText = codecId in TEXT_SUBTITLE_CODECS,
+            isDefault = disposition and LibavAbi.AV_DISPOSITION_DEFAULT != 0,
+            isForced = disposition and LibavAbi.AV_DISPOSITION_FORCED != 0,
+            externalPath = externalPath,
+        )
+    }
+    return tracks
 }
 
 /**
