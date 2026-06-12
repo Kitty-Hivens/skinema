@@ -73,6 +73,16 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `duration surfaces once the file opens`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("dur.mp4", "0.5"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.durationNanos != null }, "duration must surface")
+            val d = player.durationNanos!!
+            assertTrue(d in 400_000_000L..800_000_000L, "0.5s of footage, got ${d}ns")
+        }
+    }
+
+    @Test
     fun `a missing file surfaces as Failed, not an exception`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(dir.resolve("missing.mp4"), loop = false).use { player ->
@@ -117,6 +127,11 @@ class VideoPlayerTest {
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "audio-only playback must reach Ended")
             assertEquals(null, player.acquireFrame(), "frameless mode serves no frames")
             assertEquals(44_100 * 4, sink.totalBytes, "the whole tone reaches the sink")
+            val d = player.durationNanos
+            assertTrue(
+                d != null && d in 900_000_000L..1_300_000_000L,
+                "frameless playback reports the audio side's duration, got ${d}ns",
+            )
         }
     }
 
