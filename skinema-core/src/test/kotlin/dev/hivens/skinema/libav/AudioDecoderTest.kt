@@ -148,6 +148,15 @@ class AudioDecoderTest {
     }
 
     @Test
+    fun `the container's duration surfaces for audio files`() {
+        Fixtures.assumeDecodeEnvironment()
+        AudioDecoder.openOrNull(tone("dur.flac", "-c:a", "flac"))!!.use { decoder ->
+            val d = assertNotNull(decoder.durationNanos, "flac declares its duration")
+            assertTrue(d in 900_000_000L..1_300_000_000L, "a 1s tone, got ${d}ns")
+        }
+    }
+
+    @Test
     fun `seek then decode resumes at-or-before the target`() {
         Fixtures.assumeDecodeEnvironment()
         AudioDecoder.openOrNull(tone("seek.flac", "-c:a", "flac"))!!.use { decoder ->

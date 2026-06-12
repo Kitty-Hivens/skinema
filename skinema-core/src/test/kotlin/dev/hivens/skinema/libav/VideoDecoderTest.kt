@@ -6,6 +6,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -217,6 +218,35 @@ class VideoDecoderTest {
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
             "-pix_fmt", "yuvj420p", "-c:v", "mjpeg", "-q:v", "4",
         )
+    }
+
+    @Test
+    fun `the container's duration surfaces in nanoseconds`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("dur.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val d = assertNotNull(decoder.durationNanos(), "mp4 declares its duration")
+            assertTrue(d in 900_000_000L..1_300_000_000L, "1s of footage, got ${d}ns")
+        }
+    }
+
+    @Test
+    fun `webm duration surfaces too`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libvpx")
+        val video = Fixtures.generate(
+            dir.resolve("dur.webm"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val d = assertNotNull(decoder.durationNanos(), "webm declares its duration")
+            assertTrue(d in 900_000_000L..1_300_000_000L, "1s of footage, got ${d}ns")
+        }
     }
 
     @Test

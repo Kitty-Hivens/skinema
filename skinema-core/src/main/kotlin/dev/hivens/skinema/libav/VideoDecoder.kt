@@ -25,7 +25,10 @@ class VideoDecoder private constructor(
     val streamIndex: Int,
     val timeBaseNum: Int,
     val timeBaseDen: Int,
+    private val duration: Long?,
 ) : FrameSource {
+
+    override fun durationNanos(): Long? = duration
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -258,7 +261,8 @@ class VideoDecoder private constructor(
                     throw LibavException("av_packet_alloc/av_frame_alloc returned NULL")
                 }
 
-                return VideoDecoder(arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen)
+                val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
+                return VideoDecoder(arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen, duration)
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
                 if (codecCtx != MemorySegment.NULL) {
@@ -274,4 +278,23 @@ class VideoDecoder private constructor(
             }
         }
     }
+}
+
+/**
+ * Container-reported duration: the AVFormatContext value (microseconds)
+ * when present, the stream's own (its time_base) as the fallback, null
+ * when the container does not know. Unknowns appear as AV_NOPTS or
+ * non-positive values depending on the demuxer; both read as null.
+ */
+internal fun containerDurationNanos(
+    fmtCtx: MemorySegment,
+    stream: MemorySegment,
+    timeBaseNum: Int,
+    timeBaseDen: Int,
+): Long? {
+    val container = fmtCtx.get(JAVA_LONG, LibavAbi.FormatContext.DURATION)
+    if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) return container * 1_000L
+    val own = stream.get(JAVA_LONG, LibavAbi.Stream.DURATION)
+    if (own != LibavAbi.AV_NOPTS_VALUE && own > 0) return ptsToNanos(own, timeBaseNum, timeBaseDen)
+    return null
 }

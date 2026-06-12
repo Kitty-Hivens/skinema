@@ -26,6 +26,8 @@ class AudioDecoder private constructor(
     private val streamIndex: Int,
     private val timeBaseNum: Int,
     private val timeBaseDen: Int,
+    /** Same contract as [FrameSource.durationNanos]; audio-only files need it too. */
+    val durationNanos: Long?,
 ) : AutoCloseable {
 
     class PcmChunk internal constructor(
@@ -221,7 +223,8 @@ class AudioDecoder private constructor(
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
                 val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
 
-                return AudioDecoder(arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen)
+                val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
+                return AudioDecoder(arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen, duration)
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
                 if (codecCtx != MemorySegment.NULL) {

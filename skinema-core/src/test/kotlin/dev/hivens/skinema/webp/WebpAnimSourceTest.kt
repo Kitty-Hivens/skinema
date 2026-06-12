@@ -91,6 +91,14 @@ class WebpAnimSourceTest {
     }
 
     @Test
+    fun `animated webp reports no duration`() {
+        assumeWebpEnvironment()
+        FrameSources.open(animated("nodur.webp")).use { source ->
+            assertNull(source.durationNanos(), "the format does not declare one")
+        }
+    }
+
+    @Test
     fun `corrupt webp fails closed with LibavException`() {
         assumeTrue(Webp.available, "libwebpdemux not loadable -- optional capability, skipping")
         val junk = dir.resolve("junk.webp")

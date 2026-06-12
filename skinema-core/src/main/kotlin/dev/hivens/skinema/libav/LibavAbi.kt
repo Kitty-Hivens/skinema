@@ -13,12 +13,18 @@ object LibavAbi {
 
     object FormatContext {
         const val STREAMS = 48L
+
+        /** int64 in AV_TIME_BASE units (microseconds). */
+        const val DURATION = 104L
         const val SIZEOF = 480L
     }
 
     object Stream {
         const val CODECPAR = 16L
         const val TIME_BASE = 32L
+
+        /** int64 in the stream's own time_base. */
+        const val DURATION = 48L
         const val SIZEOF = 216L
     }
 

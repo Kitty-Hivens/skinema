@@ -28,10 +28,12 @@ int main(void) {
 
     P(offsetof(AVFormatContext, nb_streams));
     P(offsetof(AVFormatContext, streams));
+    P(offsetof(AVFormatContext, duration));
     P(sizeof(AVFormatContext));
 
     P(offsetof(AVStream, time_base));
     P(offsetof(AVStream, codecpar));
+    P(offsetof(AVStream, duration));
     P(sizeof(AVStream));
 
     P(offsetof(AVPacket, stream_index));
