@@ -122,6 +122,7 @@ class VideoPlayer internal constructor(
         data object Resume : Command
         data class Seek(val ptsNanos: Long, val exact: Boolean) : Command
         data class SeekBy(val deltaNanos: Long, val exact: Boolean) : Command
+        data class SetRate(val rate: Float) : Command
         data object Close : Command
 
         /**
@@ -269,6 +270,21 @@ class VideoPlayer internal constructor(
     fun setVolume(volume: Float) {
         audioPipeline?.setVolume(volume)
     }
+
+    /** Playback speed; 1.0 until [setRate] changes it. */
+    @Volatile
+    var rate: Float = 1f
+        private set
+
+    /**
+     * Playback speed, pitch preserved (atempo), clamped to [0.5, 4.0] --
+     * the stretcher's quality envelope. With sound the change re-anchors
+     * in place and costs the same ~line-buffer hold as a seek; silent
+     * players scale their wall clock. Survives seeks, pauses and track
+     * switches. A player on an explicit consumer clock owns its own time
+     * and ignores this.
+     */
+    fun setRate(rate: Float) = commands.put(Command.SetRate(rate.coerceIn(0.5f, 4f)))
 
     /**
      * Switches the sound to another of [audioTracks], in place: the
@@ -493,6 +509,15 @@ class VideoPlayer internal constructor(
                 audioPipeline?.resume()
                 clock.resume()
                 state = State.Playing
+            }
+            true
+        }
+        is Command.SetRate -> {
+            rate = cmd.rate
+            if (ownsClock) {
+                (clock as? PlaybackClock)?.setRate(cmd.rate.toDouble())
+            } else {
+                audioPipeline?.setTempo(cmd.rate.toDouble())
             }
             true
         }

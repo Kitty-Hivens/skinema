@@ -4,6 +4,7 @@ import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
+import dev.hivens.skinema.libav.TempoFilter
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
@@ -72,6 +73,7 @@ internal class AudioPipeline(
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
         data class SwitchTrack(val streamIndex: Int) : Command
+        data class SetTempo(val tempo: Double) : Command
         data object VideoLanded : Command
         data object Close : Command
     }
@@ -84,6 +86,13 @@ internal class AudioPipeline(
     // and a single access path keeps every seek and loop wrap on the
     // CURRENT decoder. Owned by the audio thread (confined arena).
     private lateinit var decoder: AudioDecoder
+
+    // Playback rate. At 1.0 the stretcher does not exist and PCM flows
+    // through untouched; otherwise every write passes the atempo graph.
+    // All three owned by the audio thread.
+    private var tempo = 1.0
+    private var tempoFilter: TempoFilter? = null
+    private var sampleRate = 0
 
     /**
      * Seeks issued but not yet performed. While nonzero the clock's
@@ -129,6 +138,9 @@ internal class AudioPipeline(
     /** Switches to another audio stream of the same file, in place. */
     fun selectTrack(streamIndex: Int) = commands.put(Command.SwitchTrack(streamIndex))
 
+    /** Playback rate, pitch preserved; the caller clamps to atempo's range. */
+    fun setTempo(tempo: Double) = commands.put(Command.SetTempo(tempo))
+
     /** The video side finished its seek landing; sound may run again. */
     fun videoLanded() = commands.put(Command.VideoLanded)
 
@@ -167,6 +179,7 @@ internal class AudioPipeline(
             // The hostage guarantee comes first: a throwing close must not
             // leave the video side gated on seeks no one will perform.
             pendingSeeks.set(0)
+            runCatching { tempoFilter?.close() }
             runCatching { decoder.close() }
             runCatching { sink.close() }
             // A pipeline that never produced a clock must still unblock the
@@ -192,6 +205,7 @@ internal class AudioPipeline(
         clock = theClock
         theClock.start(first.ptsNanos)
         clockFuture.complete(theClock)
+        sampleRate = first.sampleRate
         lastWrittenEndNanos = first.ptsNanos + (first.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / first.sampleRate
         sink.write(first.pcm, 0, first.byteCount)
 
@@ -209,12 +223,20 @@ internal class AudioPipeline(
 
             pendingPcm?.let {
                 pendingPcm = null
-                sink.write(it, 0, it.size)
+                writeOut(it, it.size)
                 continue
             }
 
             val chunk = decoder.nextChunk()
             if (chunk == null) {
+                // The stretcher still holds part of the stream's tail;
+                // surface it before the time decision, then start the
+                // next lap (or nothing) from a clean graph.
+                tempoFilter?.let { f ->
+                    val n = f.flush()
+                    if (n > 0) sink.write(f.output, 0, n)
+                    f.reset()
+                }
                 // Let the buffered tail play out before deciding the time.
                 when (awaitTailPlayedOut()) {
                     TailWait.PLAYED_OUT -> if (loop) {
@@ -230,8 +252,23 @@ internal class AudioPipeline(
             }
             lastWrittenEndNanos = chunk.ptsNanos + (chunk.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / chunk.sampleRate
             // Blocking write -- this IS the pacing.
-            sink.write(chunk.pcm, 0, chunk.byteCount)
+            writeOut(chunk.pcm, chunk.byteCount)
         }
+    }
+
+    /**
+     * The one path PCM takes to the device: straight through at 1.0,
+     * through the atempo graph otherwise. Output bytes shrink or grow by
+     * 1/tempo; the blocking write paces either way.
+     */
+    private fun writeOut(pcm: ByteArray, byteCount: Int) {
+        val filter = tempoFilter
+        if (filter == null) {
+            sink.write(pcm, 0, byteCount)
+            return
+        }
+        val n = filter.process(pcm, byteCount)
+        if (n > 0) sink.write(filter.output, 0, n)
     }
 
     private fun handle(cmd: Command): Boolean = when (cmd) {
@@ -290,6 +327,10 @@ internal class AudioPipeline(
             switchTrack(cmd.streamIndex)
             true
         }
+        is Command.SetTempo -> {
+            applyTempo(cmd.tempo)
+            true
+        }
         Command.VideoLanded -> {
             if (awaitingLanding) {
                 awaitingLanding = false
@@ -315,6 +356,8 @@ internal class AudioPipeline(
         sink.flush()
         if (DEBUG_SEEK) System.err.println("[audio-seek] target=${targetNanos / 1_000_000}ms posAtFlush=${sink.framePosition()}")
         pendingPcm = null
+        // Whatever the stretcher buffered belongs to the old position.
+        tempoFilter?.reset()
         awaitingLanding = true
         isEnded = false
         val crop = cropAt(decoder, targetNanos)
@@ -387,6 +430,15 @@ internal class AudioPipeline(
         sink.open(crop.sampleRate)
         if (wasAwaiting || paused || isEnded) sink.stop() // open() starts the device by contract
         theClock.rebase(crop.anchorNanos, crop.sampleRate)
+        // The stretcher is rate-bound; the new track may run at another.
+        val oldFilter = tempoFilter
+        if (oldFilter != null && sampleRate != crop.sampleRate) {
+            oldFilter.close()
+            tempoFilter = TempoFilter(crop.sampleRate, tempo)
+        } else {
+            oldFilter?.reset()
+        }
+        sampleRate = crop.sampleRate
         pendingPcm = crop.remainder
         lastWrittenEndNanos = crop.chunkEndNanos
         activeAudioTrack = next.streamIndex
@@ -394,6 +446,55 @@ internal class AudioPipeline(
             System.err.println(
                 "[audio-switch] track=${next.streamIndex} anchored=${crop.anchorNanos / 1_000_000}ms rate=${crop.sampleRate}",
             )
+        }
+    }
+
+    /**
+     * Playback-rate change. The sink's buffered tail was stretched at the
+     * OLD tempo: re-anchoring the clock over it would leave a permanent
+     * A/V offset of that tail's length times the tempo delta. So the
+     * change is a mini-seek at the playhead -- freeze first, read the
+     * position, rebuild the stretcher, re-scale the clock, re-crop the
+     * stream sample-precise. Costs the same ~line-buffer hold as a seek.
+     */
+    private fun applyTempo(newTempo: Double) {
+        if (newTempo == tempo) return
+        val theClock = checkNotNull(clock)
+        val wasAwaiting = awaitingLanding
+        sink.stop()
+        sink.flush()
+        val pos = theClock.mediaNanos()
+
+        // Open-new-before-close-old: a stretcher that cannot build leaves
+        // tempo, clock and stream untouched.
+        val next = if (newTempo == 1.0) {
+            null
+        } else {
+            try {
+                TempoFilter(sampleRate, newTempo)
+            } catch (_: Throwable) {
+                if (!wasAwaiting && !paused && !isEnded) sink.start()
+                return
+            }
+        }
+        tempoFilter?.close()
+        tempoFilter = next
+        tempo = newTempo
+        theClock.setTempo(newTempo)
+
+        pendingPcm = null
+        val crop = cropAt(decoder, pos)
+        if (crop == null) {
+            // The playhead sits past the last sample; nothing to re-feed.
+            theClock.seek(pos)
+        } else {
+            theClock.seek(crop.anchorNanos)
+            pendingPcm = crop.remainder
+            lastWrittenEndNanos = crop.chunkEndNanos
+        }
+        if (!wasAwaiting && !paused && !isEnded) sink.start()
+        if (DEBUG_SEEK) {
+            System.err.println("[audio-tempo] tempo=$newTempo anchored=${pos / 1_000_000}ms")
         }
     }
 
@@ -443,8 +544,9 @@ internal class AudioPipeline(
      */
     private fun awaitTailPlayedOut(): TailWait {
         val theClock = checkNotNull(clock)
+        // The remaining tail is media time; the wall pays it at 1/tempo.
         val deadline = System.nanoTime() +
-            (lastWrittenEndNanos - theClock.mediaNanos()).coerceAtLeast(0) + TAIL_GRACE_NANOS
+            ((lastWrittenEndNanos - theClock.mediaNanos()).coerceAtLeast(0) / tempo).toLong() + TAIL_GRACE_NANOS
         while (theClock.mediaNanos() < lastWrittenEndNanos) {
             if (System.nanoTime() >= deadline) break
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
