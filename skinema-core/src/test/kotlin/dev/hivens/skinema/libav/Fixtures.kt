@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.ass.Ass
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,6 +38,22 @@ object Fixtures {
         }
         assumeTrue(ffmpegOnPath, "ffmpeg CLI not on PATH -- skipping integration test")
         assumeTrue(libavLoadable, "pinned libav* not loadable -- skipping integration test")
+    }
+
+    private val strictSubs = System.getenv("SKINEMA_REQUIRE_SUBS") != null
+
+    /**
+     * Text-subtitle rendering needs libass, an OPTIONAL capability:
+     * absence is a legal state until SKINEMA_REQUIRE_SUBS escalates it
+     * to a loud failure -- the REQUIRE_DECODE pattern, staged so the
+     * code can merge before the bundles carry libass.
+     */
+    fun assumeSubtitleRendering() {
+        if (strictSubs) {
+            check(Ass.available) { "SKINEMA_REQUIRE_SUBS is set but libass did not load" }
+            return
+        }
+        assumeTrue(Ass.available, "libass not loadable -- skipping subtitle rendering test")
     }
 
     private val encoders: Set<String> by lazy {
