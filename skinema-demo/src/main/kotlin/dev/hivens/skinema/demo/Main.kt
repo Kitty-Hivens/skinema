@@ -2,6 +2,7 @@ package dev.hivens.skinema.demo
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.Button
+import androidx.compose.material.DropdownMenu
+import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Slider
 import androidx.compose.material.Text
 import androidx.compose.runtime.DisposableEffect
@@ -28,11 +31,18 @@ import androidx.compose.ui.window.application
 import dev.hivens.skinema.compose.VideoScale
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.rememberPlayerState
+import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlin.time.Duration.Companion.milliseconds
 
 private const val SEEK_STEP_NANOS = 10_000_000_000L
+
+private fun trackLabel(track: AudioTrack): String = buildString {
+    append(track.language ?: "und")
+    track.title?.let { append(" ").append(it) }
+    append(" ").append(track.sampleRate / 1000).append("kHz")
+}
 
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound]" })
@@ -50,16 +60,20 @@ fun main(args: Array<String>) {
             var positionMs by remember { mutableLongStateOf(0L) }
             var durationMs by remember { mutableLongStateOf(0L) }
             var dragMs by remember { mutableStateOf<Long?>(null) }
+            var tracks by remember { mutableStateOf(emptyList<AudioTrack>()) }
+            var activeTrack by remember { mutableStateOf<Int?>(null) }
             LaunchedEffect(player) {
                 while (true) {
                     positionMs = player.positionNanos() / 1_000_000
                     durationMs = (player.durationNanos ?: 0) / 1_000_000
+                    tracks = player.audioTracks
+                    activeTrack = player.activeAudioTrack
                     kotlinx.coroutines.delay(200.milliseconds)
                 }
             }
 
             Column(Modifier.fillMaxSize().background(Color(0xFF101014))) {
-                androidx.compose.foundation.layout.Box(Modifier.weight(1f).fillMaxWidth()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
                     // A viewer letterboxes; Cover (the background default) crops
                     // whenever the window\'s aspect drifts from the video\'s.
                     VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Fit)
@@ -129,6 +143,24 @@ fun main(args: Array<String>) {
                             },
                             modifier = Modifier.width(120.dp),
                         )
+                    }
+                    if (tracks.size > 1) {
+                        Box {
+                            var menuOpen by remember { mutableStateOf(false) }
+                            Button(onClick = { menuOpen = true }) {
+                                Text(tracks.firstOrNull { it.streamIndex == activeTrack }?.let(::trackLabel) ?: "audio")
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                tracks.forEach { track ->
+                                    DropdownMenuItem(onClick = {
+                                        player.selectAudioTrack(track.streamIndex)
+                                        menuOpen = false
+                                    }) {
+                                        Text((if (track.streamIndex == activeTrack) "* " else "  ") + trackLabel(track))
+                                    }
+                                }
+                            }
+                        }
                     }
                     when (val state = rememberPlayerState(player)) {
                         is VideoPlayer.State.Failed -> Text(

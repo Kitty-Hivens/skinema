@@ -501,6 +501,23 @@ README once the library is usable.
   offset against the container duration; no supported consumer format
   does this in practice.
 
+  Audio track selection followed (same date): AudioTrack enumeration
+  (language/title via av_dict_get, channels, rate, the default
+  disposition), an audioTrack constructor parameter, and LIVE switching
+  -- selectAudioTrack swaps the decoder on the audio thread. Two
+  ordering rules carry the protocol, both found by adversarial review
+  before a line was written: freeze the sink BEFORE reading the
+  playhead (the line plays its buffered tail through any slower
+  ordering and the rebase would step the mastered clock backward --
+  the one move the pacer's invariants forbid), and open the new
+  decoder BEFORE closing the old (every failure -- unopenable track,
+  track shorter than the playhead -- then means "nothing changed": the
+  old sound resumes, no fallback branches). A successful switch
+  reopens the sink at the new rate and re-anchors through
+  AudioClock.rebase, the one synchronized point where a rate change
+  cannot rescale history. A switch mid-landing re-freezes the fresh
+  line for videoLanded.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
