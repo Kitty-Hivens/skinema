@@ -29,12 +29,14 @@ class VideoDecoder private constructor(
     private val tags: Map<String, String>,
     private val chapters: List<Chapter>,
     private val coverArt: ByteArray?,
+    private val rotationDegrees: Int,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = duration
     override fun tags(): Map<String, String> = tags
     override fun chapters(): List<Chapter> = chapters
     override fun coverArt(): ByteArray? = coverArt
+    override fun rotationDegrees(): Int = rotationDegrees
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -308,6 +310,7 @@ class VideoDecoder private constructor(
                     containerTags(fmtCtx, arena),
                     containerChapters(fmtCtx, arena),
                     attachedCoverArt(fmtCtx),
+                    displayRotationDegrees(codecpar),
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
@@ -338,6 +341,29 @@ internal fun swsCoefficientsFor(colorspace: Int, width: Int, height: Int): Int =
     LibavAbi.AVCOL_SPC_SMPTE240M -> LibavAbi.SWS_CS_SMPTE240M
     LibavAbi.AVCOL_SPC_BT2020_NCL, LibavAbi.AVCOL_SPC_BT2020_CL -> LibavAbi.SWS_CS_BT2020
     else -> if (width >= 1280 || height >= 720) LibavAbi.SWS_CS_ITU709 else LibavAbi.SWS_CS_ITU601
+}
+
+/**
+ * Clockwise degrees the consumer must rotate frames for correct display,
+ * normalized to 0/90/180/270 -- phone footage carries its orientation as
+ * a display-matrix on the stream, and the pixels arrive sideways.
+ * av_display_rotation_get reports the matrix's COUNTERclockwise rotation;
+ * display applies the inverse. Snapped to the quarter grid: free-angle
+ * matrices exist in theory, never in the consumer's files (ROADMAP
+ * section 8).
+ */
+internal fun displayRotationDegrees(codecpar: MemorySegment): Int {
+    val sideData = codecpar.get(ADDRESS, LibavAbi.CodecParameters.CODED_SIDE_DATA)
+    val count = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.NB_CODED_SIDE_DATA)
+    if (sideData == MemorySegment.NULL || count == 0) return 0
+    val entry = Libav.avPacketSideDataGet(sideData, count, LibavAbi.AV_PKT_DATA_DISPLAYMATRIX)
+    if (entry == MemorySegment.NULL) return 0
+    val matrix = entry.reinterpret(LibavAbi.PacketSideData.SIZEOF).get(ADDRESS, LibavAbi.PacketSideData.DATA)
+    if (matrix == MemorySegment.NULL) return 0
+    val ccw = Libav.avDisplayRotationGet(matrix)
+    if (ccw.isNaN()) return 0
+    val quarters = Math.round(-ccw / 90.0).toInt()
+    return ((quarters % 4) + 4) * 90 % 360
 }
 
 /**

@@ -62,7 +62,15 @@ int main(void) {
     P(offsetof(AVCodecParameters, codec_id));
     P(offsetof(AVCodecParameters, ch_layout));
     P(offsetof(AVCodecParameters, sample_rate));
+    P(offsetof(AVCodecParameters, coded_side_data));
+    P(offsetof(AVCodecParameters, nb_coded_side_data));
     P(sizeof(AVCodecParameters));
+
+    P(offsetof(AVPacketSideData, data));
+    P(offsetof(AVPacketSideData, size));
+    P(offsetof(AVPacketSideData, type));
+    P(sizeof(AVPacketSideData));
+    P(AV_PKT_DATA_DISPLAYMATRIX);
 
     P(offsetof(AVDictionaryEntry, key));
     P(offsetof(AVDictionaryEntry, value));

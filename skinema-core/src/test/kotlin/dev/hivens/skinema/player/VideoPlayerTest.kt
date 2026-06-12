@@ -812,6 +812,20 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `rotation metadata surfaces on the player`() {
+        Fixtures.assumeDecodeEnvironment()
+        val plain = shortVideo("upright.mp4", "1")
+        val rotated = Fixtures.generate(
+            dir.resolve("sideways.mp4"),
+            "-display_rotation", "90", "-i", plain.toString(), "-c", "copy",
+        )
+        VideoPlayer(rotated, loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            assertEquals(270, player.rotationDegrees, "90ccw metadata displays as 270cw")
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->

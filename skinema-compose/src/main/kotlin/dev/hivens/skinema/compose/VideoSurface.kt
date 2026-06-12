@@ -62,9 +62,14 @@ fun VideoSurface(
         @Suppress("UNUSED_EXPRESSION")
         frameStamp // snapshot read: a new frame invalidates this draw scope
         val image = frames.image ?: return@Canvas
+        // Phone footage arrives sideways with its orientation as metadata;
+        // scaling decisions follow what the viewer SEES, so quarter turns
+        // swap the dimensions before Cover/Fit does its math.
+        val rotation = player.rotationDegrees
+        val (displayedW, displayedH) = displayedSize(image.width.toFloat(), image.height.toFloat(), rotation)
         val dst = destinationRect(
-            srcWidth = image.width.toFloat(),
-            srcHeight = image.height.toFloat(),
+            srcWidth = displayedW,
+            srcHeight = displayedH,
             boundsWidth = size.width,
             boundsHeight = size.height,
             scale = scale,
@@ -74,10 +79,13 @@ fun VideoSurface(
             nc.save()
             // Cover overflows the bounds by design; never paint outside them.
             nc.clipRect(Rect.makeWH(size.width, size.height))
+            if (rotation != 0) {
+                nc.rotate(rotation.toFloat(), (dst.left + dst.right) / 2f, (dst.top + dst.bottom) / 2f)
+            }
             nc.drawImageRect(
                 image,
                 Rect.makeWH(image.width.toFloat(), image.height.toFloat()),
-                dst,
+                imageDrawRect(dst, rotation),
                 SamplingMode.LINEAR,
                 null,
                 true,
@@ -85,6 +93,24 @@ fun VideoSurface(
             nc.restore()
         }
     }
+}
+
+/** The source dimensions as the viewer sees them after rotation. */
+internal fun displayedSize(width: Float, height: Float, rotationDegrees: Int): Pair<Float, Float> =
+    if (rotationDegrees % 180 == 0) width to height else height to width
+
+/**
+ * The rect to hand the canvas while it is rotated about [dst]'s center:
+ * for quarter turns the image's natural orientation is the displayed
+ * rect with its sides swapped around the same center.
+ */
+internal fun imageDrawRect(dst: Rect, rotationDegrees: Int): Rect {
+    if (rotationDegrees % 180 == 0) return dst
+    val centerX = (dst.left + dst.right) / 2f
+    val centerY = (dst.top + dst.bottom) / 2f
+    val halfWidth = dst.height / 2f
+    val halfHeight = dst.width / 2f
+    return Rect.makeLTRB(centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight)
 }
 
 /**

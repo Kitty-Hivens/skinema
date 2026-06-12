@@ -22,7 +22,9 @@ null for animated webp, which declares none); `chapters`, `tags` and
 `coverArt` carry the rest of the container's metadata -- the cover
 ships as the stored png/jpeg bytes for your own image stack. A file
 whose only video stream is the embedded cover plays frameless, art
-exposed, sound intact.
+exposed, sound intact. Phone footage's orientation surfaces as
+`rotationDegrees`; `VideoSurface` applies it, a consumer drawing
+frames itself must do the same.
 
 ## Dependencies
 
