@@ -97,6 +97,11 @@ object Libav {
         FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS),
     )
     private val hSwsFreeContext = fn(LibavLibrary.SWSCALE, "sws_freeContext", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hSwsGetCoefficients = fn(LibavLibrary.SWSCALE, "sws_getCoefficients", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    private val hSwsSetColorspaceDetails = fn(
+        LibavLibrary.SWSCALE, "sws_setColorspaceDetails",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT),
+    )
 
     // -- avcodec ---------------------------------------------------------------
 
@@ -193,6 +198,16 @@ object Libav {
         hSwsScale.invoke(ctx, srcData, srcStride, srcSliceY, srcSliceH, dstData, dstStride) as Int
 
     fun swsFreeContext(ctx: MemorySegment) { hSwsFreeContext.invoke(ctx) }
+
+    /** A static int[4] owned by swscale -- pass it along, never read or free it. */
+    fun swsGetCoefficients(colorspace: Int): MemorySegment = hSwsGetCoefficients.invoke(colorspace) as MemorySegment
+
+    fun swsSetColorspaceDetails(
+        ctx: MemorySegment,
+        invTable: MemorySegment, srcRange: Int,
+        table: MemorySegment, dstRange: Int,
+        brightness: Int, contrast: Int, saturation: Int,
+    ): Int = hSwsSetColorspaceDetails.invoke(ctx, invTable, srcRange, table, dstRange, brightness, contrast, saturation) as Int
 
     fun avPacketAlloc(): MemorySegment = hAvPacketAlloc.invoke() as MemorySegment
     fun avPacketUnref(packet: MemorySegment) { hAvPacketUnref.invoke(packet) }

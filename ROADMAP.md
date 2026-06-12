@@ -533,6 +533,19 @@ README once the library is usable.
   watchdog around the write (the tail-wait pattern) is the fix when
   the platform pass comes.
 
+- **M8 -- color correctness and playback control (in progress):** the
+  RGBA chokepoint honors what frames declare: the YUV matrix
+  (BT.709/601/2020 and friends, via sws_setColorspaceDetails) and the
+  sample range. swscale's silent default is BT.601/limited for
+  everything, so every BT.709 (HD) file had been decoding through the
+  wrong matrix -- a small but measurable shift, strongest in saturated
+  greens -- and full-range streams played with crushed levels. Streams
+  that declare nothing take the convention players agree on: HD
+  geometry means BT.709, smaller means BT.601. Sources with no YUV
+  matrix at all (paletted gif, rgba apng) refuse the details call and
+  keep swscale's defaults, which is correct there. Still in the
+  milestone: playback rate and frame stepping.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
@@ -574,7 +587,8 @@ without breaking changes. Not before.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
 - HDR: today's reality is a naive swscale conversion (PQ content plays
-  washed out; README says so honestly). Proper tone-mapping means either
-  enabling avfilter+tonemap in the trim (real, costs size) or a small
-  software tonemap on the RGBA path. Decide when a consumer actually
-  brings HDR files.
+  washed out; README says so honestly). The BT.2020 matrix is honored
+  since M8 -- what remains wrong is the transfer (PQ/HLG), which only
+  tone-mapping fixes: either avfilter+tonemap in the trim (real, costs
+  size) or a small software tonemap on the RGBA path. Decide when a
+  consumer actually brings HDR files.

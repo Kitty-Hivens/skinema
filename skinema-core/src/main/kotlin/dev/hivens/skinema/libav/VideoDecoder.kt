@@ -57,6 +57,8 @@ class VideoDecoder private constructor(
     private var swsWidth = 0
     private var swsHeight = 0
     private var swsFormat = Int.MIN_VALUE
+    private var swsColorspace = Int.MIN_VALUE
+    private var swsRange = Int.MIN_VALUE
     private var dstData = MemorySegment.NULL
     private var dstStride = MemorySegment.NULL
     private var rgbaNative = MemorySegment.NULL
@@ -140,6 +142,7 @@ class VideoDecoder private constructor(
         val height = frame.get(JAVA_INT, LibavAbi.Frame.HEIGHT)
         val format = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
         ensureSws(width, height, format)
+        ensureColorspaceDetails(width, height)
 
         Libav.swsScale(
             swsCtx,
@@ -173,6 +176,10 @@ class VideoDecoder private constructor(
         swsWidth = width
         swsHeight = height
         swsFormat = format
+        // A fresh context starts from swscale's defaults; force the next
+        // ensureColorspaceDetails to reapply the stream's own values.
+        swsColorspace = Int.MIN_VALUE
+        swsRange = Int.MIN_VALUE
 
         val bytes = width.toLong() * height * 4
         rgbaNative = arena.allocate(bytes)
@@ -182,6 +189,26 @@ class VideoDecoder private constructor(
         dstData.setAtIndex(ADDRESS, 0, rgbaNative)
         dstStride = arena.allocate(JAVA_INT, 8)
         dstStride.setAtIndex(JAVA_INT, 0, width * 4)
+    }
+
+    /**
+     * Keeps the conversion's YUV matrix and sample range in step with what
+     * the frames declare. Without this swscale converts everything with
+     * its BT.601/limited defaults -- subtly wrong colors on every BT.709
+     * (HD) file, crushed levels on full-range streams.
+     */
+    private fun ensureColorspaceDetails(width: Int, height: Int) {
+        val colorspace = frame.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
+        val range = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
+        if (colorspace == swsColorspace && range == swsRange) return
+        swsColorspace = colorspace
+        swsRange = range
+        val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(colorspace, width, height))
+        val srcFullRange = if (range == LibavAbi.AVCOL_RANGE_JPEG) 1 else 0
+        // RGBA output is always full range. Sources without a YUV matrix
+        // (paletted gif, rgba apng) answer a negative and swscale keeps
+        // its defaults, which is correct there.
+        Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
     }
 
     override fun close() {
@@ -202,6 +229,9 @@ class VideoDecoder private constructor(
     companion object {
 
         private val NO_PIXELS = ByteArray(0)
+
+        /** 1.0 in swscale's 16.16 fixed point (brightness/contrast/saturation). */
+        private const val SWS_UNIT = 1 shl 16
 
         /**
          * The native vp8/vp9 decoders ignore the webm alpha side-channel
@@ -294,6 +324,20 @@ class VideoDecoder private constructor(
             }
         }
     }
+}
+
+/**
+ * The SWS_CS_* coefficient table for a frame's declared matrix. Streams
+ * that declare nothing take the convention players agree on: HD geometry
+ * means BT.709, smaller means BT.601.
+ */
+internal fun swsCoefficientsFor(colorspace: Int, width: Int, height: Int): Int = when (colorspace) {
+    LibavAbi.AVCOL_SPC_BT709 -> LibavAbi.SWS_CS_ITU709
+    LibavAbi.AVCOL_SPC_FCC -> LibavAbi.SWS_CS_FCC
+    LibavAbi.AVCOL_SPC_BT470BG, LibavAbi.AVCOL_SPC_SMPTE170M -> LibavAbi.SWS_CS_ITU601
+    LibavAbi.AVCOL_SPC_SMPTE240M -> LibavAbi.SWS_CS_SMPTE240M
+    LibavAbi.AVCOL_SPC_BT2020_NCL, LibavAbi.AVCOL_SPC_BT2020_CL -> LibavAbi.SWS_CS_BT2020
+    else -> if (width >= 1280 || height >= 720) LibavAbi.SWS_CS_ITU709 else LibavAbi.SWS_CS_ITU601
 }
 
 /**
