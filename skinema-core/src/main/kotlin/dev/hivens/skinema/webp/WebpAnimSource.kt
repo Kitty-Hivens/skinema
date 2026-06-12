@@ -67,6 +67,11 @@ class WebpAnimSource private constructor(
         prevEndMs = 0
     }
 
+    // WebPAnimInfo declares no duration, and learning it means decoding
+    // the whole animation up front -- a looping background pays that for
+    // nothing.
+    override fun durationNanos(): Long? = null
+
     override fun close() {
         Webp.delete(decoder)
         arena.close()

@@ -32,4 +32,10 @@ interface FrameSource : AutoCloseable {
      * drained stream, which is how looping works.
      */
     fun seekTo(ptsNanos: Long)
+
+    /**
+     * Container-reported total duration of one lap, or null when the
+     * source cannot know it cheaply (animated webp declares none).
+     */
+    fun durationNanos(): Long? = null
 }
