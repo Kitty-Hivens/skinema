@@ -433,8 +433,8 @@ README once the library is usable.
   the lever is a smaller buffer on a lower-latency backend, not clock
   fiction. Nothing blocks 0.2.0 anymore.
 
-- **M6 -- feature work DONE (2026-06-11); closes with the 0.3.0
-  release.** The real-life audio codec set -- ac3/eac3, alac, 24/32-bit
+- **M6 -- DONE (released as 0.3.0, 2026-06-12).** The real-life audio
+  codec set -- ac3/eac3, alac, 24/32-bit
   and float WAV pcm -- is in: whitelisted, natives rebuilt on all four
   platforms onto the rolling release (each through its on-runner
   acceptance gate), decoder tests dogfooding the shipped bundles green

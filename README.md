@@ -20,11 +20,11 @@ player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.2.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.2.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.2.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.2.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.2.0:macos-x64")
+implementation("dev.hivens:skinema-compose:0.3.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.3.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.3.0:windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.3.0:macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.3.0:macos-x64")
 ```
 
 The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
@@ -46,11 +46,9 @@ Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
 through the same bindings, multichannel downmixes to stereo, and the
 audio device becomes the player's clock (video follows sound, never the
-reverse). The ac3/eac3, alac and extended-pcm decoders ship in the
-natives jars from 0.3.0; the 0.2.0 jars carry the original set.
-Audio-only files play frameless. HDR content plays through a naive SDR
-conversion for now -- washed out, not tone-mapped; proper tone-mapping
-is a roadmap item.
+reverse). Audio-only files play frameless. HDR content plays through a
+naive SDR conversion for now -- washed out, not tone-mapped; proper
+tone-mapping is a roadmap item.
 
 ## Behavior contract
 
