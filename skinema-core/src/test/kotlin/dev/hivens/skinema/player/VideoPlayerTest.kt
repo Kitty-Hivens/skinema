@@ -305,7 +305,10 @@ class VideoPlayerTest {
                 },
                 "the final target must land, saw $landed",
             )
-            assertTrue(landed.size <= 5, "ten queued seeks must coalesce, saw ${landed.size} landings: $landed")
+            // The keyframe preview (pts 0 here -- the fixture's only
+            // keyframe) is deliberate extra feedback, not a landing.
+            val landings = landed.count { it >= 100_000_000L }
+            assertTrue(landings <= 5, "ten queued seeks must coalesce, saw $landings landings: $landed")
         }
     }
 

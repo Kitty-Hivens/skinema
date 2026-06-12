@@ -117,10 +117,13 @@ internal class FrameQueue(depth: Int) {
 
     /**
      * The mutation counter: read it before a peek, then sleep with
-     * [awaitChange] -- any commit/clear/close since that reading returns
-     * immediately instead of sleeping out a stale timeout. This is the
-     * pacer's wake-up seam; an uninterruptible sleep here puts its full
-     * length onto every seek landing.
+     * [awaitChange] -- any mutation since that reading returns
+     * immediately instead of sleeping out a stale timeout. Every
+     * operation bumps it: the pacer waits out pace gaps on it, and the
+     * seek path waits for a popped cell on it (a preview and a landing
+     * commit back to back, so at depth 1 the second needs the first's
+     * pop). An uninterruptible sleep on either side puts its full
+     * length onto a landing.
      */
     fun changeTick(): Long = synchronized(lock) { changes }
 
@@ -144,6 +147,8 @@ internal class FrameQueue(depth: Int) {
         cell.rgba = replacement
         head = (head + 1) % cells.size
         count--
+        changes++
+        lock.notifyAll()
         out
     }
 
@@ -153,6 +158,8 @@ internal class FrameQueue(depth: Int) {
             if (count == 0) return
             head = (head + 1) % cells.size
             count--
+            changes++
+            lock.notifyAll()
         }
     }
 }

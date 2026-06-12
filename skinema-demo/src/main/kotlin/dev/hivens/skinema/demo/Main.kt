@@ -81,10 +81,12 @@ fun main(args: Array<String>) {
                     }) {
                         Text(if (paused) "Play" else "Pause")
                     }
-                    Button(onClick = { player.seekBy(-SEEK_STEP_NANOS) }) {
+                    // Skip buttons land on keyframes: instant picture and
+                    // sound beat frame-exact targets for this gesture.
+                    Button(onClick = { player.seekBy(-SEEK_STEP_NANOS, exact = false) }) {
                         Text("-10s")
                     }
-                    Button(onClick = { player.seekBy(SEEK_STEP_NANOS) }) {
+                    Button(onClick = { player.seekBy(SEEK_STEP_NANOS, exact = false) }) {
                         Text("+10s")
                     }
                     Text(
