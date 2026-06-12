@@ -359,12 +359,18 @@ class VideoDecoderTest {
     @Test
     fun `full-range stream keeps its levels`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libvpx-vp9")
+        // vp9, not h264: the h264 decoder answers full-range VUI by
+        // switching to yuvj420p, which swscale range-handles on its own
+        // -- the fixture would pass with the range plumbing broken.
+        // Modern decoders shun yuvj; vp9 carries the range only in
+        // color_range, which is exactly the seam under test.
         val video = Fixtures.generate(
-            dir.resolve("fullrange.mp4"),
+            dir.resolve("fullrange.webm"),
             "-f", "lavfi", "-i", "color=c=0x141414:size=64x64:rate=5", "-t", "1",
             "-vf", "scale=out_range=full,format=yuv420p",
             "-color_range", "pc",
-            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast",
+            "-c:v", "libvpx-vp9", "-lossless", "1", "-deadline", "realtime", "-cpu-used", "8",
         )
         VideoDecoder.open(video).use { decoder ->
             // Read as limited range, full-range Y=20 expands to ~5 --
