@@ -488,7 +488,7 @@ README once the library is usable.
   request would run a keyframe interval ahead of the picture). The
   demo's skip buttons are inexact; scrubbing stays exact.
 
-- **M7 -- player surface (in progress, 2026-06-12):** durationNanos on
+- **M7 -- player surface (released as 0.4.0, 2026-06-12):** durationNanos on
   VideoPlayer -- the container-reported value, the stream's own as the
   fallback, null for animated webp (WebPAnimInfo declares none, and a
   full decode up front is the only way to learn it; after one full lap
@@ -517,6 +517,21 @@ README once the library is usable.
   AudioClock.rebase, the one synchronized point where a rate change
   cannot rescale history. A switch mid-landing re-freezes the fresh
   line for videoLanded.
+
+  The metadata trio closed the milestone: chapters (start/end/title),
+  format-level tags, and cover art as the stored png/jpeg bytes (the
+  consumer's image stack decodes; mkv attachment-style covers are a
+  different mechanism and out of scope). Found and fixed on the way: a
+  file whose only video stream is the attached picture used to PLAY
+  the cover as one-frame video and advertise Ended while the sound ran
+  on -- such files now refuse the video open and go frameless. Known
+  risk, recorded not handled: a JavaSound blocking write on a dead
+  device raises nothing, and the failure hatch (detachToWallTime)
+  fires only on exceptions -- a vanished device can freeze the
+  pipeline silently. On PipeWire the server masks unplugs by rerouting;
+  bare ALSA and Windows are where it would bite. A wall-deadline
+  watchdog around the write (the tail-wait pattern) is the fix when
+  the platform pass comes.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

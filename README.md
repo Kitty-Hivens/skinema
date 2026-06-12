@@ -17,17 +17,21 @@ VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
 player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ```
 
-`positionNanos()` and `durationNanos` carry a timeline; duration is
-null for animated webp, which declares none.
+`positionNanos()` and `durationNanos` carry a timeline (duration is
+null for animated webp, which declares none); `chapters`, `tags` and
+`coverArt` carry the rest of the container's metadata -- the cover
+ships as the stored png/jpeg bytes for your own image stack. A file
+whose only video stream is the embedded cover plays frameless, art
+exposed, sound intact.
 
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.3.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.3.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.3.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.3.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.3.0:macos-x64")
+implementation("dev.hivens:skinema-compose:0.4.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.4.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.4.0:windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-x64")
 ```
 
 The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
