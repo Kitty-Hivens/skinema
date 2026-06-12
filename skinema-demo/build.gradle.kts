@@ -25,6 +25,10 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "dev.hivens.skinema.demo.MainKt"
+        // Must travel through the Compose DSL: the plugin assigns the run
+        // task's jvmArgs from here in afterEvaluate, clobbering anything
+        // appended at configuration time.
+        jvmArgs("--enable-native-access=ALL-UNNAMED")
     }
 }
 
@@ -39,7 +43,6 @@ tasks.withType<JavaExec>().configureEach {
 }
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
-        jvmArgs("--enable-native-access=ALL-UNNAMED")
         argumentProviders.add {
             listOfNotNull(demoVideo.orNull, if (demoSound.isPresent) "sound" else null)
         }

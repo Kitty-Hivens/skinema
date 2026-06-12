@@ -39,6 +39,10 @@ platform) plus libwebp; on first use they unpack to a per-user cache.
 Without a natives jar, skinema looks for matching system libraries --
 fine for development, not what you ship.
 
+On JDK 24+ launch with `--enable-native-access=ALL-UNNAMED` (or grant
+your named module): skinema's FFM calls -- and Skiko's, if you use
+Compose -- are restricted methods that otherwise warn on every run.
+
 ## What it plays
 
 |                 |                                                                                               |

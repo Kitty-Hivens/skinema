@@ -34,6 +34,9 @@ class ScriptedFrameSource(
     /** Total nextFrame calls that found a frame; a chase shows up here. */
     val decodeCount = AtomicInteger(0)
 
+    /** Total pixel conversions; a stray preview or re-convert shows up here. */
+    val convertCount = AtomicInteger(0)
+
     @Volatile
     private var gateIndex = -1
 
@@ -71,6 +74,7 @@ class ScriptedFrameSource(
     override fun close() = Unit
 
     private fun fill(target: ByteArray?, i: Int): VideoDecoder.RgbaFrame {
+        convertCount.incrementAndGet()
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         out.fill((i % 251).toByte())
         return VideoDecoder.RgbaFrame(width, height, i * periodNanos, out)

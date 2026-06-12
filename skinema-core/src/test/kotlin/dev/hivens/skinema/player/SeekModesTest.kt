@@ -85,6 +85,56 @@ class SeekModesTest {
     }
 
     @Test
+    fun `repeated backsteps reuse the discovered run`() {
+        val source = ScriptedFrameSource(frameCount = 100, keyframeEvery = 50)
+        player(source).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            p.seek(3_000_000_000L)
+            assertTrue(awaitTrue { p.acquireFrame()?.ptsNanos == 3_000_000_000L }, "the seek must land")
+            p.pause()
+            awaitTrue { p.state is VideoPlayer.State.Paused }
+
+            val before = source.decodeCount.get()
+            p.stepBackward()
+            assertTrue(awaitTrue { p.acquireFrame()?.ptsNanos == 2_900_000_000L }, "the first backstep lands")
+            val discovery = source.decodeCount.get() - before
+
+            val mid = source.decodeCount.get()
+            p.stepBackward()
+            assertTrue(awaitTrue { p.acquireFrame()?.ptsNanos == 2_800_000_000L }, "the second backstep lands")
+            val cachedCost = source.decodeCount.get() - mid
+
+            // First step: discovery (31 decodes) + landing run (30);
+            // second: the landing run alone (29) -- the memo answers.
+            assertTrue(
+                cachedCost < discovery / 2 + 2,
+                "a cached backstep must skip discovery: first=$discovery decodes, second=$cachedCost",
+            )
+        }
+    }
+
+    @Test
+    fun `a backstep lands without a keyframe preview`() {
+        val source = ScriptedFrameSource(frameCount = 100, keyframeEvery = 50)
+        player(source).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            p.seek(3_000_000_000L)
+            assertTrue(awaitTrue { p.acquireFrame()?.ptsNanos == 3_000_000_000L }, "the seek must land")
+            p.pause()
+            awaitTrue { p.state is VideoPlayer.State.Paused }
+
+            val before = source.convertCount.get()
+            p.stepBackward()
+            assertTrue(awaitTrue { p.acquireFrame()?.ptsNanos == 2_900_000_000L }, "the backstep lands")
+            assertEquals(
+                1,
+                source.convertCount.get() - before,
+                "the landing is the step's only conversion -- a keyframe preview would jump the picture back",
+            )
+        }
+    }
+
+    @Test
     fun `relative seeks base on the landed keyframe, not the request`() {
         val source = ScriptedFrameSource(frameCount = 100, keyframeEvery = 10)
         player(source).use { p ->
