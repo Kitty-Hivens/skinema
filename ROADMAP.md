@@ -488,6 +488,19 @@ README once the library is usable.
   request would run a keyframe interval ahead of the picture). The
   demo's skip buttons are inexact; scrubbing stays exact.
 
+- **M7 -- player surface (in progress, 2026-06-12):** durationNanos on
+  VideoPlayer -- the container-reported value, the stream's own as the
+  fallback, null for animated webp (WebPAnimInfo declares none, and a
+  full decode up front is the only way to learn it; after one full lap
+  the final frame's end time IS the duration -- a cheap future upgrade
+  if a consumer ever scrubs a looping webp). Frameless playback takes
+  the audio side's value. The demo grew a timeline: dragging scrubs
+  with inexact keyframe landings, release settles with an exact seek --
+  both seek modes in their intended roles. Known edge, documented not
+  handled: nonzero start_time streams (TS captures) report positions
+  offset against the container duration; no supported consumer format
+  does this in practice.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
