@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
+import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
@@ -598,6 +599,74 @@ class VideoPlayerTest {
             assertTrue(awaitTrue { player.acquireFrame() != null }, "silent fallback must play")
             assertTrue(player.audioTracks.isEmpty(), "a dead pipeline must not advertise tracks")
             assertEquals(null, player.activeAudioTrack)
+        }
+    }
+
+    @Test
+    fun `rate clamps to the supported envelope`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("clamp.mp4", "1"), loop = true).use { player ->
+            player.setRate(10f)
+            assertTrue(awaitTrue { player.rate == 4f }, "10x must clamp to 4x")
+            player.setRate(0.1f)
+            assertTrue(awaitTrue { player.rate == 0.5f }, "0.1x must clamp to 0.5x")
+        }
+    }
+
+    @Test
+    fun `setRate scales the silent clock`() {
+        Fixtures.assumeDecodeEnvironment()
+        val now = AtomicLong(1)
+        val clock = PlaybackClock { now.get() }
+        VideoPlayer(shortVideo("silentrate.mp4", "30"), loop = false, explicitClock = clock).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.setRate(2f)
+            assertTrue(awaitTrue { player.rate == 2f }, "the rate command must land")
+            // One fake second at rate 2 is two seconds of media; the
+            // catch-up run must carry the picture there.
+            now.addAndGet(1_000_000_000L)
+            var seen = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 1_900_000_000L
+                },
+                "one fake second at rate 2 must pace to ~2s of footage, saw ${seen}ns",
+            )
+        }
+    }
+
+    @Test
+    fun `setRate reaches the audio clock through the pipeline`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("audiorate.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "30",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "flac",
+        )
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // The pipeline serializes its commands: the tempo applies
+            // before the seek anchors, making the playhead deterministic.
+            player.setRate(2f)
+            player.seek(5_000_000_000L)
+            assertTrue(
+                awaitTrue { player.positionNanos() in 4_990_000_000L..5_010_000_000L },
+                "the seek must anchor near 5s, got ${player.positionNanos()}",
+            )
+            val anchor = player.positionNanos()
+            // A quarter second of device frames covers half a second of
+            // media at tempo 2.
+            sink.positionFrames.addAndGet(11_025)
+            assertTrue(
+                awaitTrue { player.positionNanos() == anchor + 500_000_000L },
+                "the mastered clock must run at the tempo, got ${player.positionNanos()}",
+            )
         }
     }
 
