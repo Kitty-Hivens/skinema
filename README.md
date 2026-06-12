@@ -29,10 +29,14 @@ exposed, sound intact.
 ```kotlin
 implementation("dev.hivens:skinema-compose:0.4.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:0.4.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.4.0:linux-arm64")
 runtimeOnly("dev.hivens:skinema-natives:0.4.0:windows-x64")
 runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-arm64")
 runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-x64")
 ```
+
+The linux-arm64 classifier ships from the release after 0.4.0; the
+other four exist on every version.
 
 The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
 platform) plus libwebp; on first use they unpack to a per-user cache.
