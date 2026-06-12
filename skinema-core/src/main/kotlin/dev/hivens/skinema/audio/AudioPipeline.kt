@@ -32,6 +32,14 @@ internal class AudioPipeline(
     var isEnded = false
         private set
 
+    /**
+     * The container's duration, for frameless (audio-only) playback; set
+     * before [clockFuture] resolves, so a reader holding the clock sees it.
+     */
+    @Volatile
+    var durationNanos: Long? = null
+        private set
+
     private sealed interface Command {
         data object Pause : Command
         data object Resume : Command
@@ -94,6 +102,7 @@ internal class AudioPipeline(
             clockFuture.complete(null)
             return
         }
+        durationNanos = decoder.durationNanos
         try {
             decoder.use { pump(it) }
         } catch (_: Throwable) {

@@ -129,6 +129,15 @@ class VideoPlayer internal constructor(
     var state: State = State.Opening
         private set
 
+    /**
+     * Total duration of one lap, as the container reports it; null while
+     * [State.Opening] and for sources that cannot know (animated webp).
+     * With [positionNanos] this is the timeline.
+     */
+    @Volatile
+    var durationNanos: Long? = null
+        private set
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -244,6 +253,7 @@ class VideoPlayer internal constructor(
         } catch (t: Throwable) {
             if (audioClock != null) {
                 // No video stream but the audio plays: frameless mode.
+                durationNanos = audioPipeline?.durationNanos
                 framelessLoop()
                 state = State.Closed
             } else {
@@ -252,6 +262,7 @@ class VideoPlayer internal constructor(
             audioPipeline?.close()
             return
         }
+        durationNanos = decoder.durationNanos()
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
             start()
