@@ -37,7 +37,7 @@ class ReadAheadTest {
     }
 
     private fun player(source: ScriptedFrameSource, depth: Int, loop: Boolean = false) = VideoPlayer(
-        Path.of("scripted"), loop, false, clock, null, depth,
+        Path.of("scripted"), loop, false, clock, null, depth, null,
     ) { source }
 
     @Test
@@ -217,7 +217,7 @@ class ReadAheadTest {
         // ~200. The threshold leaves room for CI stalls (a stalled wall
         // clock legitimately drops frames).
         val source = ScriptedFrameSource(frameCount = 480, periodNanos = 8_000_000L)
-        VideoPlayer(Path.of("scripted"), false, false, null, null, 1) { source }.use { p ->
+        VideoPlayer(Path.of("scripted"), false, false, null, null, 1, null) { source }.use { p ->
             val seen = HashSet<Long>()
             val deadline = System.currentTimeMillis() + 30_000
             while (p.state !is VideoPlayer.State.Ended && System.currentTimeMillis() < deadline) {
