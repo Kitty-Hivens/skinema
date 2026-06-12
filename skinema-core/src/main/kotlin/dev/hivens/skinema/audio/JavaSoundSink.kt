@@ -16,10 +16,20 @@ import kotlin.math.max
  */
 class JavaSoundSink : PcmSink {
 
+    // Volatile: a track switch reopens the line on the audio thread while
+    // the pacer reads framePosition through it on every pace iteration.
+    @Volatile
     private var line: SourceDataLine? = null
     private var volume = 1f
 
     override fun open(sampleRate: Int) {
+        // A reopen (track switch) drops the old line first; without this
+        // the previous line keeps the device and its buffered tail.
+        line?.let {
+            it.stop()
+            it.flush()
+            it.close()
+        }
         val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
         line = AudioSystem.getSourceDataLine(format).apply {
             // A deliberately small buffer. The default can run to half a

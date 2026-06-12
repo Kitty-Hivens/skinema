@@ -19,6 +19,10 @@ class FakePcmSink : PcmSink {
     var volume = 1f
         private set
 
+    /** open() calls; a track switch reopens the line. */
+    var opens = 0
+        private set
+
     /**
      * Writes that arrived while the line was stopped. A stopped line never
      * drains, so on real hardware such a write can block its thread for
@@ -38,6 +42,11 @@ class FakePcmSink : PcmSink {
 
     override fun open(sampleRate: Int) {
         this.sampleRate = sampleRate
+        // Per the contract, open STARTS the device -- a fake that leaves
+        // [stopped] untouched would let freeze-across-reopen tests pass
+        // vacuously.
+        stopped = false
+        opens++
     }
 
     override fun write(data: ByteArray, offset: Int, length: Int) {

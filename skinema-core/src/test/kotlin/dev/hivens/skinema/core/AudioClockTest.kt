@@ -68,6 +68,20 @@ class AudioClockTest {
     }
 
     @Test
+    fun `rebase continues media time at the anchor and scales by the new rate`() {
+        clock.start(0)
+        frames = 48_000
+        assertEquals(1_000_000_000L, clock.mediaNanos())
+        // A track switch reopens the line: position restarts at zero and
+        // the rate may change.
+        frames = 0
+        clock.rebase(1_000_000_000L, 96_000)
+        assertEquals(1_000_000_000L, clock.mediaNanos(), "continuous at the anchor")
+        frames = 96_000
+        assertEquals(2_000_000_000L, clock.mediaNanos(), "deltas scale by the new rate")
+    }
+
+    @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)
         frames = 48_000
