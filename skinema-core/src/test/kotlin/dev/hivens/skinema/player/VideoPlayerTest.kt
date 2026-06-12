@@ -671,6 +671,147 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `step forward advances exactly one frame and stays paused`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("stepf.mp4", "10"), loop = false).use { player ->
+            var shown = -1L
+            assertTrue(awaitTrue { player.acquireFrame()?.let { shown = it.ptsNanos } != null }, "playback must start")
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            Thread.sleep(100)
+            player.acquireFrame()?.let { shown = it.ptsNanos }
+
+            player.stepForward()
+            var stepped = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { stepped = it.ptsNanos }
+                    stepped == shown + 100_000_000L
+                },
+                "one step must advance one 100ms frame from ${shown}ns, saw ${stepped}ns",
+            )
+            assertIs<VideoPlayer.State.Paused>(player.state)
+
+            player.stepForward()
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { stepped = it.ptsNanos }
+                    stepped == shown + 200_000_000L
+                },
+                "the second step advances one more, saw ${stepped}ns",
+            )
+            assertTrue(
+                awaitTrue { player.positionNanos() == shown + 200_000_000L },
+                "position must follow the stepped frame, got ${player.positionNanos()}",
+            )
+        }
+    }
+
+    @Test
+    fun `step forward pauses a playing player first`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("stepauto.mp4", "10"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.stepForward()
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "a step must pause the player")
+        }
+    }
+
+    @Test
+    fun `step backward returns to the previous frame`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("stepb.mp4", "10"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.seek(2_000_000_000L)
+            var shown = -1L
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { shown = it.ptsNanos }
+                    shown >= 2_000_000_000L
+                },
+                "the seek must land",
+            )
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            Thread.sleep(100)
+            player.acquireFrame()?.let { shown = it.ptsNanos }
+
+            var stepped = -1L
+            player.stepBackward()
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { stepped = it.ptsNanos }
+                    stepped == shown - 100_000_000L
+                },
+                "a backstep from ${shown}ns must land one frame earlier, saw ${stepped}ns",
+            )
+            assertIs<VideoPlayer.State.Paused>(player.state)
+
+            player.stepBackward()
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()?.let { stepped = it.ptsNanos }
+                    stepped == shown - 200_000_000L
+                },
+                "the second backstep lands one more frame back, saw ${stepped}ns",
+            )
+        }
+    }
+
+    @Test
+    fun `step backward at the first frame holds it`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(shortVideo("stepzero.mp4", "2"), loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            player.seek(0)
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 0L },
+                "the landing at zero must publish",
+            )
+            player.stepBackward()
+            Thread.sleep(200)
+            assertEquals(null, player.acquireFrame(), "there is nothing before the first frame")
+            assertIs<VideoPlayer.State.Paused>(player.state)
+        }
+    }
+
+    @Test
+    fun `a step re-anchors the audio to the stepped frame`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("stepav.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "flac",
+        )
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+            var shown = -1L
+            assertTrue(awaitTrue { player.acquireFrame()?.let { shown = it.ptsNanos } != null }, "playback must start")
+            player.pause()
+            awaitTrue { player.state is VideoPlayer.State.Paused }
+            Thread.sleep(100)
+            player.acquireFrame()?.let { shown = it.ptsNanos }
+
+            player.stepForward()
+            val target = shown + 100_000_000L
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == target },
+                "the step must publish the next frame",
+            )
+            assertTrue(
+                awaitTrue { player.positionNanos() in (target - 1_000_000L)..(target + 1_000_000L) },
+                "the mastered clock must re-anchor at the stepped frame, got ${player.positionNanos()}",
+            )
+        }
+    }
+
+    @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->

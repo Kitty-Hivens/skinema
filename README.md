@@ -71,7 +71,8 @@ tone-mapping is a roadmap item.
   while the frame-precise landing decodes behind it; `exact = false`
   lands on the keyframe outright -- picture and sound at once, position
   as coarse as the file's keyframe spacing. Skip buttons want inexact;
-  timeline scrubbing wants exact.
+  timeline scrubbing wants exact. `stepForward`/`stepBackward` move a
+  single frame and leave the player paused on it.
 - **Two threads per player** (a third with audio): decode fills a small
   frame queue, a pacer presents from it. Players are independent and
   self-synced; play as many as your CPU affords (a desktop comfortably

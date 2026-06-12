@@ -563,7 +563,16 @@ README once the library is usable.
   grounds: avfilter_graph_send_command for a smooth in-graph tempo
   ramp (it preserves exactly the state the re-crop makes stale) and a
   JVM-side WSOLA (more code to own for worse quality than atempo).
-  Still in the milestone: frame stepping.
+
+  Frame stepping closed the milestone: stepForward/stepBackward, both
+  leaving the player paused on the stepped frame with time (sound
+  included) re-anchored there. Forward is cheap -- the queue's head
+  promotes to forced (a new FrameQueue.forceHead), or one frame
+  decodes when inventory is empty. Backward is honest about VFR: the
+  previous frame's pts is only knowable by decoding from the keyframe
+  toward the shown one, so it runs that pass first and then lands an
+  ordinary exact seek on the answer -- a keyframe run's cost,
+  advertised through State.Seeking like any landing.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
