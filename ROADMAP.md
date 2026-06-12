@@ -572,7 +572,14 @@ README once the library is usable.
   previous frame's pts is only knowable by decoding from the keyframe
   toward the shown one, so it runs that pass first and then lands an
   ordinary exact seek on the answer -- a keyframe run's cost,
-  advertised through State.Seeking like any landing.
+  advertised through State.Seeking like any landing. The discovery
+  pass keeps the pts run it decoded: which pts precedes which is a
+  static property of the file, so the memo never invalidates and a
+  repeated backstep pays one run, not two. Step landings skip the
+  keyframe preview -- for a one-frame step it is a backward picture
+  jump, not feedback. Repeated backsteps on sparse-keyframe content
+  still cost a decode run each; the only lever past that is a frame
+  cache (tens of MB at 1080p), not taken.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
