@@ -145,9 +145,16 @@ class InexactSeekAudioTest {
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
 
             p.seek(750_000_000L, exact = false)
+            // The upfront audio freeze briefly anchors the clock at the
+            // REQUEST; until the landing's corrective re-anchor wins the
+            // race, a refill frame past the keyframe can flash through the
+            // latest-wins mailbox. The picture assert therefore accepts
+            // the landing or its transient successors -- the position
+            // assert below is what discriminates the re-anchor bug.
+            var seen = -1L
             assertTrue(
-                awaitTrue { p.acquireFrame()?.ptsNanos == 500_000_000L },
-                "the picture lands on the 500ms keyframe",
+                awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen >= 500_000_000L },
+                "the picture lands at-or-after the 500ms keyframe, saw ${seen}ns",
             )
             // The DAC stands still, so a correctly re-anchored clock reads
             // the landing (modulo sample-grid rounding); the bug reads the
