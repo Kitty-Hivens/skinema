@@ -22,7 +22,7 @@ mavenPublishing {
 
 val resourceRoot = "dev/hivens/skinema/natives"
 val nativesTag = "natives-8.1.1"
-val platforms = listOf("linux-x64", "windows-x64", "macos-arm64", "macos-x64")
+val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "macos-arm64", "macos-x64")
 
 // ./gradlew :skinema-natives:jarLocal -Pplatform=linux-x64 -PbundleDir=<dir>
 val localPlatform = providers.gradleProperty("platform")

@@ -25,6 +25,11 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x64
+          # GitHub's free arm64 runners (public repos): a real machine,
+          # so unlike the mac cross-build this platform gets the full
+          # on-runner acceptance run.
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
           - os: windows-latest
             platform: windows-x64
           - os: macos-14

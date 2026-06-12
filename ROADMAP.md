@@ -251,7 +251,10 @@ README once the library is usable.
   platform, nothing else. macos-x64 is cross-compiled on the arm runner
   (GitHub's Intel macs queue for days to months) and ships without an
   on-metal acceptance run -- an arm JVM cannot load x86_64 dylibs --
-  which is exactly what community tier means.
+  which is exactly what community tier means. linux-arm64 (added in
+  M8) is NOT in that boat: GitHub's free arm64 runners are real
+  machines, so it builds and passes the acceptance suite on metal like
+  the first-class platforms.
 
 ## 11. Milestones
 
@@ -580,6 +583,13 @@ README once the library is usable.
   jump, not feedback. Repeated backsteps on sparse-keyframe content
   still cost a decode run each; the only lever past that is a frame
   cache (tens of MB at 1080p), not taken.
+
+  linux-arm64 joined the platform matrix: a fifth bundle on the
+  rolling natives release, built and acceptance-tested on GitHub's
+  free arm64 runners (real metal, full suite -- no cross-build
+  caveat), a fifth classifier jar on the publication, a fifth row in
+  the test matrix. The loader side needed nothing: nativesPlatform()
+  has mapped aarch64 since M3.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
