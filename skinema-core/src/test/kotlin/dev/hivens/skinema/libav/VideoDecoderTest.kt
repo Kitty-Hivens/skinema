@@ -2,6 +2,7 @@ package dev.hivens.skinema.libav
 
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.math.abs
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -287,6 +288,88 @@ class VideoDecoderTest {
             assertEquals(500_000_000L, chapters[0].endNanos)
             assertEquals("Drop", chapters[1].title)
             assertEquals(1_000_000_000L, chapters[1].endNanos)
+        }
+    }
+
+    @Test
+    fun `unspecified matrix takes the geometry convention`() {
+        assertEquals(LibavAbi.SWS_CS_ITU709, swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, 1920, 1080))
+        assertEquals(LibavAbi.SWS_CS_ITU709, swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, 1280, 720))
+        assertEquals(LibavAbi.SWS_CS_ITU601, swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, 640, 480))
+    }
+
+    @Test
+    fun `a declared matrix wins over geometry`() {
+        assertEquals(LibavAbi.SWS_CS_ITU601, swsCoefficientsFor(LibavAbi.AVCOL_SPC_SMPTE170M, 1920, 1080))
+        assertEquals(LibavAbi.SWS_CS_ITU601, swsCoefficientsFor(LibavAbi.AVCOL_SPC_BT470BG, 1920, 1080))
+        assertEquals(LibavAbi.SWS_CS_ITU709, swsCoefficientsFor(LibavAbi.AVCOL_SPC_BT709, 320, 240))
+        assertEquals(LibavAbi.SWS_CS_BT2020, swsCoefficientsFor(LibavAbi.AVCOL_SPC_BT2020_NCL, 3840, 2160))
+    }
+
+    private fun centerRgb(frame: VideoDecoder.RgbaFrame): Triple<Int, Int, Int> {
+        val i = (frame.height / 2 * frame.width + frame.width / 2) * 4
+        return Triple(
+            frame.rgba[i].toInt() and 0xFF,
+            frame.rgba[i + 1].toInt() and 0xFF,
+            frame.rgba[i + 2].toInt() and 0xFF,
+        )
+    }
+
+    private fun assertRgbNear(expected: Triple<Int, Int, Int>, actual: Triple<Int, Int, Int>, what: String) {
+        val (er, eg, eb) = expected
+        val (r, g, b) = actual
+        assertTrue(
+            abs(r - er) <= 8 && abs(g - eg) <= 8 && abs(b - eb) <= 8,
+            "$what: authored ($er,$eg,$eb) must survive the round-trip, got ($r,$g,$b)",
+        )
+    }
+
+    @Test
+    fun `bt709-tagged color decodes through the 709 matrix`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("bt709.mp4"),
+            "-f", "lavfi", "-i", "color=c=0x28B428:size=64x64:rate=5", "-t", "1",
+            "-vf", "scale=out_color_matrix=bt709,format=yuv420p",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            // Decoded through the 601 default instead, (40,180,40) lands
+            // at ~(51,204,45) -- the green channel is the discriminator.
+            assertRgbNear(Triple(40, 180, 40), centerRgb(decoder.nextFrame()!!), "bt709")
+        }
+    }
+
+    @Test
+    fun `smpte170m-tagged color decodes through the 601 matrix`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("bt601.mp4"),
+            "-f", "lavfi", "-i", "color=c=0x28B428:size=64x64:rate=5", "-t", "1",
+            "-vf", "scale=out_color_matrix=smpte170m,format=yuv420p",
+            "-colorspace", "smpte170m",
+            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            assertRgbNear(Triple(40, 180, 40), centerRgb(decoder.nextFrame()!!), "smpte170m")
+        }
+    }
+
+    @Test
+    fun `full-range stream keeps its levels`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("fullrange.mp4"),
+            "-f", "lavfi", "-i", "color=c=0x141414:size=64x64:rate=5", "-t", "1",
+            "-vf", "scale=out_range=full,format=yuv420p",
+            "-color_range", "pc",
+            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            // Read as limited range, full-range Y=20 expands to ~5 --
+            // dark detail crushed to near-black.
+            assertRgbNear(Triple(20, 20, 20), centerRgb(decoder.nextFrame()!!), "full range")
         }
     }
 

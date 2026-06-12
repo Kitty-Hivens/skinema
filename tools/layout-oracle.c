@@ -77,8 +77,25 @@ int main(void) {
     P(offsetof(AVFrame, nb_samples));
     P(offsetof(AVFrame, sample_rate));
     P(offsetof(AVFrame, ch_layout));
+    P(offsetof(AVFrame, color_range));
+    P(offsetof(AVFrame, colorspace));
     P(offsetof(AVChannelLayout, nb_channels));
     P(sizeof(AVFrame));
+
+    P(AVCOL_SPC_BT709);
+    P(AVCOL_SPC_UNSPECIFIED);
+    P(AVCOL_SPC_FCC);
+    P(AVCOL_SPC_BT470BG);
+    P(AVCOL_SPC_SMPTE170M);
+    P(AVCOL_SPC_SMPTE240M);
+    P(AVCOL_SPC_BT2020_NCL);
+    P(AVCOL_SPC_BT2020_CL);
+    P(AVCOL_RANGE_JPEG);
+    P(SWS_CS_ITU709);
+    P(SWS_CS_FCC);
+    P(SWS_CS_ITU601);
+    P(SWS_CS_SMPTE240M);
+    P(SWS_CS_BT2020);
 
     P(AVMEDIA_TYPE_VIDEO);
     P(AVMEDIA_TYPE_AUDIO);

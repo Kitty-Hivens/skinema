@@ -47,7 +47,7 @@ fine for development, not what you ship.
 | Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                                  |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
 | Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
-| Pixels out      | RGBA8888, straight alpha, exact-pts pacing                                                    |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored         |
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
