@@ -93,7 +93,16 @@ class AudioPipelineTest {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
             pipeline.videoLanded()
-            assertTrue(awaitTrue { pipeline.isEnded }, "playback must finish after the seek")
+            // isEnded alone can be the PRE-seek end: on a stalled machine
+            // the instant fake sink lets the short file play out before
+            // the seek is even handled, and the assert reads mid-replay
+            // bytes. pendingSeeks goes 1 -> 0 only after the seek handler
+            // completes (which resets isEnded), so the pair pins the
+            // POST-seek end state.
+            assertTrue(
+                awaitTrue { pipeline.pendingSeeks.get() == 0 && pipeline.isEnded },
+                "playback must finish after the seek",
+            )
             // 0.25s into 1s of 44.1kHz: the post-flush write is the cropped
             // remainder, sample-exact.
             assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
@@ -350,7 +359,11 @@ class AudioPipelineTest {
             assertTrue(awaitTrue { sink.flushes == 1 }, "the change must apply")
             pipeline.seek(0)
             pipeline.videoLanded()
-            assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
+            // pendingSeeks pins the post-seek end (see the crop test).
+            assertTrue(
+                awaitTrue { pipeline.pendingSeeks.get() == 0 && pipeline.isEnded },
+                "non-looping playback must end",
+            )
             val full = 44_100 * 4
             assertTrue(
                 sink.bytesSinceLastFlush in (full * 40 / 100)..(full * 60 / 100),
@@ -479,7 +492,11 @@ class AudioPipelineTest {
             // same arithmetic the plain crop test pins.
             pipeline.seek(250_000_000L)
             pipeline.videoLanded()
-            assertTrue(awaitTrue { pipeline.isEnded }, "playback must finish after the seek")
+            // pendingSeeks pins the post-seek end (see the crop test).
+            assertTrue(
+                awaitTrue { pipeline.pendingSeeks.get() == 0 && pipeline.isEnded },
+                "playback must finish after the seek",
+            )
             assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
         } finally {
             pipeline.close()
