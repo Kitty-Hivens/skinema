@@ -69,6 +69,8 @@ object Libav {
     private val hAvStrerror = fn(LibavLibrary.AVUTIL, "av_strerror", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG))
     private val hAvFrameAlloc = fn(LibavLibrary.AVUTIL, "av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvFrameFree = fn(LibavLibrary.AVUTIL, "av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvFrameGetBuffer = fn(LibavLibrary.AVUTIL, "av_frame_get_buffer", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT))
+    private val hAvFrameUnref = fn(LibavLibrary.AVUTIL, "av_frame_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvChannelLayoutDefault = fn(LibavLibrary.AVUTIL, "av_channel_layout_default", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
 
     // -- swresample --------------------------------------------------------------
@@ -119,6 +121,24 @@ object Libav {
     private val hAvcodecFreeContext = fn(LibavLibrary.AVCODEC, "avcodec_free_context", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecFlushBuffers = fn(LibavLibrary.AVCODEC, "avcodec_flush_buffers", FunctionDescriptor.ofVoid(ADDRESS))
 
+    // -- avfilter ----------------------------------------------------------------
+
+    private val hAvfilterVersion = fn(LibavLibrary.AVFILTER, "avfilter_version", FunctionDescriptor.of(JAVA_INT))
+    private val hAvfilterGetByName = fn(LibavLibrary.AVFILTER, "avfilter_get_by_name", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvfilterGraphAlloc = fn(LibavLibrary.AVFILTER, "avfilter_graph_alloc", FunctionDescriptor.of(ADDRESS))
+    private val hAvfilterGraphCreateFilter = fn(
+        LibavLibrary.AVFILTER, "avfilter_graph_create_filter",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+    )
+    private val hAvfilterLink = fn(
+        LibavLibrary.AVFILTER, "avfilter_link",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT),
+    )
+    private val hAvfilterGraphConfig = fn(LibavLibrary.AVFILTER, "avfilter_graph_config", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvfilterGraphFree = fn(LibavLibrary.AVFILTER, "avfilter_graph_free", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvBuffersrcAddFrame = fn(LibavLibrary.AVFILTER, "av_buffersrc_add_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvBuffersinkGetFrame = fn(LibavLibrary.AVFILTER, "av_buffersink_get_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+
     // -- avformat ----------------------------------------------------------------
 
     private val hAvformatVersion = fn(LibavLibrary.AVFORMAT, "avformat_version", FunctionDescriptor.of(JAVA_INT))
@@ -139,6 +159,7 @@ object Libav {
             LibavLibrary.SWSCALE to hSwscaleVersion.invoke() as Int,
             LibavLibrary.AVCODEC to hAvcodecVersion.invoke() as Int,
             LibavLibrary.AVFORMAT to hAvformatVersion.invoke() as Int,
+            LibavLibrary.AVFILTER to hAvfilterVersion.invoke() as Int,
         )
         raw.forEach { (lib, v) ->
             val major = v shr 16
@@ -178,6 +199,8 @@ object Libav {
 
     fun avFrameAlloc(): MemorySegment = hAvFrameAlloc.invoke() as MemorySegment
     fun avFrameFree(framePtrPtr: MemorySegment) { hAvFrameFree.invoke(framePtrPtr) }
+    fun avFrameGetBuffer(frame: MemorySegment, align: Int): Int = hAvFrameGetBuffer.invoke(frame, align) as Int
+    fun avFrameUnref(frame: MemorySegment) { hAvFrameUnref.invoke(frame) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
 
     fun swrAllocSetOpts2(
@@ -222,6 +245,19 @@ object Libav {
     fun avcodecReceiveFrame(ctx: MemorySegment, frame: MemorySegment): Int = hAvcodecReceiveFrame.invoke(ctx, frame) as Int
     fun avcodecFreeContext(ctxPtrPtr: MemorySegment) { hAvcodecFreeContext.invoke(ctxPtrPtr) }
     fun avcodecFlushBuffers(ctx: MemorySegment) { hAvcodecFlushBuffers.invoke(ctx) }
+
+    fun avfilterGetByName(name: MemorySegment): MemorySegment = hAvfilterGetByName.invoke(name) as MemorySegment
+    fun avfilterGraphAlloc(): MemorySegment = hAvfilterGraphAlloc.invoke() as MemorySegment
+    fun avfilterGraphCreateFilter(ctxOut: MemorySegment, filter: MemorySegment, name: MemorySegment, args: MemorySegment, graph: MemorySegment): Int =
+        hAvfilterGraphCreateFilter.invoke(ctxOut, filter, name, args, MemorySegment.NULL, graph) as Int
+    fun avfilterLink(src: MemorySegment, srcPad: Int, dst: MemorySegment, dstPad: Int): Int =
+        hAvfilterLink.invoke(src, srcPad, dst, dstPad) as Int
+    fun avfilterGraphConfig(graph: MemorySegment): Int = hAvfilterGraphConfig.invoke(graph, MemorySegment.NULL) as Int
+    fun avfilterGraphFree(graphPtrPtr: MemorySegment) { hAvfilterGraphFree.invoke(graphPtrPtr) }
+
+    /** A NULL [frame] signals end of stream to the graph. */
+    fun avBuffersrcAddFrame(ctx: MemorySegment, frame: MemorySegment): Int = hAvBuffersrcAddFrame.invoke(ctx, frame) as Int
+    fun avBuffersinkGetFrame(ctx: MemorySegment, frame: MemorySegment): Int = hAvBuffersinkGetFrame.invoke(ctx, frame) as Int
 
     fun avformatOpenInput(ctxPtrPtr: MemorySegment, url: MemorySegment): Int =
         hAvformatOpenInput.invoke(ctxPtrPtr, url, MemorySegment.NULL, MemorySegment.NULL) as Int

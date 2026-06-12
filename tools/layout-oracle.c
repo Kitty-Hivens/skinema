@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
 #include <libavutil/pixfmt.h>
@@ -25,6 +26,7 @@ int main(void) {
     P(LIBSWSCALE_VERSION_MAJOR);
     P(LIBAVCODEC_VERSION_MAJOR);
     P(LIBAVFORMAT_VERSION_MAJOR);
+    P(LIBAVFILTER_VERSION_MAJOR);
 
     P(offsetof(AVFormatContext, nb_streams));
     P(offsetof(AVFormatContext, streams));
