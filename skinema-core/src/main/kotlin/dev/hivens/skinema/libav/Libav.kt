@@ -126,6 +126,11 @@ object Libav {
     private val hAvcodecReceiveFrame = fn(LibavLibrary.AVCODEC, "avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecFreeContext = fn(LibavLibrary.AVCODEC, "avcodec_free_context", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecFlushBuffers = fn(LibavLibrary.AVCODEC, "avcodec_flush_buffers", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvcodecDecodeSubtitle2 = fn(
+        LibavLibrary.AVCODEC, "avcodec_decode_subtitle2",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+    )
+    private val hAvsubtitleFree = fn(LibavLibrary.AVCODEC, "avsubtitle_free", FunctionDescriptor.ofVoid(ADDRESS))
 
     // -- avfilter ----------------------------------------------------------------
 
@@ -256,6 +261,9 @@ object Libav {
     fun avcodecReceiveFrame(ctx: MemorySegment, frame: MemorySegment): Int = hAvcodecReceiveFrame.invoke(ctx, frame) as Int
     fun avcodecFreeContext(ctxPtrPtr: MemorySegment) { hAvcodecFreeContext.invoke(ctxPtrPtr) }
     fun avcodecFlushBuffers(ctx: MemorySegment) { hAvcodecFlushBuffers.invoke(ctx) }
+    fun avcodecDecodeSubtitle2(ctx: MemorySegment, sub: MemorySegment, gotOut: MemorySegment, packet: MemorySegment): Int =
+        hAvcodecDecodeSubtitle2.invoke(ctx, sub, gotOut, packet) as Int
+    fun avsubtitleFree(sub: MemorySegment) { hAvsubtitleFree.invoke(sub) }
 
     fun avfilterGetByName(name: MemorySegment): MemorySegment = hAvfilterGetByName.invoke(name) as MemorySegment
     fun avfilterGraphAlloc(): MemorySegment = hAvfilterGraphAlloc.invoke() as MemorySegment

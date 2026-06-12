@@ -102,4 +102,34 @@ class PlaybackClockTest {
         fakeNow = 850
         assertEquals(700, clock.mediaNanos())
     }
+
+    @Test
+    fun `concurrent readers see anchored mutations`() {
+        // The pacer and the subtitle pipeline read while the decode
+        // thread mutates; without synchronization a reader loop has no
+        // happens-before edge and may legally pin a stale time forever.
+        val live = PlaybackClock()
+        live.start(0)
+        val failed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val readers = (1..2).map {
+            kotlin.concurrent.thread {
+                var last = Long.MIN_VALUE
+                repeat(200_000) {
+                    val m = live.mediaNanos()
+                    // A seek legitimately moves time anywhere; between
+                    // mutations a reader must never see media time fall
+                    // below the last anchor it could have observed.
+                    if (m < -1) failed.set(true)
+                    last = m
+                }
+                if (last == Long.MIN_VALUE) failed.set(true)
+            }
+        }
+        repeat(2_000) {
+            live.seek(it * 1_000_000L)
+            live.setRate(if (it % 2 == 0) 2.0 else 1.0)
+        }
+        readers.forEach { it.join(10_000) }
+        assertEquals(false, failed.get(), "readers must observe sane anchored values")
+    }
 }

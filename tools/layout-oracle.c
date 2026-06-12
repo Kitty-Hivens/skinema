@@ -53,7 +53,42 @@ int main(void) {
     P(offsetof(AVPacket, data));
     P(offsetof(AVPacket, size));
     P(offsetof(AVPacket, stream_index));
+    P(offsetof(AVPacket, pts));
+    P(offsetof(AVPacket, duration));
     P(sizeof(AVPacket));
+
+    P(offsetof(AVSubtitle, format));
+    P(offsetof(AVSubtitle, start_display_time));
+    P(offsetof(AVSubtitle, end_display_time));
+    P(offsetof(AVSubtitle, num_rects));
+    P(offsetof(AVSubtitle, rects));
+    P(sizeof(AVSubtitle));
+
+    P(offsetof(AVSubtitleRect, x));
+    P(offsetof(AVSubtitleRect, y));
+    P(offsetof(AVSubtitleRect, w));
+    P(offsetof(AVSubtitleRect, h));
+    P(offsetof(AVSubtitleRect, nb_colors));
+    P(offsetof(AVSubtitleRect, data));
+    P(offsetof(AVSubtitleRect, linesize));
+    P(offsetof(AVSubtitleRect, type));
+    P(offsetof(AVSubtitleRect, text));
+    P(offsetof(AVSubtitleRect, ass));
+    P(sizeof(AVSubtitleRect));
+
+    P(AVMEDIA_TYPE_SUBTITLE);
+    P(AVMEDIA_TYPE_ATTACHMENT);
+    P(AV_DISPOSITION_FORCED);
+    P(SUBTITLE_BITMAP);
+    P(SUBTITLE_TEXT);
+    P(SUBTITLE_ASS);
+    P(AV_CODEC_ID_ASS);
+    P(AV_CODEC_ID_SSA);
+    P(AV_CODEC_ID_SUBRIP);
+    P(AV_CODEC_ID_MOV_TEXT);
+    P(AV_CODEC_ID_WEBVTT);
+    P(AV_CODEC_ID_HDMV_PGS_SUBTITLE);
+    P(AV_CODEC_ID_DVD_SUBTITLE);
 
     P(AV_DISPOSITION_ATTACHED_PIC);
     P(AV_DICT_IGNORE_SUFFIX);
@@ -64,6 +99,10 @@ int main(void) {
     P(offsetof(AVCodecParameters, sample_rate));
     P(offsetof(AVCodecParameters, coded_side_data));
     P(offsetof(AVCodecParameters, nb_coded_side_data));
+    P(offsetof(AVCodecParameters, extradata));
+    P(offsetof(AVCodecParameters, extradata_size));
+    P(offsetof(AVCodecParameters, width));
+    P(offsetof(AVCodecParameters, height));
     P(sizeof(AVCodecParameters));
 
     P(offsetof(AVPacketSideData, data));
