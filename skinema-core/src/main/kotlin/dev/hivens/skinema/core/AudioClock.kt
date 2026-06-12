@@ -13,9 +13,14 @@ package dev.hivens.skinema.core
  * the video thread reads.
  */
 class AudioClock(
-    private val sampleRate: Int,
+    initialSampleRate: Int,
     private val positionFrames: () -> Long,
 ) : MediaClock {
+
+    // Mutable for track switches; only [rebase] writes it, under the lock
+    // and together with a fresh anchor -- a rate change anywhere else
+    // would rescale history.
+    private var sampleRate = initialSampleRate
 
     private val lock = Any()
     private var baseMediaNanos = 0L
@@ -55,6 +60,21 @@ class AudioClock(
         synchronized(lock) {
             baseMediaNanos = mediaNanos
             baseFrames = positionFrames()
+            floorNanos = Long.MIN_VALUE
+        }
+    }
+
+    /**
+     * Re-anchor onto a fresh device line: media time continues from
+     * [mediaNanos] with future deltas scaled by [sampleRate]. A track
+     * switch reopens the sink (position restarts at zero) and may change
+     * the rate; both are only safe at an anchor, and this is that anchor.
+     */
+    fun rebase(mediaNanos: Long, sampleRate: Int) {
+        synchronized(lock) {
+            baseMediaNanos = mediaNanos
+            baseFrames = positionFrames()
+            this.sampleRate = sampleRate
             floorNanos = Long.MIN_VALUE
         }
     }

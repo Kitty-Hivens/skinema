@@ -82,6 +82,17 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
         }
     }
 
+    /** Plays out at most [frames] -- a rate-limited test "DAC". */
+    fun consume(frames: Long) {
+        synchronized(lock) {
+            val target = minOf(writtenFrames, consumedFrames + frames)
+            if (target > consumedFrames) {
+                consumedFrames = target
+                lock.notifyAll()
+            }
+        }
+    }
+
     /**
      * Lifts the bound and wakes every parked writer/drainer so the
      * pipeline can process Close; call before closing the player.

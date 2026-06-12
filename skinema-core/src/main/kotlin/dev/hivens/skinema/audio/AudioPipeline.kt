@@ -2,6 +2,7 @@ package dev.hivens.skinema.audio
 
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.AudioDecoder
+import dev.hivens.skinema.libav.AudioTrack
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
@@ -24,6 +25,7 @@ internal class AudioPipeline(
     private val path: Path,
     private val sink: PcmSink,
     private val loop: Boolean,
+    private val initialTrack: Int? = null,
 ) {
 
     val clockFuture = CompletableFuture<AudioClock?>()
@@ -41,10 +43,21 @@ internal class AudioPipeline(
     var durationNanos: Long? = null
         private set
 
+    /** Every audio stream of the container; set before [clockFuture] resolves. */
+    @Volatile
+    var tracks: List<AudioTrack> = emptyList()
+        private set
+
+    /** The stream actually playing -- always a member of [tracks]. */
+    @Volatile
+    var activeAudioTrack: Int? = null
+        private set
+
     private sealed interface Command {
         data object Pause : Command
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
+        data class SwitchTrack(val streamIndex: Int) : Command
         data object VideoLanded : Command
         data object Close : Command
     }
@@ -52,6 +65,11 @@ internal class AudioPipeline(
     private val commands = LinkedBlockingQueue<Command>()
     private var clock: AudioClock? = null
     private var paused = false
+
+    // The decoder is a field, not a parameter: a track switch swaps it,
+    // and a single access path keeps every seek and loop wrap on the
+    // CURRENT decoder. Owned by the audio thread (confined arena).
+    private lateinit var decoder: AudioDecoder
 
     /**
      * Seeks issued but not yet performed. While nonzero the clock's
@@ -94,6 +112,9 @@ internal class AudioPipeline(
         commands.put(Command.Seek(ptsNanos))
     }
 
+    /** Switches to another audio stream of the same file, in place. */
+    fun selectTrack(streamIndex: Int) = commands.put(Command.SwitchTrack(streamIndex))
+
     /** The video side finished its seek landing; sound may run again. */
     fun videoLanded() = commands.put(Command.VideoLanded)
 
@@ -107,23 +128,29 @@ internal class AudioPipeline(
     // -- Audio thread ----------------------------------------------------------
 
     private fun run() {
-        val decoder = try {
-            AudioDecoder.openOrNull(path)
+        val opened = try {
+            AudioDecoder.openOrNull(path, initialTrack)
         } catch (_: Throwable) {
             clockFuture.complete(null)
             return
         }
-        if (decoder == null) {
+        if (opened == null) {
             clockFuture.complete(null)
             return
         }
-        durationNanos = decoder.durationNanos
+        decoder = opened
+        durationNanos = opened.durationNanos
+        tracks = opened.tracks
+        activeAudioTrack = opened.streamIndex
         try {
-            decoder.use { pump(it) }
+            pump()
         } catch (_: Throwable) {
             clock?.detachToWallTime()
         } finally {
+            // The hostage guarantee comes first: a throwing close must not
+            // leave the video side gated on seeks no one will perform.
             pendingSeeks.set(0)
+            runCatching { decoder.close() }
             runCatching { sink.close() }
             // A pipeline that never produced a clock must still unblock the
             // waiting player.
@@ -131,7 +158,7 @@ internal class AudioPipeline(
         }
     }
 
-    private fun pump(decoder: AudioDecoder) {
+    private fun pump() {
         val first = decoder.nextChunk()
         if (first == null) {
             clockFuture.complete(null)
@@ -154,12 +181,12 @@ internal class AudioPipeline(
         while (true) {
             var cmd = commands.poll()
             while (cmd != null) {
-                if (!handle(cmd, decoder, theClock)) return
+                if (!handle(cmd)) return
                 cmd = commands.poll()
             }
             if (paused || isEnded || awaitingLanding) {
                 val idle = commands.poll(100, TimeUnit.MILLISECONDS) ?: continue
-                if (!handle(idle, decoder, theClock)) return
+                if (!handle(idle)) return
                 continue
             }
 
@@ -172,10 +199,10 @@ internal class AudioPipeline(
             val chunk = decoder.nextChunk()
             if (chunk == null) {
                 // Let the buffered tail play out before deciding the time.
-                when (awaitTailPlayedOut(decoder, theClock)) {
+                when (awaitTailPlayedOut()) {
                     TailWait.PLAYED_OUT -> if (loop) {
                         decoder.seekTo(0)
-                        theClock.seek(0)
+                        checkNotNull(clock).seek(0)
                     } else {
                         isEnded = true
                     }
@@ -190,12 +217,12 @@ internal class AudioPipeline(
         }
     }
 
-    private fun handle(cmd: Command, decoder: AudioDecoder, clock: AudioClock): Boolean = when (cmd) {
+    private fun handle(cmd: Command): Boolean = when (cmd) {
         Command.Close -> false
         Command.Pause -> {
             if (!paused) {
                 sink.stop()
-                clock.pause()
+                checkNotNull(clock).pause()
                 paused = true
             }
             true
@@ -204,7 +231,7 @@ internal class AudioPipeline(
             if (paused) {
                 // Mid-landing the sink must stay frozen; VideoLanded starts it.
                 if (!awaitingLanding) sink.start()
-                clock.resume()
+                checkNotNull(clock).resume()
                 paused = false
             }
             true
@@ -233,13 +260,17 @@ internal class AudioPipeline(
                     else -> break
                 }
             }
-            performSeek(decoder, clock, target)
+            performSeek(target)
             pendingSeeks.addAndGet(-consumed)
             if (landedAfter) {
                 awaitingLanding = false
                 if (!paused && !isEnded) sink.start()
                 if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
             }
+            true
+        }
+        is Command.SwitchTrack -> {
+            switchTrack(cmd.streamIndex)
             true
         }
         Command.VideoLanded -> {
@@ -261,27 +292,110 @@ internal class AudioPipeline(
      * the clock, so video lands against a standing target instead of
      * chasing a running one. Revives an ended pipeline.
      */
-    private fun performSeek(decoder: AudioDecoder, clock: AudioClock, targetNanos: Long) {
+    private fun performSeek(targetNanos: Long) {
+        val theClock = checkNotNull(clock)
         sink.stop()
         sink.flush()
         if (DEBUG_SEEK) System.err.println("[audio-seek] target=${targetNanos / 1_000_000}ms posAtFlush=${sink.framePosition()}")
         pendingPcm = null
         awaitingLanding = true
         isEnded = false
-        decoder.seekTo(targetNanos)
-        while (true) {
-            val chunk = decoder.nextChunk()
-            if (chunk == null) {
-                // Seeked past the last sample.
-                if (loop) {
-                    decoder.seekTo(0)
-                    clock.seek(0)
-                } else {
-                    clock.seek(targetNanos)
-                    isEnded = true
-                }
-                return
+        val crop = cropAt(decoder, targetNanos)
+        if (crop == null) {
+            // Seeked past the last sample.
+            if (loop) {
+                decoder.seekTo(0)
+                theClock.seek(0)
+            } else {
+                theClock.seek(targetNanos)
+                isEnded = true
             }
+            return
+        }
+        theClock.seek(crop.anchorNanos)
+        pendingPcm = crop.remainder
+        lastWrittenEndNanos = crop.chunkEndNanos
+        if (DEBUG_SEEK) {
+            System.err.println(
+                "[audio-seek] anchored=${crop.anchorNanos / 1_000_000}ms posAtAnchor=${sink.framePosition()} pending=${crop.remainder.size}B",
+            )
+        }
+    }
+
+    /**
+     * Switches to another audio stream in place. Two ordering rules carry
+     * the correctness: FREEZE FIRST (the line keeps playing its buffered
+     * tail through any slower path, and a position read before the freeze
+     * would rebase the mastered clock backward -- the one move the video
+     * side's invariants forbid), and OPEN-NEW-BEFORE-CLOSE-OLD (every
+     * failure below leaves the old decoder, line and clock untouched).
+     */
+    private fun switchTrack(streamIndex: Int) {
+        val theClock = clock ?: return
+        if (streamIndex == decoder.streamIndex) return
+        if (tracks.none { it.streamIndex == streamIndex }) return
+
+        val wasAwaiting = awaitingLanding
+        sink.stop()
+        sink.flush()
+        pendingPcm = null
+        val pos = theClock.mediaNanos()
+
+        val next = try {
+            AudioDecoder.openOrNull(path, streamIndex)
+        } catch (_: Throwable) {
+            null
+        }
+        if (next == null) {
+            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            return
+        }
+        val crop = cropAt(next, pos)
+        if (crop == null) {
+            // The new track ends before the playhead; refuse rather than
+            // wrap the mastered clock mid-lap or strand a non-looping
+            // player at a frozen anchor.
+            runCatching { next.close() }
+            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            return
+        }
+
+        runCatching { decoder.close() }
+        decoder = next
+        durationNanos = next.durationNanos
+        // The fresh line starts at frame position zero and may run at a
+        // different rate; rebase reads both at one anchor. Between open
+        // and rebase the old base makes raw readings negative -- the
+        // not-yet-reset monotonic floor clamps that window.
+        sink.open(crop.sampleRate)
+        if (wasAwaiting || paused || isEnded) sink.stop() // open() starts the device by contract
+        theClock.rebase(crop.anchorNanos, crop.sampleRate)
+        pendingPcm = crop.remainder
+        lastWrittenEndNanos = crop.chunkEndNanos
+        activeAudioTrack = next.streamIndex
+        if (DEBUG_SEEK) {
+            System.err.println(
+                "[audio-switch] track=${next.streamIndex} anchored=${crop.anchorNanos / 1_000_000}ms rate=${crop.sampleRate}",
+            )
+        }
+    }
+
+    private class Crop(
+        val anchorNanos: Long,
+        val remainder: ByteArray,
+        val chunkEndNanos: Long,
+        val sampleRate: Int,
+    )
+
+    /**
+     * Positions [d] at the chunk covering [targetNanos] and crops the
+     * leading samples; null when the stream ends before the target.
+     * Mutates no pipeline state -- the callers apply their own policy.
+     */
+    private fun cropAt(d: AudioDecoder, targetNanos: Long): Crop? {
+        d.seekTo(targetNanos)
+        while (true) {
+            val chunk = d.nextChunk() ?: return null
             val samples = chunk.byteCount / BYTES_PER_FRAME
             val chunkEnd = chunk.ptsNanos + samples * 1_000_000_000L / chunk.sampleRate
             if (chunkEnd <= targetNanos) continue
@@ -290,16 +404,13 @@ internal class AudioPipeline(
                 .toInt()
                 .coerceAtMost(samples)
             val anchorNanos = chunk.ptsNanos + skipSamples * 1_000_000_000L / chunk.sampleRate
-            clock.seek(anchorNanos)
             // Copied out because the decoder reuses chunk.pcm.
-            pendingPcm = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount)
-            lastWrittenEndNanos = chunkEnd
-            if (DEBUG_SEEK) {
-                System.err.println(
-                    "[audio-seek] anchored=${anchorNanos / 1_000_000}ms posAtAnchor=${sink.framePosition()} pending=${chunk.byteCount - skipSamples * BYTES_PER_FRAME}B",
-                )
-            }
-            return
+            return Crop(
+                anchorNanos = anchorNanos,
+                remainder = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount),
+                chunkEndNanos = chunkEnd,
+                sampleRate = chunk.sampleRate,
+            )
         }
     }
 
@@ -313,13 +424,14 @@ internal class AudioPipeline(
      * (its first act is flushing that tail). A wall deadline bounds the
      * wait against a stalled device; past it the tail is declared played.
      */
-    private fun awaitTailPlayedOut(decoder: AudioDecoder, clock: AudioClock): TailWait {
+    private fun awaitTailPlayedOut(): TailWait {
+        val theClock = checkNotNull(clock)
         val deadline = System.nanoTime() +
-            (lastWrittenEndNanos - clock.mediaNanos()).coerceAtLeast(0) + TAIL_GRACE_NANOS
-        while (clock.mediaNanos() < lastWrittenEndNanos) {
+            (lastWrittenEndNanos - theClock.mediaNanos()).coerceAtLeast(0) + TAIL_GRACE_NANOS
+        while (theClock.mediaNanos() < lastWrittenEndNanos) {
             if (System.nanoTime() >= deadline) break
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
-            return if (handle(cmd, decoder, clock)) TailWait.INTERRUPTED else TailWait.CLOSE
+            return if (handle(cmd)) TailWait.INTERRUPTED else TailWait.CLOSE
         }
         return TailWait.PLAYED_OUT
     }

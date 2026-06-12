@@ -4,6 +4,9 @@ import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -33,6 +36,19 @@ class AudioPipelineTest {
     private fun tone(name: String = "tone.flac"): Path = Fixtures.generate(
         dir.resolve(name),
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
+    )
+
+    /**
+     * Two flac tracks at different rates; the rate is the discriminator.
+     * Long enough that no loop wrap (a legitimate backward clock step)
+     * lands inside a test's observation window.
+     */
+    private fun twoTracks(name: String): Path = Fixtures.generate(
+        dir.resolve(name),
+        "-f", "lavfi", "-t", "30", "-i", "sine=frequency=440:sample_rate=44100",
+        "-f", "lavfi", "-t", "30", "-i", "sine=frequency=880:sample_rate=48000",
+        "-map", "0:a", "-map", "1:a", "-c:a", "flac",
+        "-disposition:a:0", "default",
     )
 
     @Test
@@ -150,6 +166,140 @@ class AudioPipelineTest {
             pipeline.videoLanded()
             sink.positionFrames.set(44_100)
             assertTrue(awaitTrue { pipeline.isEnded }, "playback ends once the device played the tail")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a live track switch lands on the new rate at the same playhead`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(twoTracks("switch.mka"), sink, loop = true)
+        try {
+            val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertEquals(2, pipeline.tracks.size)
+            assertEquals(0, pipeline.activeAudioTrack)
+            assertEquals(44_100, sink.sampleRate)
+            // Freeze the DAC at 100ms so the playhead is deterministic.
+            sink.positionFrames.set(4_410)
+            assertTrue(awaitTrue { clock.mediaNanos() >= 100_000_000L })
+
+            pipeline.selectTrack(1)
+            assertTrue(awaitTrue { pipeline.activeAudioTrack == 1 }, "the switch must land")
+            assertEquals(48_000, sink.sampleRate, "the line reopened at the new rate")
+            assertTrue(sink.opens >= 2, "a switch reopens the line")
+            val pos = clock.mediaNanos()
+            assertTrue(pos in 99_000_000L..130_000_000L, "the playhead survives the switch, got ${pos}ns")
+            assertEquals(0, pipeline.pendingSeeks.get(), "a switch is not a seek")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `the switch freezes the line before reading the playhead`() {
+        Fixtures.assumeDecodeEnvironment()
+        // A live device keeps consuming through the switch; reading the
+        // playhead before the freeze rebases the mastered clock BACKWARD
+        // by whatever played meanwhile -- the sampler below would see
+        // time step back. Manual-position fakes are blind to this.
+        val sink = BoundedPcmSink(capacityFrames = 4_410)
+        val pipeline = AudioPipeline(twoTracks("freeze-switch.mka"), sink, loop = true)
+        val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+        val running = AtomicBoolean(true)
+        val violated = AtomicLong(-1)
+        val consumer = thread {
+            var maxSeen = 0L
+            while (running.get()) {
+                // Rate-limited "DAC": ~10x realtime keeps the device live
+                // through the switch without racing to the loop wrap.
+                sink.consume(441)
+                val m = clock.mediaNanos()
+                if (m < maxSeen - 2_000_000L) violated.set(maxSeen - m)
+                maxSeen = maxOf(maxSeen, m)
+                Thread.sleep(1)
+            }
+        }
+        try {
+            assertTrue(awaitTrue { clock.mediaNanos() > 200_000_000L }, "playback must run")
+            pipeline.selectTrack(1)
+            assertTrue(awaitTrue { pipeline.activeAudioTrack == 1 }, "the switch must land")
+            Thread.sleep(100)
+            assertEquals(-1L, violated.get(), "the clock stepped backward by ${violated.get()}ns across the switch")
+        } finally {
+            running.set(false)
+            consumer.join(2_000)
+            sink.release()
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a switch mid-landing keeps the sink frozen for videoLanded`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(twoTracks("await.mka"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.seek(100_000_000L)
+            assertTrue(awaitTrue { sink.stopped }, "the seek freezes the sink")
+
+            pipeline.selectTrack(1)
+            assertTrue(awaitTrue { pipeline.activeAudioTrack == 1 }, "the switch must land")
+            assertTrue(sink.stopped, "open() started the fresh line; mid-landing the switch must re-freeze it")
+            assertEquals(48_000, sink.sampleRate)
+
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { !sink.stopped }, "videoLanded releases as usual")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a switch to a shorter track past its end is refused`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        // Track 0 runs 3s, track 1 only 1s.
+        val pipeline = AudioPipeline(
+            Fixtures.generate(
+                dir.resolve("short.mka"),
+                "-f", "lavfi", "-t", "3", "-i", "sine=frequency=440:sample_rate=44100",
+                "-f", "lavfi", "-t", "1", "-i", "sine=frequency=880:sample_rate=48000",
+                "-map", "0:a", "-map", "1:a", "-c:a", "flac",
+                "-disposition:a:0", "default",
+            ),
+            sink,
+            loop = true,
+        )
+        try {
+            val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // Playhead at 2s -- past the short track's end.
+            sink.positionFrames.set(44_100L * 2)
+            assertTrue(awaitTrue { clock.mediaNanos() >= 2_000_000_000L })
+
+            pipeline.selectTrack(1)
+            Thread.sleep(200)
+            assertEquals(0, pipeline.activeAudioTrack, "the switch must be refused")
+            assertEquals(44_100, sink.sampleRate, "the line stays on the old track")
+            assertTrue(awaitTrue { !sink.stopped }, "the old track resumes")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a switch to an unknown index is a no-op`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(twoTracks("badidx.mka"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            pipeline.selectTrack(99)
+            Thread.sleep(150)
+            assertEquals(0, pipeline.activeAudioTrack)
+            assertEquals(44_100, sink.sampleRate)
         } finally {
             pipeline.close()
         }
