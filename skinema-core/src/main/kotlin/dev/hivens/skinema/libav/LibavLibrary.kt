@@ -41,14 +41,16 @@ fun nativesPlatform(): String {
  * -dev package on Debian-family systems.
  *
  * Declaration order is a safe load order: every library is preceded by
- * everything it links against (avutil first, avformat last).
+ * everything it links against (avutil first, avfilter -- which may link
+ * any of the others -- last).
  */
 enum class LibavLibrary(val baseName: String, val sonameMajor: Int) {
     AVUTIL("avutil", 60),
     SWRESAMPLE("swresample", 6),
     SWSCALE("swscale", 9),
     AVCODEC("avcodec", 62),
-    AVFORMAT("avformat", 62);
+    AVFORMAT("avformat", 62),
+    AVFILTER("avfilter", 11);
 
     /** The file name carrying this library's pinned major on [os]. */
     fun fileName(os: Os): String = when (os) {

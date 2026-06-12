@@ -15,8 +15,8 @@ class LibavLibraryTest {
     @Test
     fun `declaration order loads dependencies before their dependents`() {
         val order = LibavLibrary.entries
-        // avutil underpins everything; avformat links avcodec (and avutil).
+        // avutil underpins everything; avfilter may link any of the rest.
         assertEquals(LibavLibrary.AVUTIL, order.first())
-        assertEquals(LibavLibrary.AVFORMAT, order.last())
+        assertEquals(LibavLibrary.AVFILTER, order.last())
     }
 }
