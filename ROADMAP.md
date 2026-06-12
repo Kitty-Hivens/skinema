@@ -468,6 +468,26 @@ README once the library is usable.
   it, a player scenario passes 3-5 (each step of depth is a full RGBA
   frame of memory, 8.3 MB at 1080p).
 
+  A live-feel pass followed (2026-06-12), driven by the user skipping
+  through a 60 fps 1080p AV1 webm. Found and fixed, in order: the
+  pacer's pace waits were uninterruptible parks, so a landing paid up
+  to the 50 ms re-check (queue mutations now wake them -- a mutation
+  tick plus monitor waits); the fill side discovered a freed cell only
+  via its 20 ms command-poll timeout, capping production below 60 fps
+  and degrading high-rate content to the guard-frame slideshow (the
+  pacer now drops a RoomFreed token into the command queue -- 1113 ->
+  3547 frames/min on that webm); video decode opened single-threaded,
+  the codec-context default, putting a 5.5 s AV1 keyframe gap at ~1.5 s
+  of seek landing (threads=auto cuts it ~3x; one new av_opt_set
+  downcall). What remained is structural -- an exact seek must decode
+  forward from the keyframe -- so seeks grew the standard player
+  answers: exact landings publish their keyframe immediately as a
+  preview while the run works, and seek/seekBy gained an additive
+  `exact = false` that lands on the keyframe outright, sound and the
+  relative-seek base re-anchored to the landed pts (audio left at the
+  request would run a keyframe interval ahead of the picture). The
+  demo's skip buttons are inexact; scrubbing stays exact.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
