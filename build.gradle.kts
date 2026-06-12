@@ -1,4 +1,5 @@
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.plugins.signing.SigningExtension
 
 plugins {
@@ -11,6 +12,17 @@ allprojects {
     // Releases pass -PappVersion=<tag> (tag first, then publish -- the
     // libtray flow); anything else is a dev build.
     version = providers.gradleProperty("appVersion").getOrElse("0.1.0-SNAPSHOT")
+}
+
+// CI logs carry only the console; without the message a failed assertion
+// is a bare file:line, on every module that ever fails.
+subprojects {
+    tasks.withType<Test>().configureEach {
+        testLogging {
+            events("failed")
+            exceptionFormat = TestExceptionFormat.FULL
+        }
+    }
 }
 
 // Shared Central Portal publishing for every module that opts in by
