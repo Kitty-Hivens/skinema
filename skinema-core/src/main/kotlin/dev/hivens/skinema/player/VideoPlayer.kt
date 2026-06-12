@@ -224,6 +224,13 @@ class VideoPlayer internal constructor(
     // the EOF actions (loop wrap, park, Ended) wait for that drain.
     private var eofPending = false
 
+    // The pts run a backstep's discovery pass decoded (keyframe toward
+    // the shown frame, ascending). Which pts precedes which is a static
+    // property of the file, so the memo never invalidates -- a repeated
+    // backstep finds its target here and skips straight to the landing
+    // run, halving the gesture. Owned by the decode thread.
+    private var stepBackRun: LongArray? = null
+
     private val thread = Thread(::run, "skinema-decode").apply {
         isDaemon = true
         start()
@@ -281,7 +288,8 @@ class VideoPlayer internal constructor(
      * frame's timestamp is only knowable by decoding from the keyframe
      * toward the shown one (frame rates vary mid-stream), so this costs
      * a keyframe run like an exact seek -- instant on dense keyframes,
-     * advertised through [State.Seeking] on sparse ones.
+     * advertised through [State.Seeking] on sparse ones. Repeated
+     * backsteps reuse the discovered run and pay one run, not two.
      */
     fun stepBackward() = commands.put(Command.StepBackward)
 
@@ -559,12 +567,12 @@ class VideoPlayer internal constructor(
         }
     }
 
-    private fun handleSeek(targetNanos: Long, exact: Boolean, decoder: FrameSource?): Boolean {
+    private fun handleSeek(targetNanos: Long, exact: Boolean, decoder: FrameSource?, preview: Boolean = true): Boolean {
         seekInFlight = true
         intendedPositionNanos = targetNanos
         audioPipeline?.seek(targetNanos)
         val keepRunning = if (decoder != null) {
-            performSeek(decoder, targetNanos, exact)
+            performSeek(decoder, targetNanos, exact, preview)
         } else {
             // Frameless (audio-only): no landing to wait for.
             seekInFlight = false
@@ -610,7 +618,7 @@ class VideoPlayer internal constructor(
      * cost one landing at the final target, not a landing each. Returns
      * false when a Close arrived mid-landing.
      */
-    private fun performSeek(decoder: FrameSource, targetNanos: Long, exact: Boolean): Boolean {
+    private fun performSeek(decoder: FrameSource, targetNanos: Long, exact: Boolean, preview: Boolean = true): Boolean {
         // Whatever inventory was decoded toward the old position is stale;
         // the landing must be the next thing on screen. Repositioning the
         // decoder also voids a pending EOF.
@@ -622,6 +630,7 @@ class VideoPlayer internal constructor(
         state = State.Seeking
         var target = targetNanos
         var exactMode = exact
+        var previewing = preview
         decoder.seekTo(target)
         val debugStart = if (DEBUG_SEEK) System.nanoTime() else 0L
         var dropped = 0
@@ -652,6 +661,9 @@ class VideoPlayer internal constructor(
                 decoder.seekTo(target)
                 dropped = 0
                 atKeyframe = true
+                // The superseding press is a user seek; it gets its preview
+                // even when the step landing it replaced suppressed one.
+                previewing = true
                 landedFromKeyframe = Long.MIN_VALUE
                 continue
             }
@@ -711,7 +723,7 @@ class VideoPlayer internal constructor(
                 // the exact target. A superseding burst within one keyframe
                 // interval re-sees the same frame -- skip the re-convert.
                 atKeyframe = false
-                if (f.ptsNanos != previewedPts) {
+                if (previewing && f.ptsNanos != previewedPts) {
                     previewedPts = f.ptsNanos
                     enqueue(decoder, f, forced = true)
                 }
@@ -767,29 +779,39 @@ class VideoPlayer internal constructor(
         pauseNow()
         val shown = lastPublishedPts
         if (shown <= 0) return true
-        // Pass 1: the predecessor's pts -- only knowable by decoding from
-        // the keyframe toward the shown frame.
-        var prev = -1L
-        decoder.seekTo(shown)
-        var f = decoder.nextFrame(convert = false)
-        if (f != null && f.ptsNanos >= shown) {
-            // The shown frame IS its keyframe; the predecessor lives
-            // behind the previous one.
-            decoder.seekTo(shown - 1)
-            f = decoder.nextFrame(convert = false)
+        val cached = stepBackRun
+        val cachedIdx = cached?.indexOf(shown) ?: -1
+        val target: Long
+        if (cachedIdx > 0) {
+            target = cached!![cachedIdx - 1]
+        } else {
+            // Discovery pass: the predecessor's pts -- only knowable by
+            // decoding from the keyframe toward the shown frame. Index 0
+            // means the shown frame heads its run; the predecessor lives
+            // behind the previous keyframe, rediscovered below.
+            val run = mutableListOf<Long>()
+            decoder.seekTo(shown)
+            var f = decoder.nextFrame(convert = false)
+            if (f != null && f.ptsNanos >= shown) {
+                decoder.seekTo(shown - 1)
+                f = decoder.nextFrame(convert = false)
+            }
+            while (f != null && f.ptsNanos < shown) {
+                run += f.ptsNanos
+                f = decoder.nextFrame(convert = false)
+            }
+            if (run.isNotEmpty()) stepBackRun = run.toLongArray()
+            // No predecessor (the shown frame is the first): the pass
+            // still moved the demuxer, so land back on the shown frame.
+            target = run.lastOrNull() ?: shown
         }
-        while (f != null && f.ptsNanos < shown) {
-            prev = f.ptsNanos
-            f = decoder.nextFrame(convert = false)
-        }
-        // No predecessor (the shown frame is the first): pass 1 still
-        // moved the demuxer, so land back on the shown frame itself.
-        val target = if (prev >= 0) prev else shown
         // From Ended there is no prior state to restore and finishSeek
-        // would resolve to Playing; a step always lands paused.
+        // would resolve to Playing; a step always lands paused. The
+        // landing skips the keyframe preview: for a one-frame step the
+        // preview is a backward picture jump, not feedback.
         val fromEnded = state is State.Ended
         if (fromEnded) stateBeforeSeek.set(State.Paused)
-        val keepRunning = handleSeek(target, exact = true, decoder)
+        val keepRunning = handleSeek(target, exact = true, decoder, preview = false)
         when {
             state is State.Playing -> pauseNow()
             fromEnded && state is State.Paused -> {
