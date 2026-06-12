@@ -182,6 +182,16 @@ class VideoPlayer internal constructor(
     var coverArt: ByteArray? = null
         private set
 
+    /**
+     * Clockwise degrees (0/90/180/270) the frames must be rotated for
+     * correct display -- phone footage carries its orientation as
+     * metadata. VideoSurface applies it; a consumer drawing frames
+     * itself must do the same.
+     */
+    @Volatile
+    var rotationDegrees: Int = 0
+        private set
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -369,6 +379,7 @@ class VideoPlayer internal constructor(
         tags = decoder.tags()
         chapters = decoder.chapters()
         coverArt = decoder.coverArt()
+        rotationDegrees = decoder.rotationDegrees()
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
             start()

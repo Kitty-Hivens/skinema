@@ -57,4 +57,25 @@ class DestinationRectTest {
             destinationRect(90f, 160f, 320f, 90f, VideoScale.Fit),
         )
     }
+
+    @Test
+    fun `quarter turns swap the displayed dimensions`() {
+        assertEquals(48f to 64f, displayedSize(64f, 48f, 90))
+        assertEquals(48f to 64f, displayedSize(64f, 48f, 270))
+        assertEquals(64f to 48f, displayedSize(64f, 48f, 0))
+        assertEquals(64f to 48f, displayedSize(64f, 48f, 180))
+    }
+
+    @Test
+    fun `the image rect under a quarter turn swaps sides about the center`() {
+        // Displayed rect 80x200 at (60,20): under the canvas rotation the
+        // image's natural orientation is 200x80 around the same center.
+        val dst = Rect.makeXYWH(60f, 20f, 80f, 200f)
+        assertRect(
+            Rect.makeXYWH(0f, 80f, 200f, 80f),
+            imageDrawRect(dst, 90),
+        )
+        assertRect(dst, imageDrawRect(dst, 180))
+        assertRect(dst, imageDrawRect(dst, 0))
+    }
 }

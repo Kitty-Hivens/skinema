@@ -380,6 +380,35 @@ class VideoDecoderTest {
     }
 
     @Test
+    fun `the display matrix surfaces as clockwise display rotation`() {
+        Fixtures.assumeDecodeEnvironment()
+        val plain = Fixtures.generate(
+            dir.resolve("upright.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoDecoder.open(plain).use { decoder ->
+            assertEquals(0, decoder.rotationDegrees(), "no matrix, no rotation")
+        }
+        // -display_rotation writes the matrix on a stream copy; its angle
+        // is counterclockwise, our contract is clockwise-to-apply.
+        val quarter = Fixtures.generate(
+            dir.resolve("rot90.mp4"),
+            "-display_rotation", "90", "-i", plain.toString(), "-c", "copy",
+        )
+        VideoDecoder.open(quarter).use { decoder ->
+            assertEquals(270, decoder.rotationDegrees(), "90ccw displays as 270cw")
+        }
+        val half = Fixtures.generate(
+            dir.resolve("rot180.mp4"),
+            "-display_rotation", "180", "-i", plain.toString(), "-c", "copy",
+        )
+        VideoDecoder.open(half).use { decoder ->
+            assertEquals(180, decoder.rotationDegrees())
+        }
+    }
+
+    @Test
     fun `garbage input fails closed with LibavException`() {
         Fixtures.assumeDecodeEnvironment()
         val junk = dir.resolve("junk.mp4")

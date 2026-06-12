@@ -47,4 +47,11 @@ interface FrameSource : AutoCloseable {
 
     /** Encoded cover-art bytes (png/jpeg as stored); null when none. */
     fun coverArt(): ByteArray? = null
+
+    /**
+     * Clockwise degrees (0/90/180/270) the frames must be rotated for
+     * correct display -- phone footage stores its orientation as
+     * metadata and the pixels arrive sideways.
+     */
+    fun rotationDegrees(): Int = 0
 }

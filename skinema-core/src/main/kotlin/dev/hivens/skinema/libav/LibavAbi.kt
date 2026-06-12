@@ -61,9 +61,16 @@ object LibavAbi {
     object CodecParameters {
         const val CODEC_TYPE = 0L
         const val CODEC_ID = 4L
+        const val CODED_SIDE_DATA = 32L
+        const val NB_CODED_SIDE_DATA = 40L
         const val CH_LAYOUT = 128L
         const val SAMPLE_RATE = 152L
         const val SIZEOF = 184L
+    }
+
+    object PacketSideData {
+        const val DATA = 0L
+        const val SIZEOF = 24L
     }
 
     object Frame {
@@ -92,6 +99,7 @@ object LibavAbi {
     const val AV_DISPOSITION_DEFAULT = 1
     const val AV_DISPOSITION_ATTACHED_PIC = 1024
     const val AV_DICT_IGNORE_SUFFIX = 2
+    const val AV_PKT_DATA_DISPLAYMATRIX = 5
     const val AV_SAMPLE_FMT_S16 = 1
     const val AV_PIX_FMT_RGBA = 26
     const val SWS_BILINEAR = 2

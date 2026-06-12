@@ -591,6 +591,15 @@ README once the library is usable.
   the test matrix. The loader side needed nothing: nativesPlatform()
   has mapped aarch64 since M3.
 
+  Rotation closed the section-8 leak-through: phone footage's display
+  matrix surfaces as rotationDegrees (clockwise-to-apply, snapped to
+  the quarter grid -- av_display_rotation_get reports the matrix's
+  counterclockwise angle, display applies the inverse), and
+  VideoSurface rotates at draw time: Cover/Fit math runs on the
+  displayed (swapped) dimensions, the canvas turns about the rect's
+  center, and the pixels are never touched -- a transform, not a
+  transpose.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
