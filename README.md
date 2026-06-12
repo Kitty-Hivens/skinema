@@ -58,6 +58,11 @@ is a roadmap item.
   `VideoPlayer.State.Failed` -- show your fallback. No partial recovery,
   no garbage frames, no hangs.
 - **Drop late.** A slow consumer skips frames; the clock never lags.
+- **Seeks answer immediately.** An exact seek previews its keyframe
+  while the frame-precise landing decodes behind it; `exact = false`
+  lands on the keyframe outright -- picture and sound at once, position
+  as coarse as the file's keyframe spacing. Skip buttons want inexact;
+  timeline scrubbing wants exact.
 - **Two threads per player** (a third with audio): decode fills a small
   frame queue, a pacer presents from it. Players are independent and
   self-synced; play as many as your CPU affords (a desktop comfortably
