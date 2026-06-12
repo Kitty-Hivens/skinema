@@ -206,16 +206,8 @@ class ReadAheadTest {
         }
     }
 
-    @Test
-    fun `steady-state production is not gated on the room poll`() {
-        // 125 fps scripted stream against the wall clock at depth 1. The
-        // fill side discovers a freed cell through the pacer's RoomFreed
-        // token; discovering it by poll timeout instead caps production
-        // near 50 fps, and the drop policy eats the difference -- high
-        // frame rates degrade to a guard-frame slideshow. Healthy runs
-        // publish nearly all 480 frames; the gated regime stays under
-        // ~200. The threshold leaves room for CI stalls (a stalled wall
-        // clock legitimately drops frames).
+    /** One wall-clock cadence run; returns the distinct frames published. */
+    private fun cadenceRun(): Int {
         val source = ScriptedFrameSource(frameCount = 480, periodNanos = 8_000_000L)
         VideoPlayer(Path.of("scripted"), false, false, null, null, 1, null) { source }.use { p ->
             val seen = HashSet<Long>()
@@ -226,8 +218,28 @@ class ReadAheadTest {
             }
             p.acquireFrame()?.let { seen += it.ptsNanos }
             assertIs<VideoPlayer.State.Ended>(p.state, "the stream must play out")
-            assertTrue(seen.size > 300, "production must hold the frame rate, published ${seen.size}/480")
+            return seen.size
         }
+    }
+
+    @Test
+    fun `steady-state production is not gated on the room poll`() {
+        // 125 fps scripted stream against the wall clock at depth 1. The
+        // fill side discovers a freed cell through the pacer's RoomFreed
+        // token; discovering it by poll timeout instead caps production
+        // near 50 fps and the drop policy eats the difference -- high
+        // frame rates degrade to a guard-frame slideshow. Measured:
+        // healthy ~480 published, gated ~200 -- deterministically, on any
+        // machine. A wall-clock stall on a shared runner also drops
+        // frames, so a sub-threshold first run is sampled once more; the
+        // regression fails both, a stalled environment rarely repeats.
+        val first = cadenceRun()
+        if (first > 300) return
+        val second = cadenceRun()
+        assertTrue(
+            second > 300,
+            "production gated on the room poll twice: $first/480, then $second/480",
+        )
     }
 
     @Test

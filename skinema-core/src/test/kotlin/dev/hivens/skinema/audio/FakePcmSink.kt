@@ -23,6 +23,11 @@ class FakePcmSink : PcmSink {
     var opens = 0
         private set
 
+    /** flush() calls; seeks and tempo changes are observable through it. */
+    @Volatile
+    var flushes = 0
+        private set
+
     /**
      * Writes that arrived while the line was stopped. A stopped line never
      * drains, so on real hardware such a write can block its thread for
@@ -66,7 +71,10 @@ class FakePcmSink : PcmSink {
     }
 
     override fun flush() {
-        synchronized(all) { sinceFlush.reset() }
+        synchronized(all) {
+            sinceFlush.reset()
+            flushes++
+        }
     }
 
     override fun framePosition(): Long {
