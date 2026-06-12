@@ -5,6 +5,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -165,6 +166,75 @@ class AudioDecoderTest {
             decoder.seekTo(target)
             val chunk = assertNotNull(decoder.nextChunk(), "seek must land inside the stream")
             assertTrue(chunk.ptsNanos <= target, "BACKWARD seek lands at-or-before, got ${chunk.ptsNanos}")
+        }
+    }
+
+    private fun twoTracks(name: String = "tracks.mka"): Path = Fixtures.generate(
+        dir.resolve(name),
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+        "-map", "0:a", "-map", "1:a", "-t", "1", "-c:a", "flac",
+        "-metadata:s:a:0", "language=jpn",
+        "-metadata:s:a:1", "language=rus", "-metadata:s:a:1", "title=Commentary",
+        "-disposition:a:0", "default",
+    )
+
+    @Test
+    fun `the container's audio tracks enumerate with their metadata`() {
+        Fixtures.assumeDecodeEnvironment()
+        AudioDecoder.openOrNull(twoTracks())!!.use { decoder ->
+            val tracks = decoder.tracks
+            assertEquals(2, tracks.size, "both streams are audio")
+            val jpn = tracks[0]
+            assertEquals("jpn", jpn.language)
+            assertTrue(jpn.isDefault, "the explicit default disposition must surface")
+            assertEquals(44_100, jpn.sampleRate)
+            assertEquals(1, jpn.channels, "lavfi sine is mono")
+            val rus = tracks[1]
+            assertEquals("rus", rus.language)
+            assertEquals("Commentary", rus.title)
+            assertTrue(!rus.isDefault)
+            assertEquals(48_000, rus.sampleRate)
+        }
+    }
+
+    @Test
+    fun `the default disposition wins the best-stream pick`() {
+        // Sound on the pinned n8.1: av_find_best_stream ranks
+        // AV_DISPOSITION_DEFAULT as the leading criterion since FFmpeg 5.0;
+        // without it the tiebreak could pick either sine.
+        Fixtures.assumeDecodeEnvironment()
+        AudioDecoder.openOrNull(twoTracks("def.mka"))!!.use { decoder ->
+            assertEquals(0, decoder.streamIndex)
+            assertEquals(44_100, decoder.nextChunk()!!.sampleRate)
+        }
+    }
+
+    @Test
+    fun `an explicit stream index opens that track`() {
+        Fixtures.assumeDecodeEnvironment()
+        AudioDecoder.openOrNull(twoTracks("pick.mka"), streamIndex = 1)!!.use { decoder ->
+            assertEquals(1, decoder.streamIndex)
+            assertEquals(48_000, decoder.nextChunk()!!.sampleRate)
+        }
+    }
+
+    @Test
+    fun `a non-audio or out-of-range index fails loudly`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("av.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", "-shortest",
+        )
+        assertFailsWith<LibavException>("the video stream is not an audio track") {
+            AudioDecoder.openOrNull(av, streamIndex = 0)
+        }
+        assertFailsWith<LibavException>("out of range") {
+            AudioDecoder.openOrNull(av, streamIndex = 99)
         }
     }
 

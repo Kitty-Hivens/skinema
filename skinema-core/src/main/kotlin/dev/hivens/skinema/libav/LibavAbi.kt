@@ -12,6 +12,7 @@ package dev.hivens.skinema.libav
 object LibavAbi {
 
     object FormatContext {
+        const val NB_STREAMS = 44L
         const val STREAMS = 48L
 
         /** int64 in AV_TIME_BASE units (microseconds). */
@@ -25,7 +26,15 @@ object LibavAbi {
 
         /** int64 in the stream's own time_base. */
         const val DURATION = 48L
+        const val DISPOSITION = 64L
+        const val METADATA = 80L
         const val SIZEOF = 216L
+    }
+
+    object DictEntry {
+        const val KEY = 0L
+        const val VALUE = 8L
+        const val SIZEOF = 16L
     }
 
     object Packet {
@@ -34,7 +43,10 @@ object LibavAbi {
     }
 
     object CodecParameters {
+        const val CODEC_TYPE = 0L
         const val CODEC_ID = 4L
+        const val CH_LAYOUT = 128L
+        const val SAMPLE_RATE = 152L
         const val SIZEOF = 184L
     }
 
@@ -59,6 +71,7 @@ object LibavAbi {
 
     const val AVMEDIA_TYPE_VIDEO = 0
     const val AVMEDIA_TYPE_AUDIO = 1
+    const val AV_DISPOSITION_DEFAULT = 1
     const val AV_SAMPLE_FMT_S16 = 1
     const val AV_PIX_FMT_RGBA = 26
     const val SWS_BILINEAR = 2

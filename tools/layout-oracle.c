@@ -34,13 +34,23 @@ int main(void) {
     P(offsetof(AVStream, time_base));
     P(offsetof(AVStream, codecpar));
     P(offsetof(AVStream, duration));
+    P(offsetof(AVStream, disposition));
+    P(offsetof(AVStream, metadata));
     P(sizeof(AVStream));
 
     P(offsetof(AVPacket, stream_index));
     P(sizeof(AVPacket));
 
+    P(offsetof(AVCodecParameters, codec_type));
     P(offsetof(AVCodecParameters, codec_id));
+    P(offsetof(AVCodecParameters, ch_layout));
+    P(offsetof(AVCodecParameters, sample_rate));
     P(sizeof(AVCodecParameters));
+
+    P(offsetof(AVDictionaryEntry, key));
+    P(offsetof(AVDictionaryEntry, value));
+
+    P(AV_DISPOSITION_DEFAULT);
 
     P(offsetof(AVFrame, data));
     P(offsetof(AVFrame, linesize));
