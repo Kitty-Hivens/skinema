@@ -414,6 +414,47 @@ class AudioPipelineTest {
     }
 
     @Test
+    fun `the tempo change freezes the line before reading the playhead`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Same shape as the switch's freeze test: a live device keeps
+        // consuming through the change, and a playhead read before the
+        // freeze re-anchors the mastered clock backward by whatever
+        // played meanwhile. Manual-position fakes are blind to this.
+        val sink = BoundedPcmSink(capacityFrames = 4_410)
+        val media = Fixtures.generate(
+            dir.resolve("freeze-tempo.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "flac",
+        )
+        val pipeline = AudioPipeline(media, sink, loop = true)
+        val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+        val running = AtomicBoolean(true)
+        val violated = AtomicLong(-1)
+        val consumer = thread {
+            var maxSeen = 0L
+            while (running.get()) {
+                sink.consume(441)
+                val m = clock.mediaNanos()
+                if (m < maxSeen - 2_000_000L) violated.set(maxSeen - m)
+                maxSeen = maxOf(maxSeen, m)
+                Thread.sleep(1)
+            }
+        }
+        try {
+            assertTrue(awaitTrue { clock.mediaNanos() > 200_000_000L }, "playback must run")
+            val flushesBefore = sink.flushes
+            pipeline.setTempo(2.0)
+            assertTrue(awaitTrue { sink.flushes > flushesBefore }, "the change must land")
+            Thread.sleep(100)
+            assertEquals(-1L, violated.get(), "the clock stepped backward by ${violated.get()}ns across the change")
+        } finally {
+            running.set(false)
+            consumer.join(2_000)
+            sink.release()
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `back to tempo 1 the path is sample-exact again`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
