@@ -86,6 +86,7 @@ Pinned line: **FFmpeg n8.1.x, LGPL, shared** (pinned 2026-06).
 | swscale     | 9                   |
 | avcodec     | 62                  |
 | avformat    | 62                  |
+| avfilter    | 11                  |
 
 Rules:
 
@@ -118,8 +119,9 @@ h264, hevc, vp8, vp9, av1 (libdav1d -- the native decoder is too slow
 for 1080p), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
 vorbis, mp3, flac and WAV pcm (s16/s24/s32/float -- the real-life set
 added 2026-06-11: movie-rip tracks, m4a lossless, DAW exports);
-libswscale + libswresample. Expected size: 8-12 MB per platform against
-~70 MB for a full build.
+libswscale + libswresample; libavfilter trimmed to exactly the
+playback-rate chain (atempo + abuffer/abuffersink, added in M8).
+Expected size: 8-12 MB per platform against ~70 MB for a full build.
 
 ## 5. Bindings
 

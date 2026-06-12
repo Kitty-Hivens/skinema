@@ -128,18 +128,20 @@ read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
 # ac3/eac3 (movie rips), alac (m4a lossless), 24/32-bit and float WAV --
 # rides the same native decoders. The ac3 parser frames both ac3 and
 # eac3. libvpx is required, not a nicety: the native vp8/vp9 decoders
-# drop the webm alpha side-channel.
+# drop the webm alpha side-channel. libavfilter carries exactly the
+# playback-rate chain: atempo plus its abuffer/abuffersink endpoints.
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-debug \
     --disable-everything --disable-network \
-    --disable-avdevice --disable-avfilter \
+    --disable-avdevice \
     --enable-libvpx --enable-libdav1d \
     --enable-protocol=file,pipe \
     --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3 \
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
+    --enable-filter=atempo,abuffer,abuffersink \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
