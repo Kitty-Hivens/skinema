@@ -812,6 +812,25 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `subtitle tracks surface on the player`() {
+        Fixtures.assumeDecodeEnvironment()
+        val srt = dir.resolve("surface.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:02,000\nHello subs\n")
+        val video = Fixtures.generate(
+            dir.resolve("subsurface.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-map", "0:v", "-map", "1", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+        )
+        VideoPlayer(video, loop = false).use { player ->
+            assertTrue(awaitTrue { player.subtitleTracks.size == 1 }, "the track must surface")
+            assertEquals("subrip", player.subtitleTracks[0].codecName)
+        }
+    }
+
+    @Test
     fun `rotation metadata surfaces on the player`() {
         Fixtures.assumeDecodeEnvironment()
         val plain = shortVideo("upright.mp4", "1")
