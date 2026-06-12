@@ -31,6 +31,9 @@ class ScriptedFrameSource(
     /** Highest frame index whose decode has started. */
     val maxStartedIndex = AtomicInteger(-1)
 
+    /** Total nextFrame calls that found a frame; a chase shows up here. */
+    val decodeCount = AtomicInteger(0)
+
     @Volatile
     private var gateIndex = -1
 
@@ -49,6 +52,7 @@ class ScriptedFrameSource(
         if (index >= frameCount) return null
         val i = index
         maxStartedIndex.updateAndGet { maxOf(it, i) }
+        decodeCount.incrementAndGet()
         if (i == gateIndex) gate?.await()
         lastIndex = i
         index++

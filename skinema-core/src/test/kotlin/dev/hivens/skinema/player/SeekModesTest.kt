@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
@@ -102,6 +103,93 @@ class SeekModesTest {
                 "the exact follow-up must land, saw ${seen}ns",
             )
             assertEquals(2_000_000_000L, seen, "the relative base is the landed position")
+        }
+    }
+}
+
+/**
+ * A backward seek whose audio half is still queued leaves the clock at
+ * the OLD, higher position; lateness against it is fiction. The decode
+ * side must hold instead of chasing the phantom forward -- the chase
+ * burned the decoder seconds past the real position and froze the
+ * picture until the clock walked there.
+ */
+class PhantomChaseTest {
+
+    private val dir: Path = Files.createTempDirectory("skinema-phantom-test")
+
+    @AfterTest
+    fun cleanup() {
+        dir.toFile().deleteRecursively()
+    }
+
+    private fun awaitTrue(deadlineMs: Long = 10_000, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + deadlineMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            Thread.sleep(10)
+        }
+        return condition()
+    }
+
+    @Test
+    fun `a backward seek does not chase the stale audio anchor`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Real audio (the pipeline needs a Path), scripted video: a 30s
+        // tone whose sink the test consumes by hand, against a 30s frame
+        // grid whose decode is instant -- a phantom chase would rip
+        // through it in microseconds.
+        val tone = Fixtures.generate(
+            dir.resolve("tone.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "flac",
+        )
+        val sink = BoundedPcmSink(capacityFrames = 11_025)
+        val source = ScriptedFrameSource(frameCount = 300)
+        val player = VideoPlayer(tone, false, true, null, sink, 1) { source }
+        player.use { p ->
+            try {
+                assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+                // Hand-feed the DAC to 15s; video follows.
+                assertTrue(
+                    awaitTrue {
+                        sink.consumeAllButTail(0)
+                        p.acquireFrame()
+                        sink.framePosition() >= 44_100L * 15
+                    },
+                    "the played position must reach 15s",
+                )
+                // Stop consuming: the audio thread fills the buffer and
+                // parks inside write -- its half of the next seek will
+                // wait, exactly the burst-backlog state.
+                assertTrue(awaitTrue { sink.writerParked }, "the audio thread must park in write")
+
+                p.seek(5_000_000_000L)
+                assertTrue(
+                    awaitTrue { p.acquireFrame()?.ptsNanos == 5_000_000_000L },
+                    "the landing must publish against the stale clock",
+                )
+                // The clock still reads ~15s. A chasing fill would decode
+                // the 5s..15s gap (instantly, here) before the anchor
+                // lands; a holding fill decodes at most the inventory.
+                val decodesAtLanding = source.decodeCount.get()
+                Thread.sleep(300)
+                val chased = source.decodeCount.get() - decodesAtLanding
+                assertTrue(chased <= 5, "the fill must hold while the audio owes its anchor, decoded $chased frames")
+
+                // Release the audio thread: the anchor lands at 5s and the
+                // held inventory flows.
+                var seen = -1L
+                assertTrue(
+                    awaitTrue {
+                        sink.consumeAllButTail(0)
+                        p.acquireFrame()?.let { seen = it.ptsNanos }
+                        seen in 5_000_000_001L..8_000_000_000L
+                    },
+                    "frames past the landing must flow once the clock anchors, saw ${seen}ns",
+                )
+            } finally {
+                sink.release()
+            }
         }
     }
 }
