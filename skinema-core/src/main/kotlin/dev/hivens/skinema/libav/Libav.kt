@@ -65,6 +65,7 @@ object Libav {
     private val hAvutilVersion = fn(LibavLibrary.AVUTIL, "avutil_version", FunctionDescriptor.of(JAVA_INT))
     private val hAvLogSetLevel = fn(LibavLibrary.AVUTIL, "av_log_set_level", FunctionDescriptor.ofVoid(JAVA_INT))
     private val hAvOptSet = fn(LibavLibrary.AVUTIL, "av_opt_set", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, JAVA_INT))
+    private val hAvDictGet = fn(LibavLibrary.AVUTIL, "av_dict_get", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvStrerror = fn(LibavLibrary.AVUTIL, "av_strerror", FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG))
     private val hAvFrameAlloc = fn(LibavLibrary.AVUTIL, "av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvFrameFree = fn(LibavLibrary.AVUTIL, "av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
@@ -104,6 +105,7 @@ object Libav {
     private val hAvPacketUnref = fn(LibavLibrary.AVCODEC, "av_packet_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvPacketFree = fn(LibavLibrary.AVCODEC, "av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecFindDecoderByName = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder_by_name", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecParametersToContext = fn(LibavLibrary.AVCODEC, "avcodec_parameters_to_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecOpen2 = fn(LibavLibrary.AVCODEC, "avcodec_open2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS))
@@ -162,6 +164,9 @@ object Libav {
     fun avOptSet(obj: MemorySegment, name: MemorySegment, value: MemorySegment): Int =
         hAvOptSet.invoke(obj, name, value, 0) as Int
 
+    fun avDictGet(dict: MemorySegment, key: MemorySegment): MemorySegment =
+        hAvDictGet.invoke(dict, key, MemorySegment.NULL, 0) as MemorySegment
+
     fun avFrameAlloc(): MemorySegment = hAvFrameAlloc.invoke() as MemorySegment
     fun avFrameFree(framePtrPtr: MemorySegment) { hAvFrameFree.invoke(framePtrPtr) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
@@ -190,6 +195,7 @@ object Libav {
     fun avPacketFree(packetPtrPtr: MemorySegment) { hAvPacketFree.invoke(packetPtrPtr) }
 
     fun avcodecAllocContext3(codec: MemorySegment): MemorySegment = hAvcodecAllocContext3.invoke(codec) as MemorySegment
+    fun avcodecFindDecoder(codecId: Int): MemorySegment = hAvcodecFindDecoder.invoke(codecId) as MemorySegment
     fun avcodecFindDecoderByName(name: MemorySegment): MemorySegment = hAvcodecFindDecoderByName.invoke(name) as MemorySegment
     fun avcodecParametersToContext(ctx: MemorySegment, par: MemorySegment): Int = hAvcodecParametersToContext.invoke(ctx, par) as Int
     fun avcodecOpen2(ctx: MemorySegment, codec: MemorySegment): Int = hAvcodecOpen2.invoke(ctx, codec, MemorySegment.NULL) as Int
