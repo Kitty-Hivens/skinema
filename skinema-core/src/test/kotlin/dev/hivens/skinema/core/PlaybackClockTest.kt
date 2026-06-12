@@ -70,4 +70,36 @@ class PlaybackClockTest {
         assertEquals(100, clock.nanosUntilDue(500))
         assertEquals(-150, clock.nanosUntilDue(250))
     }
+
+    @Test
+    fun `rate scales wall deltas`() {
+        clock.start()
+        clock.setRate(2.0)
+        fakeNow = 500
+        assertEquals(1_000, clock.mediaNanos())
+    }
+
+    @Test
+    fun `a rate change re-anchors -- history keeps its scale`() {
+        clock.start()
+        fakeNow = 400
+        assertEquals(400, clock.mediaNanos())
+        clock.setRate(0.5)
+        assertEquals(400, clock.mediaNanos(), "continuous at the change")
+        fakeNow = 1_000
+        assertEquals(700, clock.mediaNanos(), "the past at 1x, the future at 0.5x")
+    }
+
+    @Test
+    fun `rate survives pause and resume`() {
+        clock.start()
+        clock.setRate(2.0)
+        fakeNow = 100
+        clock.pause()
+        fakeNow = 600
+        assertEquals(200, clock.mediaNanos())
+        clock.resume()
+        fakeNow = 850
+        assertEquals(700, clock.mediaNanos())
+    }
 }

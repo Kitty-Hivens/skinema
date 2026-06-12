@@ -82,6 +82,35 @@ class AudioClockTest {
     }
 
     @Test
+    fun `tempo scales media advance per consumed frame`() {
+        clock.start(0)
+        clock.setTempo(2.0)
+        frames = 4_800
+        assertEquals(200_000_000L, clock.mediaNanos(), "tempo 2: 100ms of device frames covers 200ms of media")
+    }
+
+    @Test
+    fun `a tempo change re-anchors -- the new scale applies only forward`() {
+        clock.start(0)
+        frames = 48_000
+        assertEquals(1_000_000_000L, clock.mediaNanos())
+        clock.setTempo(2.0)
+        assertEquals(1_000_000_000L, clock.mediaNanos(), "continuous at the change")
+        frames = 48_000 + 24_000
+        assertEquals(2_000_000_000L, clock.mediaNanos(), "history unscaled, the future at 2x")
+    }
+
+    @Test
+    fun `tempo survives a seek re-anchor`() {
+        clock.start(0)
+        clock.setTempo(0.5)
+        frames = 10_000
+        clock.seek(3_000_000_000L)
+        frames = 10_000 + 48_000
+        assertEquals(3_500_000_000L, clock.mediaNanos(), "rate persists across seeks")
+    }
+
+    @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)
         frames = 48_000

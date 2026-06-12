@@ -22,6 +22,11 @@ class AudioClock(
     // would rescale history.
     private var sampleRate = initialSampleRate
 
+    // Playback rate: each consumed device frame advances media time by
+    // tempo / sampleRate seconds. Only [setTempo] writes it, re-anchored
+    // under the lock for the same rescaled-history reason.
+    private var tempo = 1.0
+
     private val lock = Any()
     private var baseMediaNanos = 0L
     private var baseFrames = 0L
@@ -79,11 +84,33 @@ class AudioClock(
         }
     }
 
+    /**
+     * Playback-rate change: re-anchors at the current position so the new
+     * scale applies only forward -- swapping the factor against the old
+     * anchor would rescale everything since it. Time does not move here
+     * (the floor stays); the pipeline freezes and re-crops the stream
+     * around this call.
+     */
+    fun setTempo(tempo: Double) {
+        synchronized(lock) {
+            if (detachedAtWall >= 0) {
+                val wall = System.nanoTime()
+                detachedMedia += ((wall - detachedAtWall) * this.tempo).toLong()
+                detachedAtWall = wall
+            } else {
+                val frames = positionFrames()
+                baseMediaNanos += ((frames - baseFrames) * this.tempo).toLong() * 1_000_000_000L / sampleRate
+                baseFrames = frames
+            }
+            this.tempo = tempo
+        }
+    }
+
     override fun mediaNanos(): Long = synchronized(lock) {
         val raw = if (detachedAtWall >= 0) {
-            detachedMedia + (System.nanoTime() - detachedAtWall)
+            detachedMedia + ((System.nanoTime() - detachedAtWall) * tempo).toLong()
         } else {
-            baseMediaNanos + (positionFrames() - baseFrames) * 1_000_000_000L / sampleRate
+            baseMediaNanos + ((positionFrames() - baseFrames) * tempo).toLong() * 1_000_000_000L / sampleRate
         }
         if (raw < floorNanos) {
             floorNanos
@@ -104,7 +131,7 @@ class AudioClock(
      */
     fun detachToWallTime() {
         synchronized(lock) {
-            val raw = baseMediaNanos + (positionFrames() - baseFrames) * 1_000_000_000L / sampleRate
+            val raw = baseMediaNanos + ((positionFrames() - baseFrames) * tempo).toLong() * 1_000_000_000L / sampleRate
             detachedMedia = maxOf(raw, floorNanos)
             detachedAtWall = System.nanoTime()
         }
