@@ -170,6 +170,21 @@ class FrameQueueTest {
     }
 
     @Test
+    fun `awaitChange wakes on poll`() {
+        // The seek path waits for room on this: a landing committed right
+        // behind a preview must notice the preview's pop immediately.
+        val q = FrameQueue(1)
+        q.put(1)
+        val tick = q.changeTick()
+        val waiter = thread { q.awaitChange(tick, 5_000_000_000L) }
+        Thread.sleep(50)
+        assertTrue(waiter.isAlive, "the producer must be parked")
+        q.poll(ByteArray(4))
+        waiter.join(2_000)
+        assertFalse(waiter.isAlive, "a pop must wake the waiter")
+    }
+
+    @Test
     fun `close wakes and releases a parked consumer`() {
         val q = FrameQueue(1)
         val tick = q.changeTick()

@@ -111,8 +111,8 @@ class VideoPlayer internal constructor(
     private sealed interface Command {
         data object Pause : Command
         data object Resume : Command
-        data class Seek(val ptsNanos: Long) : Command
-        data class SeekBy(val deltaNanos: Long) : Command
+        data class Seek(val ptsNanos: Long, val exact: Boolean) : Command
+        data class SeekBy(val deltaNanos: Long, val exact: Boolean) : Command
         data object Close : Command
 
         /**
@@ -188,8 +188,20 @@ class VideoPlayer internal constructor(
     /** Continues from where [pause] froze, without a frame jump. */
     fun resume() = commands.put(Command.Resume)
 
-    /** Jumps to [ptsNanos] (frame-precise); revives an [State.Ended] player. */
-    fun seek(ptsNanos: Long) = commands.put(Command.Seek(ptsNanos.coerceAtLeast(0)))
+    /**
+     * Jumps to [ptsNanos]; revives an [State.Ended] player.
+     *
+     * Exact seeks are frame-precise: the decoder runs forward from the
+     * keyframe at-or-before the target, which on sparse-keyframe content
+     * costs up to a keyframe interval of bare decode -- the keyframe
+     * itself publishes immediately as a preview while the landing runs.
+     * With [exact] false the seek LANDS on that keyframe instead: picture
+     * and sound arrive at once, the position is only as precise as the
+     * file's keyframe spacing. The right trade for skip buttons; keep
+     * exact for timeline scrubbing.
+     */
+    fun seek(ptsNanos: Long, exact: Boolean = true) =
+        commands.put(Command.Seek(ptsNanos.coerceAtLeast(0), exact))
 
     /**
      * Seeks [deltaNanos] relative to the intended playhead -- the right
@@ -197,9 +209,11 @@ class VideoPlayer internal constructor(
      * destination regardless of how far behind the clock's anchor lags
      * during a landing. The delta resolves on the decode thread, against
      * its own playhead state -- resolving here would race the publish
-     * loop's bookkeeping.
+     * loop's bookkeeping. [exact] as in [seek]; inexact presses
+     * accumulate against the position actually landed.
      */
-    fun seekBy(deltaNanos: Long) = commands.put(Command.SeekBy(deltaNanos))
+    fun seekBy(deltaNanos: Long, exact: Boolean = true) =
+        commands.put(Command.SeekBy(deltaNanos, exact))
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -342,6 +356,16 @@ class VideoPlayer internal constructor(
 
     /** Converts the decoder's current frame into a queue cell. */
     private fun enqueue(decoder: FrameSource, raw: VideoDecoder.RgbaFrame, forced: Boolean) {
+        // The seek path commits a preview and a landing back to back; at
+        // depth 1 the landing must wait out the pacer's pop of the
+        // preview (forced frames pop within microseconds). Normal fill
+        // checks hasRoom before decoding and never waits here.
+        while (true) {
+            val tick = queue.changeTick()
+            if (queue.hasRoom) break
+            if (queue.isClosed) return
+            queue.awaitChange(tick, PACE_RECHECK_NANOS)
+        }
         val cell = queue.writeCell()
         val bytes = raw.width * raw.height * 4
         if (cell.rgba.size != bytes) cell.rgba = ByteArray(bytes)
@@ -385,23 +409,30 @@ class VideoPlayer internal constructor(
             }
             true
         }
-        is Command.Seek -> handleSeek(cmd.ptsNanos, decoder)
+        is Command.Seek -> handleSeek(cmd.ptsNanos, cmd.exact, decoder)
         is Command.SeekBy -> {
-            // Outside a burst the playhead is the frame on screen; mid-burst
-            // the accumulated target wins (the clock stands at the old
-            // anchor and must not be consulted). Frameless players never
-            // publish, so their last target carries the playhead.
-            val base = if (seekInFlight || decoder == null) intendedPositionNanos else lastPublishedPts
-            handleSeek((base + cmd.deltaNanos).coerceAtLeast(0), decoder)
+            // Mid-burst the accumulated target wins (the clock stands at
+            // the old anchor and must not be consulted). Outside a burst
+            // the playhead is the frame on screen OR the just-landed
+            // target, whichever is further -- a landing publishes
+            // asynchronously (and a preview publishes the keyframe first),
+            // so lastPublishedPts alone can briefly lag the intent.
+            // Frameless players never publish; their intent carries alone.
+            val base = if (seekInFlight) {
+                intendedPositionNanos
+            } else {
+                maxOf(intendedPositionNanos, lastPublishedPts)
+            }
+            handleSeek((base + cmd.deltaNanos).coerceAtLeast(0), cmd.exact, decoder)
         }
     }
 
-    private fun handleSeek(targetNanos: Long, decoder: FrameSource?): Boolean {
+    private fun handleSeek(targetNanos: Long, exact: Boolean, decoder: FrameSource?): Boolean {
         seekInFlight = true
         intendedPositionNanos = targetNanos
         audioPipeline?.seek(targetNanos)
         val keepRunning = if (decoder != null) {
-            performSeek(decoder, targetNanos)
+            performSeek(decoder, targetNanos, exact)
         } else {
             // Frameless (audio-only): no landing to wait for.
             seekInFlight = false
@@ -434,16 +465,20 @@ class VideoPlayer internal constructor(
     }
 
     /**
-     * Frame-precise seek: the demuxer lands on the keyframe at-or-before
-     * the target, then frames are decoded (and dropped) forward until the
-     * target is reached; that frame is published immediately.
+     * Seek landing. The demuxer lands on the keyframe at-or-before the
+     * target; an exact seek then decodes (and drops) forward until the
+     * target is reached, an inexact one takes the keyframe as the
+     * destination. Either way the first frame out publishes immediately:
+     * for inexact it IS the landing, for exact it is a preview the run
+     * then refines -- the screen answers the press in milliseconds while
+     * a sparse-keyframe run costs its seconds in the background.
      *
-     * The decode-forward run can span seconds of footage (keyframes are
-     * sparse), so newer seeks queued meanwhile supersede the landing in
-     * progress -- rapid presses cost one landing at the final target, not
-     * a landing each. Returns false when a Close arrived mid-landing.
+     * The decode-forward run can span seconds of footage, so newer seeks
+     * queued meanwhile supersede the landing in progress -- rapid presses
+     * cost one landing at the final target, not a landing each. Returns
+     * false when a Close arrived mid-landing.
      */
-    private fun performSeek(decoder: FrameSource, targetNanos: Long): Boolean {
+    private fun performSeek(decoder: FrameSource, targetNanos: Long, exact: Boolean): Boolean {
         // Whatever inventory was decoded toward the old position is stale;
         // the landing must be the next thing on screen. Repositioning the
         // decoder also voids a pending EOF.
@@ -454,15 +489,19 @@ class VideoPlayer internal constructor(
         stateBeforeSeek.compareAndSet(null, state.takeIf { it != State.Seeking } ?: State.Playing)
         state = State.Seeking
         var target = targetNanos
+        var exactMode = exact
         decoder.seekTo(target)
         val debugStart = if (DEBUG_SEEK) System.nanoTime() else 0L
         var dropped = 0
+        var atKeyframe = true
+        var previewedPts = Long.MIN_VALUE
         var landedFromKeyframe = Long.MIN_VALUE
         while (true) {
             // Room tokens carry no payload and must not hide a queued
             // seek behind them.
             while (commands.peek() == Command.RoomFreed) commands.poll()
-            val superseded = when (val next = commands.peek()) {
+            val next = commands.peek()
+            val superseded = when (next) {
                 is Command.Seek -> next.ptsNanos
                 is Command.SeekBy -> (intendedPositionNanos + next.deltaNanos).coerceAtLeast(0)
                 Command.Close -> return false
@@ -471,10 +510,16 @@ class VideoPlayer internal constructor(
             if (superseded != null) {
                 commands.poll()
                 target = superseded
+                exactMode = when (next) {
+                    is Command.Seek -> next.exact
+                    is Command.SeekBy -> next.exact
+                    else -> exactMode
+                }
                 intendedPositionNanos = target
                 audioPipeline?.seek(target)
                 decoder.seekTo(target)
                 dropped = 0
+                atKeyframe = true
                 landedFromKeyframe = Long.MIN_VALUE
                 continue
             }
@@ -496,6 +541,24 @@ class VideoPlayer internal constructor(
                 }
                 return true
             }
+            if (!exactMode) {
+                // The keyframe is the destination: re-anchor everything to
+                // where the stream actually starts, sound included --
+                // leaving the audio at the requested target would play it
+                // up to a keyframe interval ahead of the picture.
+                if (ownsClock) clock.seek(f.ptsNanos)
+                intendedPositionNanos = f.ptsNanos
+                audioPipeline?.seek(f.ptsNanos)
+                enqueue(decoder, f, forced = true)
+                if (DEBUG_SEEK) {
+                    val ms = (System.nanoTime() - debugStart) / 1_000_000
+                    System.err.println(
+                        "[seek] target=${target / 1_000_000}ms landed=${f.ptsNanos / 1_000_000}ms (keyframe) in ${ms}ms",
+                    )
+                }
+                finishSeek(State.Playing)
+                return true
+            }
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
                 // Forced: the pacer publishes the landing immediately, even
@@ -510,6 +573,16 @@ class VideoPlayer internal constructor(
                 }
                 finishSeek(State.Playing)
                 return true
+            }
+            if (atKeyframe) {
+                // Preview: show the keyframe while the run decodes toward
+                // the exact target. A superseding burst within one keyframe
+                // interval re-sees the same frame -- skip the re-convert.
+                atKeyframe = false
+                if (f.ptsNanos != previewedPts) {
+                    previewedPts = f.ptsNanos
+                    enqueue(decoder, f, forced = true)
+                }
             }
         }
     }

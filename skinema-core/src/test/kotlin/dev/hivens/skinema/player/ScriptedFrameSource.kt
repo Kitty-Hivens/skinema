@@ -20,6 +20,8 @@ class ScriptedFrameSource(
     private val periodNanos: Long = 100_000_000L,
     private val width: Int = 4,
     private val height: Int = 4,
+    /** Keyframe spacing in frames; seeks land on these (at-or-before). */
+    private val keyframeEvery: Int = 1,
 ) : FrameSource {
 
     private var index = 0
@@ -56,9 +58,10 @@ class ScriptedFrameSource(
     override fun convertLast(target: ByteArray?): VideoDecoder.RgbaFrame = fill(target, lastIndex)
 
     override fun seekTo(ptsNanos: Long) {
-        // At-or-before, every frame a keyframe; also reopens a drained
+        // At-or-before on the keyframe grid; also reopens a drained
         // stream, per the FrameSource contract.
-        index = (ptsNanos / periodNanos).toInt().coerceIn(0, frameCount)
+        val frame = (ptsNanos / periodNanos).toInt()
+        index = (frame / keyframeEvery * keyframeEvery).coerceIn(0, frameCount)
     }
 
     override fun close() = Unit
