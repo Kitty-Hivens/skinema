@@ -26,9 +26,15 @@ class VideoDecoder private constructor(
     val timeBaseNum: Int,
     val timeBaseDen: Int,
     private val duration: Long?,
+    private val tags: Map<String, String>,
+    private val chapters: List<Chapter>,
+    private val coverArt: ByteArray?,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = duration
+    override fun tags(): Map<String, String> = tags
+    override fun chapters(): List<Chapter> = chapters
+    override fun coverArt(): ByteArray? = coverArt
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -233,10 +239,14 @@ class VideoDecoder private constructor(
                     Libav.avFindBestStream(fmtCtx, LibavAbi.AVMEDIA_TYPE_VIDEO, decoderOut),
                     "av_find_best_stream(video)",
                 )
-                val streams = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.STREAMS)
-                    .reinterpret((streamIndex + 1L) * ADDRESS.byteSize())
-                val stream = streams.getAtIndex(ADDRESS, streamIndex.toLong())
-                    .reinterpret(LibavAbi.Stream.SIZEOF)
+                val stream = streamAt(fmtCtx, streamIndex)
+                if (stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION) and LibavAbi.AV_DISPOSITION_ATTACHED_PIC != 0) {
+                    // The only "video" is the cover art (an mp3/flac with a
+                    // picture): playing it would end the player at its one
+                    // frame while the sound runs on. Refuse, so the player
+                    // takes the frameless path; the cover ships as bytes.
+                    throw LibavException("the only video stream of $path is an attached picture")
+                }
                 val timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
                 val timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
                 val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
@@ -262,7 +272,13 @@ class VideoDecoder private constructor(
                 }
 
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
-                return VideoDecoder(arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen, duration)
+                return VideoDecoder(
+                    arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen,
+                    duration,
+                    containerTags(fmtCtx, arena),
+                    containerChapters(fmtCtx, arena),
+                    attachedCoverArt(fmtCtx),
+                )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
                 if (codecCtx != MemorySegment.NULL) {
@@ -296,5 +312,82 @@ internal fun containerDurationNanos(
     if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) return container * 1_000L
     val own = stream.get(JAVA_LONG, LibavAbi.Stream.DURATION)
     if (own != LibavAbi.AV_NOPTS_VALUE && own > 0) return ptsToNanos(own, timeBaseNum, timeBaseDen)
+    return null
+}
+
+/** The stream at [index] of an opened format context. */
+internal fun streamAt(fmtCtx: MemorySegment, index: Int): MemorySegment {
+    val streams = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.STREAMS)
+        .reinterpret((index + 1L) * ADDRESS.byteSize())
+    return streams.getAtIndex(ADDRESS, index.toLong()).reinterpret(LibavAbi.Stream.SIZEOF)
+}
+
+/** A single value out of an AVDictionary; null for NULL dict or absent key. */
+internal fun dictValue(dict: MemorySegment, key: MemorySegment): String? {
+    if (dict == MemorySegment.NULL) return null
+    val entry = Libav.avDictGet(dict, key)
+    if (entry == MemorySegment.NULL) return null
+    val value = entry.reinterpret(LibavAbi.DictEntry.SIZEOF).get(ADDRESS, LibavAbi.DictEntry.VALUE)
+    return if (value == MemorySegment.NULL) null else value.reinterpret(Long.MAX_VALUE).getString(0)
+}
+
+/** The container's format-level tags (title, artist, ...), demuxer-cased. */
+internal fun containerTags(fmtCtx: MemorySegment, arena: Arena): Map<String, String> {
+    val dict = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.METADATA)
+    if (dict == MemorySegment.NULL) return emptyMap()
+    val emptyKey = arena.allocateFrom("")
+    val tags = mutableMapOf<String, String>()
+    var entry = MemorySegment.NULL
+    while (true) {
+        entry = Libav.avDictGet(dict, emptyKey, entry, LibavAbi.AV_DICT_IGNORE_SUFFIX)
+        if (entry == MemorySegment.NULL) return tags
+        val sized = entry.reinterpret(LibavAbi.DictEntry.SIZEOF)
+        val key = sized.get(ADDRESS, LibavAbi.DictEntry.KEY)
+        val value = sized.get(ADDRESS, LibavAbi.DictEntry.VALUE)
+        if (key != MemorySegment.NULL && value != MemorySegment.NULL) {
+            tags[key.reinterpret(Long.MAX_VALUE).getString(0)] = value.reinterpret(Long.MAX_VALUE).getString(0)
+        }
+    }
+}
+
+/** The container's chapter list, titles included. */
+internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena): List<Chapter> {
+    val count = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_CHAPTERS)
+    if (count == 0) return emptyList()
+    val titleKey = arena.allocateFrom("title")
+    val array = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.CHAPTERS)
+        .reinterpret(count.toLong() * ADDRESS.byteSize())
+    val chapters = mutableListOf<Chapter>()
+    for (i in 0 until count) {
+        val chapter = array.getAtIndex(ADDRESS, i.toLong()).reinterpret(LibavAbi.Chapter.SIZEOF)
+        val num = chapter.get(JAVA_INT, LibavAbi.Chapter.TIME_BASE)
+        val den = chapter.get(JAVA_INT, LibavAbi.Chapter.TIME_BASE + 4)
+        chapters += Chapter(
+            startNanos = ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.START), num, den),
+            endNanos = ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.END), num, den),
+            title = dictValue(chapter.get(ADDRESS, LibavAbi.Chapter.METADATA), titleKey),
+        )
+    }
+    return chapters
+}
+
+/**
+ * The first attached picture's encoded bytes (png/jpeg as stored) --
+ * the cover art of mp3/flac/m4a. The consumer decodes them; shipping
+ * raw bytes keeps the image-decoder choice theirs. Null when none.
+ */
+internal fun attachedCoverArt(fmtCtx: MemorySegment): ByteArray? {
+    for (i in 0 until fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)) {
+        val stream = streamAt(fmtCtx, i)
+        if (stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION) and LibavAbi.AV_DISPOSITION_ATTACHED_PIC == 0) continue
+        // attached_pic is an AVPacket embedded by value in the stream.
+        val size = stream.get(JAVA_INT, LibavAbi.Stream.ATTACHED_PIC + LibavAbi.Packet.SIZE)
+        if (size <= 0) continue
+        val data = stream.get(ADDRESS, LibavAbi.Stream.ATTACHED_PIC + LibavAbi.Packet.DATA)
+        if (data == MemorySegment.NULL) continue
+        val bytes = ByteArray(size)
+        MemorySegment.copy(data.reinterpret(size.toLong()), JAVA_BYTE, 0, bytes, 0, size)
+        return bytes
+    }
     return null
 }

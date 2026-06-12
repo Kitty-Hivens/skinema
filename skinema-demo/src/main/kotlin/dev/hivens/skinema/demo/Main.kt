@@ -1,5 +1,6 @@
 package dev.hivens.skinema.demo
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -35,6 +37,7 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlin.time.Duration.Companion.milliseconds
+import org.jetbrains.skia.Image as SkiaImage
 
 private const val SEEK_STEP_NANOS = 10_000_000_000L
 
@@ -62,18 +65,32 @@ fun main(args: Array<String>) {
             var dragMs by remember { mutableStateOf<Long?>(null) }
             var tracks by remember { mutableStateOf(emptyList<AudioTrack>()) }
             var activeTrack by remember { mutableStateOf<Int?>(null) }
+            var coverBytes by remember { mutableStateOf<ByteArray?>(null) }
+            var chapterTitle by remember { mutableStateOf("") }
             LaunchedEffect(player) {
                 while (true) {
                     positionMs = player.positionNanos() / 1_000_000
                     durationMs = (player.durationNanos ?: 0) / 1_000_000
                     tracks = player.audioTracks
                     activeTrack = player.activeAudioTrack
+                    coverBytes = player.coverArt
+                    chapterTitle = player.chapters
+                        .lastOrNull { it.startNanos <= positionMs * 1_000_000 }?.title ?: ""
                     kotlinx.coroutines.delay(200.milliseconds)
                 }
             }
 
             Column(Modifier.fillMaxSize().background(Color(0xFF101014))) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
+                    // The cover sits BEHIND the surface: frameless playback
+                    // (music with embedded art) shows it for free, video
+                    // frames paint over it.
+                    coverBytes?.let { bytes ->
+                        val bitmap = remember(bytes) {
+                            SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap()
+                        }
+                        Image(bitmap, contentDescription = null, modifier = Modifier.align(Alignment.Center))
+                    }
                     // A viewer letterboxes; Cover (the background default) crops
                     // whenever the window\'s aspect drifts from the video\'s.
                     VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Fit)
@@ -133,6 +150,9 @@ fun main(args: Array<String>) {
                         "%d:%02d.%03d".format(positionMs / 60_000, positionMs / 1_000 % 60, positionMs % 1_000) + total,
                         color = Color.White,
                     )
+                    if (chapterTitle.isNotEmpty()) {
+                        Text(chapterTitle, color = Color.Gray)
+                    }
                     if (sound) {
                         Text("vol", color = Color.Gray)
                         Slider(

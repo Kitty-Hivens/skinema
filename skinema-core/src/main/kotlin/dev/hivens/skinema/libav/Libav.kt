@@ -167,6 +167,10 @@ object Libav {
     fun avDictGet(dict: MemorySegment, key: MemorySegment): MemorySegment =
         hAvDictGet.invoke(dict, key, MemorySegment.NULL, 0) as MemorySegment
 
+    /** Iteration form: pass the previous entry and AV_DICT_IGNORE_SUFFIX. */
+    fun avDictGet(dict: MemorySegment, key: MemorySegment, prev: MemorySegment, flags: Int): MemorySegment =
+        hAvDictGet.invoke(dict, key, prev, flags) as MemorySegment
+
     fun avFrameAlloc(): MemorySegment = hAvFrameAlloc.invoke() as MemorySegment
     fun avFrameFree(framePtrPtr: MemorySegment) { hAvFrameFree.invoke(framePtrPtr) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }

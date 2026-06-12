@@ -553,6 +553,32 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `a covered audio file plays frameless and ships the cover`() {
+        Fixtures.assumeDecodeEnvironment()
+        // The only "video" stream is the attached picture. Playing it
+        // would end the player at its one frame while the sound runs on;
+        // the file must take the frameless path with the cover as bytes.
+        val png = Fixtures.generate(
+            dir.resolve("cover.png"),
+            "-f", "lavfi", "-i", "color=c=red:size=16x16", "-frames:v", "1",
+        )
+        val flac = Fixtures.generate(
+            dir.resolve("covered.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-i", png.toString(),
+            "-map", "0:a", "-map", "1:v", "-t", "1",
+            "-c:a", "flac", "-c:v", "png", "-disposition:v:0", "attached_pic",
+        )
+        val sink = FakePcmSink()
+        VideoPlayer(flac, loop = false, audio = true, sink = sink).use { player ->
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "the frameless lifecycle must complete")
+            assertEquals(null, player.acquireFrame(), "the cover is metadata, not a video stream")
+            val art = player.coverArt
+            assertTrue(art != null && art.size > 8, "the cover ships as bytes")
+        }
+    }
+
+    @Test
     fun `a dead audio pipeline advertises no tracks`() {
         Fixtures.assumeDecodeEnvironment()
         // The sink throws at open -- the no-audio-device machine. The

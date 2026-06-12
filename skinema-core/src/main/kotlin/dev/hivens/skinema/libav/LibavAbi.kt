@@ -14,9 +14,12 @@ object LibavAbi {
     object FormatContext {
         const val NB_STREAMS = 44L
         const val STREAMS = 48L
+        const val NB_CHAPTERS = 72L
+        const val CHAPTERS = 80L
 
         /** int64 in AV_TIME_BASE units (microseconds). */
         const val DURATION = 104L
+        const val METADATA = 192L
         const val SIZEOF = 480L
     }
 
@@ -28,7 +31,18 @@ object LibavAbi {
         const val DURATION = 48L
         const val DISPOSITION = 64L
         const val METADATA = 80L
+
+        /** An AVPacket embedded by value, not a pointer. */
+        const val ATTACHED_PIC = 96L
         const val SIZEOF = 216L
+    }
+
+    object Chapter {
+        const val TIME_BASE = 8L
+        const val START = 16L
+        const val END = 24L
+        const val METADATA = 32L
+        const val SIZEOF = 40L
     }
 
     object DictEntry {
@@ -38,6 +52,8 @@ object LibavAbi {
     }
 
     object Packet {
+        const val DATA = 24L
+        const val SIZE = 32L
         const val STREAM_INDEX = 36L
         const val SIZEOF = 104L
     }
@@ -72,6 +88,8 @@ object LibavAbi {
     const val AVMEDIA_TYPE_VIDEO = 0
     const val AVMEDIA_TYPE_AUDIO = 1
     const val AV_DISPOSITION_DEFAULT = 1
+    const val AV_DISPOSITION_ATTACHED_PIC = 1024
+    const val AV_DICT_IGNORE_SUFFIX = 2
     const val AV_SAMPLE_FMT_S16 = 1
     const val AV_PIX_FMT_RGBA = 26
     const val SWS_BILINEAR = 2

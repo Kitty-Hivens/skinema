@@ -250,6 +250,47 @@ class VideoDecoderTest {
     }
 
     @Test
+    fun `chapters and tags surface from the container`() {
+        Fixtures.assumeDecodeEnvironment()
+        val meta = dir.resolve("meta.txt")
+        Files.writeString(
+            meta,
+            """
+            ;FFMETADATA1
+            title=Album Mix
+            artist=Composer
+            [CHAPTER]
+            TIMEBASE=1/1000
+            START=0
+            END=500
+            title=Intro
+            [CHAPTER]
+            TIMEBASE=1/1000
+            START=500
+            END=1000
+            title=Drop
+            """.trimIndent(),
+        )
+        val video = Fixtures.generate(
+            dir.resolve("chapters.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-i", meta.toString(), "-map_metadata", "1", "-map", "0:v", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            assertEquals("Album Mix", decoder.tags()["title"])
+            assertEquals("Composer", decoder.tags()["artist"])
+            val chapters = decoder.chapters()
+            assertEquals(2, chapters.size)
+            assertEquals("Intro", chapters[0].title)
+            assertEquals(0L, chapters[0].startNanos)
+            assertEquals(500_000_000L, chapters[0].endNanos)
+            assertEquals("Drop", chapters[1].title)
+            assertEquals(1_000_000_000L, chapters[1].endNanos)
+        }
+    }
+
+    @Test
     fun `garbage input fails closed with LibavException`() {
         Fixtures.assumeDecodeEnvironment()
         val junk = dir.resolve("junk.mp4")
