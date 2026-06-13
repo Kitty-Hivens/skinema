@@ -76,6 +76,10 @@ int main(void) {
     P(offsetof(AVSubtitleRect, ass));
     P(sizeof(AVSubtitleRect));
 
+    P(offsetof(AVCodecContext, subtitle_header));
+    P(offsetof(AVCodecContext, subtitle_header_size));
+    P(sizeof(AVCodecContext));
+
     P(AVMEDIA_TYPE_SUBTITLE);
     P(AVMEDIA_TYPE_ATTACHMENT);
     P(AV_DISPOSITION_FORCED);

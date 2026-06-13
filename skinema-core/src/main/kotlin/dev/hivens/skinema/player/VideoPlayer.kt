@@ -1,11 +1,14 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.audio.AudioPipeline
 import dev.hivens.skinema.audio.JavaSoundSink
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
+import dev.hivens.skinema.subtitles.SubtitleOverlay
+import dev.hivens.skinema.subtitles.SubtitlePipeline
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
@@ -124,6 +127,7 @@ class VideoPlayer internal constructor(
         data class Seek(val ptsNanos: Long, val exact: Boolean) : Command
         data class SeekBy(val deltaNanos: Long, val exact: Boolean) : Command
         data class SetRate(val rate: Float) : Command
+        data class SelectSubtitles(val id: Int?) : Command
         data object StepForward : Command
         data object StepBackward : Command
         data object Close : Command
@@ -225,6 +229,12 @@ class VideoPlayer internal constructor(
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
         if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop, audioTrack) else null
+
+    // Owned by the decode thread (selection runs there, where the clock
+    // exists by construction); volatile because consumers poll
+    // acquireSubtitles/activeSubtitleTrack from their render loops.
+    @Volatile
+    private var subtitlePipeline: SubtitlePipeline? = null
     private lateinit var clock: MediaClock
 
     // When audio masters the clock, video never re-anchors it: seeks and
@@ -345,6 +355,38 @@ class VideoPlayer internal constructor(
         audioPipeline?.selectTrack(streamIndex)
     }
 
+    /**
+     * Turns subtitles on at one of [subtitleTracks] (null turns them
+     * off). The track runs on its own thread against the master clock;
+     * nothing subtitle-related exists until the first selection. A text
+     * track is refused as a no-op when libass is not loadable; a track
+     * that fails to open degrades to no subtitles -- playback never
+     * notices either way.
+     */
+    fun selectSubtitleTrack(id: Int?) = commands.put(Command.SelectSubtitles(id))
+
+    /** Id of the subtitle track on screen; null when off or failed. */
+    val activeSubtitleTrack: Int?
+        get() = subtitlePipeline?.takeIf { !it.isDead }?.track?.id
+
+    /**
+     * The freshest subtitle overlay, or null when nothing newer arrived
+     * since the previous call -- [acquireFrame]'s contract for text.
+     * Gate drawing on [activeSubtitleTrack]: after a deselect the last
+     * acquired overlay is stale, not cleared.
+     */
+    fun acquireSubtitles(): SubtitleOverlay? = subtitlePipeline?.acquire()
+
+    /**
+     * Announces the size subtitles should rasterize at -- the video's
+     * displayed rect, in pixels. VideoSurface posts it on every resize;
+     * a consumer drawing frames itself should do the same, or accept
+     * storage-resolution text scaled along with the pixels.
+     */
+    fun setSubtitleCanvasSize(width: Int, height: Int) {
+        subtitlePipeline?.setCanvasSize(width, height)
+    }
+
     /** Current media position in nanoseconds; zero until playback starts. */
     fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
 
@@ -409,6 +451,7 @@ class VideoPlayer internal constructor(
             pacer.join(1_000)
             runCatching { decoder.close() }
             runCatching { audioPipeline?.close() }
+            runCatching { subtitlePipeline?.close() }
         }
     }
 
@@ -573,6 +616,10 @@ class VideoPlayer internal constructor(
             }
             true
         }
+        is Command.SelectSubtitles -> {
+            applySubtitleSelection(cmd.id, decoder)
+            true
+        }
         is Command.Seek -> handleSeek(cmd.ptsNanos, cmd.exact, decoder)
         is Command.SeekBy -> {
             // Mid-burst the accumulated target wins (the clock stands at
@@ -595,6 +642,7 @@ class VideoPlayer internal constructor(
         seekInFlight = true
         intendedPositionNanos = targetNanos
         audioPipeline?.seek(targetNanos)
+        subtitlePipeline?.seek(targetNanos)
         val keepRunning = if (decoder != null) {
             performSeek(decoder, targetNanos, exact, preview)
         } else {
@@ -682,6 +730,7 @@ class VideoPlayer internal constructor(
                 }
                 intendedPositionNanos = target
                 audioPipeline?.seek(target)
+                subtitlePipeline?.seek(target)
                 decoder.seekTo(target)
                 dropped = 0
                 atKeyframe = true
@@ -717,6 +766,7 @@ class VideoPlayer internal constructor(
                 if (ownsClock) clock.seek(f.ptsNanos)
                 intendedPositionNanos = f.ptsNanos
                 audioPipeline?.seek(f.ptsNanos)
+                subtitlePipeline?.seek(f.ptsNanos)
                 enqueue(decoder, f, forced = true)
                 if (DEBUG_SEEK) {
                     val ms = (System.nanoTime() - debugStart) / 1_000_000
@@ -763,6 +813,35 @@ class VideoPlayer internal constructor(
         }
     }
 
+    /**
+     * Selection always spawns a fresh pipeline and lets the old one die
+     * asynchronously (a joined close behind a blocking read would hitch
+     * a frame). Subtitles own no device, so replacement IS the switch:
+     * the newcomer publishes within a tick. Runs on the decode thread,
+     * after [clock] resolved -- a selection queued before Playing just
+     * waits its turn.
+     */
+    private fun applySubtitleSelection(id: Int?, decoder: FrameSource?) {
+        val current = subtitlePipeline
+        if (id == null) {
+            current?.closeAsync()
+            subtitlePipeline = null
+            return
+        }
+        if (current != null && !current.isDead && current.track.id == id) return
+        val track = subtitleTracks.firstOrNull { it.id == id } ?: return
+        // No libass, no text rendering: refuse like the audio switch
+        // refuses an unopenable track. Bitmap tracks never need it.
+        if (track.isText && !Ass.available) return
+        current?.closeAsync()
+        subtitlePipeline = SubtitlePipeline(
+            path = track.externalPath ?: path,
+            clock = clock,
+            track = track,
+            storageSize = decoder?.videoSize(),
+        )
+    }
+
     /** Re-anchors time at a stepped frame while the player stays paused. */
     private fun anchorPausedAt(pts: Long) {
         intendedPositionNanos = pts
@@ -772,6 +851,7 @@ class VideoPlayer internal constructor(
             audioPipeline?.seek(pts)
             audioPipeline?.videoLanded()
         }
+        subtitlePipeline?.seek(pts)
     }
 
     private fun performStepForward(decoder: FrameSource?) {
