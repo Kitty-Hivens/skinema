@@ -99,4 +99,15 @@ jobs:
 
       - name: Build and test
         shell: bash
-        run: ./gradlew build
+        run: |
+          # Windows: make CI the clean machine. Drop the mingw/msys dirs
+          # from PATH so the bundled DLLs' MinGW runtime imports (zlib1,
+          # libwinpthread-1, libiconv-2, libbz2-1) can resolve ONLY from
+          # the bundle, never the toolchain -- a green run here is real
+          # proof the Windows bundle is self-contained, not an artifact
+          # of the runner happening to carry those DLLs. java is found via
+          # JAVA_HOME, ffmpeg via choco, both outside the stripped dirs.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -iEv 'mingw|msys' | paste -sd ':' -)"
+          fi
+          ./gradlew build
