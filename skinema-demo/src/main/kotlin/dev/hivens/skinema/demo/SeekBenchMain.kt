@@ -58,7 +58,7 @@ fun main(args: Array<String>) {
             else (48_000 - i * 1_700).toLong() * 1_000_000L
         }
         for (target in targets) {
-            while (player.acquireFrame() != null) Unit
+            while (player.acquireFrame() != null) { /* drain queued frames */ }
             val t0 = System.nanoTime()
             player.seek(target)
             val deadline = t0 + 5_000_000_000L
