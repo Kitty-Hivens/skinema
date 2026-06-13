@@ -49,6 +49,22 @@ object Libav {
     internal fun resolveLibraryPath(name: String): String =
         if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
 
+    // Windows: the pinned av* DLLs and libass import MinGW runtime
+    // libraries (zlib, bzip2, iconv, winpthread) that ride in the bundle
+    // but are not themselves pinned. Preload them from the bundle by
+    // exact name BEFORE the av* set loads, so the importing DLLs bind the
+    // bundled copies (matched by base name) rather than a host PATH a
+    // clean machine does not have. Off-bundle or absent it falls through.
+    // Ass routes its own loads through resolveLibraryPath, so touching it
+    // runs this first -- libass's iconv import resolves too.
+    init {
+        if (Os.current() == Os.WINDOWS) {
+            for (rt in listOf("zlib1.dll", "libbz2-1.dll", "libiconv-2.dll", "libwinpthread-1.dll")) {
+                runCatching { SymbolLookup.libraryLookup(resolveLibraryPath(rt), Arena.global()) }
+            }
+        }
+    }
+
     private val lookups: Map<LibavLibrary, SymbolLookup> =
         LibavLibrary.entries.associateWith { lib ->
             SymbolLookup.libraryLookup(libraryPath(lib), Arena.global())
