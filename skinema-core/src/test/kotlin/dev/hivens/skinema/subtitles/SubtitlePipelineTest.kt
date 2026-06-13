@@ -74,7 +74,10 @@ class SubtitlePipelineTest {
         "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
         "-i", subs.toString(),
         "-map", "0:v", "-map", "1", "-t", seconds.toString(),
-        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        // Keyframes every 5s: real files carry dense cue points, and a
+        // reposition must land INSIDE the file for the replay paths to
+        // mean anything (a single keyframe would re-read from zero).
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
         "-c:s", codec,
     )
 
