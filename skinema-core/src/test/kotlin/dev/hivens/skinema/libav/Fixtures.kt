@@ -35,11 +35,11 @@ object Fixtures {
     // on the list keeps dev-box behaviour: skip when it cannot load.
     val requiredCaps: Set<String> =
         System.getenv("SKINEMA_REQUIRE_CAPS")
-            ?.split(',')
-            ?.map { it.trim().lowercase() }
-            ?.filter { it.isNotEmpty() }
-            ?.toSet()
-            ?: emptySet()
+            .orEmpty()
+            .split(',')
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+            .toSet()
 
     private fun requires(cap: String): Boolean = cap in requiredCaps
 

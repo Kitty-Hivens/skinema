@@ -39,6 +39,9 @@ internal class FrameQueue(depth: Int) {
         val byteCount: Int,
     )
 
+    // java.lang.Object, not Any: the wait/notifyAll monitor calls below
+    // are not exposed on kotlin.Any.
+    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
     private val lock = Object()
     private val cells = Array(depth) { Cell() }
     private val forcedFlags = BooleanArray(depth)

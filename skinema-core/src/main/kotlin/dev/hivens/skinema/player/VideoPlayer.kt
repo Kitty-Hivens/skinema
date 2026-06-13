@@ -435,7 +435,7 @@ class VideoPlayer internal constructor(
         // enumerated them too, but nothing would serve a switch), and
         // before the video open so the frameless branch sees them.
         if (audioClock != null) {
-            audioTracks = audioPipeline?.tracks ?: emptyList()
+            audioTracks = audioPipeline.tracks
         }
 
         val decoder = try {
@@ -444,10 +444,10 @@ class VideoPlayer internal constructor(
             if (audioClock != null) {
                 // No video stream but the audio plays: frameless mode.
                 frameless = true
-                durationNanos = audioPipeline?.durationNanos
-                tags = audioPipeline?.tags ?: emptyMap()
-                chapters = audioPipeline?.chapters ?: emptyList()
-                coverArt = audioPipeline?.coverArt
+                durationNanos = audioPipeline.durationNanos
+                tags = audioPipeline.tags
+                chapters = audioPipeline.chapters
+                coverArt = audioPipeline.coverArt
                 framelessLoop()
                 state = State.Closed
             } else {

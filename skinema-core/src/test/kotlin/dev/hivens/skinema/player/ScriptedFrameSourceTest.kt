@@ -36,7 +36,7 @@ class ScriptedFrameSourceTest {
     @Test
     fun `seek lands at-or-before and reopens a drained stream`() {
         val source = ScriptedFrameSource(frameCount = 10, periodNanos = 100)
-        while (source.nextFrame(convert = false) != null) Unit
+        while (source.nextFrame(convert = false) != null) { /* drain */ }
         source.seekTo(250)
         assertEquals(200L, source.nextFrame(convert = false)!!.ptsNanos, "at-or-before the target")
         source.seekTo(5_000)
