@@ -25,11 +25,11 @@ jobs:
             platform: macos-arm64
     runs-on: ${{ matrix.os }}
     env:
-      # A runner with a broken decode environment must fail, not skip.
-      SKINEMA_REQUIRE_DECODE: "1"
-      # The bundles now carry the libass stack; a runner that cannot
-      # load it must fail, not skip the subtitle-rendering suites.
-      SKINEMA_REQUIRE_SUBS: "1"
+      # The capabilities CI holds mandatory: a bundle that cannot load
+      # any of these fails the build instead of silently skipping the
+      # suites that need it -- a skip reads as green. See Fixtures and
+      # CapabilitiesTest.
+      SKINEMA_REQUIRE_CAPS: "decode,subs,webp"
     steps:
       - uses: actions/checkout@v4
 

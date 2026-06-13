@@ -3,7 +3,6 @@ package dev.hivens.skinema.webp
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.LibavException
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -23,12 +22,15 @@ class WebpAnimSourceTest {
         dir.toFile().deleteRecursively()
     }
 
-    // libwebpdemux is an optional capability (absent = the libav fallback),
-    // so its absence skips rather than fails, even in strict CI.
+    // libwebpdemux is an optional capability (absent = the libav
+    // fallback); the fixture also needs a libwebp ENCODER, which brew's
+    // ffmpeg lacks, so this can skip on the encoder before reaching the
+    // load check. SKINEMA_REQUIRE_CAPS 'webp' makes a present-but-broken
+    // library loud (here when reached; always in CapabilitiesTest).
     private fun assumeWebpEnvironment() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libwebp")
-        assumeTrue(Webp.available, "libwebpdemux not loadable -- optional capability, skipping")
+        Fixtures.assumeWebpDecoding()
     }
 
     private fun animated(name: String, vararg extra: String): Path = Fixtures.generate(
@@ -100,7 +102,7 @@ class WebpAnimSourceTest {
 
     @Test
     fun `corrupt webp fails closed with LibavException`() {
-        assumeTrue(Webp.available, "libwebpdemux not loadable -- optional capability, skipping")
+        Fixtures.assumeWebpDecoding()
         val junk = dir.resolve("junk.webp")
         Files.write(junk, "RIFF".toByteArray() + ByteArray(4) + "WEBP".toByteArray() + ByteArray(64) { (it * 7).toByte() })
         assertFailsWith<LibavException> { FrameSources.open(junk) }
