@@ -85,7 +85,12 @@ fun main(args: Array<String>) {
             var subTracks by remember { mutableStateOf(emptyList<SubtitleTrack>()) }
             var activeSub by remember { mutableStateOf<Int?>(null) }
             LaunchedEffect(player) {
-                externalSubs?.let { player.addExternalSubtitles(Path.of(it)) }
+                // A subs= argument means the user wants them on.
+                externalSubs?.let { file ->
+                    player.addExternalSubtitles(Path.of(file)).firstOrNull()?.let {
+                        player.selectSubtitleTrack(it.id)
+                    }
+                }
             }
             LaunchedEffect(player) {
                 while (true) {
