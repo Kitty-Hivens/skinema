@@ -108,8 +108,12 @@ jobs:
       - name: Test against the freshly built natives
         if: matrix.cross == null
         shell: bash
+        # Strict here catches a bundle that built but cannot load a
+        # capability BEFORE it uploads -- the workflow that produced the
+        # bundle is the right place to reject it, not only the downstream
+        # consumer. webp/subs hold only because this build added them.
         env:
-          SKINEMA_REQUIRE_DECODE: "1"
+          SKINEMA_REQUIRE_CAPS: "decode,subs,webp"
         run: |
           base="$PWD"
           if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi

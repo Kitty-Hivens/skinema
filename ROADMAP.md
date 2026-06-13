@@ -313,7 +313,7 @@ README once the library is usable.
   8.7 MB for all five libraries against ~70 MB full, suite green against
   it in strict mode; fixtures moved from mpeg4 to libx264 because tests
   must exercise exactly the shipped whitelist (mpeg4 is not in it, and
-  h264 was never suite-covered before); SKINEMA_REQUIRE_DECODE makes CI
+  h264 was never suite-covered before); SKINEMA_REQUIRE_CAPS makes CI
   fail loudly instead of skip-faking green; the test matrix runs
   Linux/Windows (pinned BtbN via the dir override -- the same mechanism
   the bundles use) and macOS (brew, until our mac builds land), all
@@ -644,10 +644,18 @@ README once the library is usable.
   the overlay in displayed space (upright over rotated video -- the
   positioned-ASS-on-rotated-footage combination is an accepted circus
   cut) and posts its displayed rect back so glyphs rasterize at screen
-  size. SKINEMA_REQUIRE_SUBS stages the CI flip: code merged green
-  against bundles without libass (suites assume-skip; linux+mac CI test
-  against system copies), the natives rebuild adds the libass stack,
-  then strictness flips.
+  size. The CI flip then exposed a defect the skip-permissive green
+  had hidden: linux libass loaded but exported zero symbols (the build
+  script's `-Wl,--exclude-libs,ALL` localized libass's own ass_*
+  alongside the static freetype/harfbuzz it meant to keep private), so
+  the subtitle suites had been silently skipping all along; scoping
+  exclude-libs to the two static archives fixed it. That false-green
+  generalized the gate: SKINEMA_REQUIRE_CAPS lists the capabilities a
+  bundle must load (decode,subs,webp), enforced in BOTH build.yml and
+  natives.yml -- so a broken bundle fails before it uploads, in the
+  workflow that built it -- plus a CapabilitiesTest asserting each
+  listed capability loads independently of any fixture, the antidote to
+  a skip reading as green.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
