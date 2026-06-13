@@ -40,14 +40,17 @@ jobs:
       # Fixture generation needs a full-build CLI (libx264); the libraries
       # under test come from the natives release below. The GL/X11/font
       # set serves skiko's native in the :skinema-skiko tests -- the
-      # arm64 runner image ships without it, unlike x64.
-      - name: Install ffmpeg CLI (fixtures) and skiko's GL stack
+      # arm64 runner image ships without it, unlike x64. System libass
+      # exercises the subtitle suites until the bundles carry their own
+      # (Windows has no system libass -- its subs coverage starts with
+      # the rebuilt bundles).
+      - name: Install ffmpeg CLI (fixtures), skiko's GL stack, libass
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            Linux)   sudo apt-get update && sudo apt-get install -y ffmpeg libgl1 libegl1 libfontconfig1 libx11-6 ;;
+            Linux)   sudo apt-get update && sudo apt-get install -y ffmpeg libgl1 libegl1 libfontconfig1 libx11-6 libass9 ;;
             Windows) choco install -y ffmpeg ;;
-            macOS)   brew install ffmpeg ;;
+            macOS)   brew install ffmpeg libass ;;
           esac
 
       # The rolling release clobbers assets in place, so the cache key must

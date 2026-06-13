@@ -120,8 +120,16 @@ for 1080p), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
 vorbis, mp3, flac and WAV pcm (s16/s24/s32/float -- the real-life set
 added 2026-06-11: movie-rip tracks, m4a lossless, DAW exports);
 libswscale + libswresample; libavfilter trimmed to exactly the
-playback-rate chain (atempo + abuffer/abuffersink, added in M8).
-Expected size: 8-12 MB per platform against ~70 MB for a full build.
+playback-rate chain (atempo + abuffer/abuffersink, added in M8);
+subtitle demuxers (ass, srt, webvtt, sup) and decoders (ass/ssa,
+srt/subrip, mov_text, webvtt, pgssub, dvdsub) since M9. The M9 bundles
+also carry libass (shared, soname 9; static freetype + harfbuzz folded
+in, symbols hidden) and fribidi (shared -- LGPL must not fold into the
+libass binary; the webp-pair preload pattern resolves it). Linux links
+the system fontconfig (universal on desktops); Windows uses DirectWrite,
+macOS CoreText. libunibreak is deliberately off -- optional, and a
+system copy must not become a silent dependency. Expected size: 11-15 MB
+per platform against ~70 MB for a full build.
 
 ## 5. Bindings
 
@@ -599,6 +607,47 @@ README once the library is usable.
   displayed (swapped) dimensions, the canvas turns about the rect's
   center, and the pixels are never touched -- a transform, not a
   transpose.
+
+- **M9 -- subtitles (built 2026-06-13):** the full tier in one epic --
+  libass-rendered text (ASS/SSA native, SRT/mov_text/WebVTT converted),
+  bitmap tracks (PGS, dvdsub), external files, track enumeration and
+  live selection; off by default, the pipeline starts lazily on first
+  select. SubtitlePipeline is the audio pipeline's shape over the third
+  stream type: own thread, confined arena, own format context, command
+  queue, pendingSeeks handshake contract. The two adversarially-found
+  rules that carry seeks: the demux refill gates on ANY stream's pts
+  (subtitle packets are sparse; a subtitle-pts gate reads unbounded
+  interleaved data deaf to commands), and the libass track flush policy
+  is per-codec -- native ASS packets embed stable ReadOrders that libass
+  dedups across replays, converted codecs re-number from a decoder
+  counter that resets on flush, so their track flushes on EVERY
+  reposition and the 10s preroll (matroska cues align to video
+  keyframes) replays the visible state. The converted-codec trap's real
+  shape pins it in tests: a forward seek past the fed window re-numbers
+  the landing cue into a ReadOrder collision and dedup eats the NEW
+  event. The ASS style header comes from the opened decoder context's
+  subtitle_header (converted decoders synthesize it there; codecpar
+  extradata stays empty) -- the one direct AVCodecContext read in the
+  bindings. Track switching always spawns a fresh pipeline: subtitles
+  own no device, replacement IS the switch. Bitmap display sets convert
+  to premultiplied patches once at decode time and live in a window
+  schedule (a window closes at its own end, the packet duration, or the
+  next event -- num_rects == 0 is the pgs clear); the PGS fixture is a
+  synthesized .sup stream-copied into mkv, since no PGS encoder exists
+  anywhere and dvdsub's encoder cannot take text input either. The Ass
+  binding is optional like the webp pair (Ass.available; text refuses,
+  bitmap plays on) and carries skinema's first FFM upcall: libass logs
+  to stderr unless a callback is set and NULL is a no-op, so a
+  MethodHandles.empty stub silences it -- never dereferencing its
+  arguments, va_list as an opaque pointer. mkv font attachments feed
+  ass_add_font before the renderer initializes; VideoSurface composites
+  the overlay in displayed space (upright over rotated video -- the
+  positioned-ASS-on-rotated-footage combination is an accepted circus
+  cut) and posts its displayed rect back so glyphs rasterize at screen
+  size. SKINEMA_REQUIRE_SUBS stages the CI flip: code merged green
+  against bundles without libass (suites assume-skip; linux+mac CI test
+  against system copies), the natives rebuild adds the libass stack,
+  then strictness flips.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

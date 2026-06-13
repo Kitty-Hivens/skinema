@@ -57,6 +57,7 @@ Compose -- are restricted methods that otherwise warn on every run.
 | Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                                  |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
 | Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored         |
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
@@ -70,6 +71,20 @@ the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with
 the pitch preserved (FFmpeg's atempo). HDR content plays through a
 naive SDR conversion for now -- washed out, not tone-mapped; proper
 tone-mapping is a roadmap item.
+
+Subtitles: `subtitleTracks` enumerates what the container carries
+(language, title, default/forced); `selectSubtitleTrack` turns one on
+-- off by default, nothing subtitle-related runs until then. Text
+tracks (ASS/SSA, SRT, mov_text, WebVTT) render through libass with the
+full typesetting, mkv-embedded fonts included; bitmap tracks (PGS,
+VobSub) decode to pixels and need no libass at all. External `.srt` and
+`.ass` files join via `addExternalSubtitles` on the same timeline.
+`VideoSurface` composites the overlay and keeps glyphs crisp at window
+size; a consumer drawing frames itself polls `acquireSubtitles` -- the
+`acquireFrame` contract for text. libass is an optional capability:
+without it text tracks refuse selection and everything else plays on.
+Text rendering uses the system's fonts (fontconfig, DirectWrite,
+CoreText); a fontless headless box renders blank overlays.
 
 ## Behavior contract
 
@@ -117,4 +132,7 @@ maintainer's discretion.
 Apache-2.0 for skinema itself. FFmpeg is consumed as separate LGPL
 shared libraries, dynamically linked, never statically embedded; license
 texts ship inside every natives bundle. libwebp, libvpx and dav1d are
-BSD-family.
+BSD-family. libass (ISC) ships with FreeType and HarfBuzz folded in --
+portions of the bundled software are copyright The FreeType Project
+(freetype.org), licensed under the FreeType License -- while FriBidi
+stays a separate shared library precisely because it is LGPL.
