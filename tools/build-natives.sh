@@ -181,12 +181,17 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             case "$(uname -s)" in
                 Linux)
                     # fontconfig stays a dynamic SYSTEM library (every
-                    # desktop has it); --exclude-libs keeps the static
-                    # freetype's symbols private, or ELF interposition
-                    # binds FT_* across the system copy fontconfig drags
-                    # in -- silent version-skew crashes.
+                    # desktop has it); exclude-libs keeps the STATIC
+                    # freetype/harfbuzz symbols private, or ELF
+                    # interposition binds FT_* across the system copy
+                    # fontconfig drags in -- silent version-skew crashes.
+                    # Name those two archives, not ALL: libass's own
+                    # ass_* enter the link through a libtool convenience
+                    # archive, so ALL localizes them too and the .so
+                    # ships an empty dynamic symbol table -- it loads but
+                    # exports nothing, so the binding finds no entries.
                     ASS_FLAGS="$ASS_FLAGS --enable-fontconfig"
-                    ASS_LDFLAGS="-Wl,--exclude-libs,ALL"
+                    ASS_LDFLAGS="-Wl,--exclude-libs,libfreetype.a:libharfbuzz.a"
                     ;;
                 Darwin)
                     ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # CoreText autodetects
