@@ -56,6 +56,16 @@ object Ass {
         }
 
         init {
+            // On Windows the freetype/harfbuzz static fold is impossible
+            // (MinGW libtool will not put a static archive into a DLL),
+            // so they ship as their own DLLs and must be preloaded -- in
+            // dependency order, freetype before harfbuzz. Linux/macOS
+            // fold them into libass, so there is nothing to preload (and
+            // a stray system copy must NOT be pulled in) -- Windows only.
+            if (Os.current() == Os.WINDOWS) {
+                runCatching { lookup("freetype", 6) }
+                runCatching { lookup("harfbuzz", 0) }
+            }
             // libass links fribidi (shared in the bundle: it is LGPL and
             // must not be folded into the libass binary); preload it so
             // the bundled copy resolves the dependency by soname.
