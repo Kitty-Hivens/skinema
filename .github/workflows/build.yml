@@ -27,6 +27,9 @@ jobs:
     env:
       # A runner with a broken decode environment must fail, not skip.
       SKINEMA_REQUIRE_DECODE: "1"
+      # The bundles now carry the libass stack; a runner that cannot
+      # load it must fail, not skip the subtitle-rendering suites.
+      SKINEMA_REQUIRE_SUBS: "1"
     steps:
       - uses: actions/checkout@v4
 
