@@ -890,6 +890,67 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `external subtitles append, select and render`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val srt = dir.resolve("external.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nFrom outside\n")
+        VideoPlayer(shortVideo("extsubs.mp4", "10"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val added = player.addExternalSubtitles(srt)
+            assertEquals(1, added.size, "the srt must probe as one track")
+            assertEquals(-1, added[0].id, "externals count down from -1")
+            assertEquals(srt, added[0].externalPath)
+            assertTrue(player.subtitleTracks.any { it.id == -1 }, "the track joins the list")
+
+            player.selectSubtitleTrack(-1)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == -1 }, "the external selection must land")
+            var seen = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { seen = seen || it.patches.isNotEmpty() }
+                    seen
+                },
+                "the external cue must render on the video timeline",
+            )
+
+            val more = player.addExternalSubtitles(srt)
+            assertEquals(-2, more[0].id, "ids stay unique across adds")
+        }
+    }
+
+    @Test
+    fun `a garbage external file is refused without a trace`() {
+        Fixtures.assumeDecodeEnvironment()
+        val junk = dir.resolve("junk.srt")
+        Files.write(junk, ByteArray(512) { (it * 7).toByte() })
+        VideoPlayer(shortVideo("extjunk.mp4", "5"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            assertEquals(emptyList(), player.addExternalSubtitles(junk))
+            assertEquals(emptyList(), player.addExternalSubtitles(dir.resolve("absent.srt")))
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback keeps running")
+        }
+    }
+
+    @Test
+    fun `live switching between embedded and external tracks`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val srt = dir.resolve("switchext.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:09,000\nOutside line\n")
+        VideoPlayer(subbedFixture("subswitch"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.selectSubtitleTrack(1)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == 1 }, "embedded first")
+            player.addExternalSubtitles(srt)
+            player.selectSubtitleTrack(-1)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == -1 }, "external second")
+            player.selectSubtitleTrack(1)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == 1 }, "and back")
+        }
+    }
+
+    @Test
     fun `rotation metadata surfaces on the player`() {
         Fixtures.assumeDecodeEnvironment()
         val plain = shortVideo("upright.mp4", "1")
