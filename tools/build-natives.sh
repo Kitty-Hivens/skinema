@@ -158,6 +158,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xJf harfbuzz.tar.xz
         meson setup "harfbuzz-$HARFBUZZ_VERSION/build" "harfbuzz-$HARFBUZZ_VERSION" \
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
+            --pkg-config-path="$DEPS/lib/pkgconfig" \
             -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
             -Dicu=disabled -Dchafa=disabled -Dtests=disabled -Ddocs=disabled \
             ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
