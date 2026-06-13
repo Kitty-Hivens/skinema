@@ -459,16 +459,42 @@ private val TEXT_SUBTITLE_CODECS = setOf(
 )
 
 /**
- * The container's subtitle streams. [idBase] offsets the ids: embedded
- * tracks use their stream index as-is (base 0), external files get the
- * player-assigned negative base. Attachment streams (fonts) are a
- * different codec type and never appear here.
+ * Probes a standalone subtitle file (.srt, .ass -- anything libav
+ * demuxes); empty on any failure, fail closed. [ids] assigns the
+ * player's selection handles (negative for externals).
+ */
+internal fun probeSubtitleFile(file: Path, ids: (Int) -> Int): List<SubtitleTrack> {
+    val arena = Arena.ofConfined()
+    try {
+        val ctxOut = arena.allocate(ADDRESS)
+        if (Libav.avformatOpenInput(ctxOut, arena.allocateFrom(file.toString())) < 0) return emptyList()
+        val fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+        try {
+            if (Libav.avformatFindStreamInfo(fmtCtx) < 0) return emptyList()
+            return enumerateSubtitleTracks(fmtCtx, arena, externalPath = file, ids = ids)
+        } finally {
+            val ptrPtr = arena.allocate(ADDRESS)
+            ptrPtr.set(ADDRESS, 0, fmtCtx)
+            Libav.avformatCloseInput(ptrPtr)
+        }
+    } catch (_: Throwable) {
+        return emptyList()
+    } finally {
+        arena.close()
+    }
+}
+
+/**
+ * The container's subtitle streams. Embedded tracks use their stream
+ * index as the id; external files get player-assigned negatives via
+ * [ids]. Attachment streams (fonts) are a different codec type and
+ * never appear here.
  */
 internal fun enumerateSubtitleTracks(
     fmtCtx: MemorySegment,
     arena: Arena,
-    idBase: Int = 0,
     externalPath: Path? = null,
+    ids: (Int) -> Int = { it },
 ): List<SubtitleTrack> {
     val languageKey = arena.allocateFrom("language")
     val titleKey = arena.allocateFrom("title")
@@ -482,7 +508,7 @@ internal fun enumerateSubtitleTracks(
         val metadata = stream.get(ADDRESS, LibavAbi.Stream.METADATA)
         val disposition = stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION)
         tracks += SubtitleTrack(
-            id = if (externalPath == null) i else idBase - tracks.size,
+            id = ids(i),
             streamIndex = i,
             language = dictValue(metadata, languageKey),
             title = dictValue(metadata, titleKey),

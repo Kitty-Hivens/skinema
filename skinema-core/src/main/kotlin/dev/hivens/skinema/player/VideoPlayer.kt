@@ -7,17 +7,19 @@ import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
-import dev.hivens.skinema.subtitles.SubtitleOverlay
-import dev.hivens.skinema.subtitles.SubtitlePipeline
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
+import dev.hivens.skinema.libav.probeSubtitleFile
+import dev.hivens.skinema.subtitles.SubtitleOverlay
+import dev.hivens.skinema.subtitles.SubtitlePipeline
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Plays one video file: a dedicated decode thread keeps a small queue
@@ -208,6 +210,14 @@ class VideoPlayer internal constructor(
     var subtitleTracks: List<SubtitleTrack> = emptyList()
         private set
 
+    // Guards subtitleTracks writes: the decode thread publishes the
+    // embedded set once, consumer threads append externals afterward.
+    private val subtitleTracksLock = Any()
+    private val externalSubtitleIds = AtomicInteger(0)
+
+    @Volatile
+    private var frameless = false
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -356,6 +366,22 @@ class VideoPlayer internal constructor(
     }
 
     /**
+     * Probes [file] (.srt, .ass -- anything libav reads as subtitles)
+     * and appends its tracks to [subtitleTracks] under negative ids, on
+     * the video's own timeline. Returns the new tracks; an unreadable
+     * file returns an empty list and playback never notices. Frameless
+     * players take none -- text rendering wants video geometry that
+     * does not exist there.
+     */
+    fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
+        if (frameless) return emptyList()
+        val probed = probeSubtitleFile(file) { externalSubtitleIds.decrementAndGet() }
+        if (probed.isEmpty()) return emptyList()
+        synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + probed }
+        return probed
+    }
+
+    /**
      * Turns subtitles on at one of [subtitleTracks] (null turns them
      * off). The track runs on its own thread against the master clock;
      * nothing subtitle-related exists until the first selection. A text
@@ -417,6 +443,7 @@ class VideoPlayer internal constructor(
         } catch (t: Throwable) {
             if (audioClock != null) {
                 // No video stream but the audio plays: frameless mode.
+                frameless = true
                 durationNanos = audioPipeline?.durationNanos
                 tags = audioPipeline?.tags ?: emptyMap()
                 chapters = audioPipeline?.chapters ?: emptyList()
@@ -434,7 +461,7 @@ class VideoPlayer internal constructor(
         chapters = decoder.chapters()
         coverArt = decoder.coverArt()
         rotationDegrees = decoder.rotationDegrees()
-        subtitleTracks = decoder.subtitleTracks()
+        synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
             start()
