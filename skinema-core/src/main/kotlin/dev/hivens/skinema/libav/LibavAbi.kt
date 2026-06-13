@@ -79,6 +79,18 @@ object LibavAbi {
         const val SIZEOF = 24L
     }
 
+    /**
+     * Direct reads on AVCodecContext are otherwise avoided (functions
+     * cover everything); subtitle_header has no accessor, and converted
+     * text decoders synthesize the ASS style header THERE at open --
+     * codecpar extradata is empty for them.
+     */
+    object CodecContext {
+        const val SUBTITLE_HEADER_SIZE = 748L
+        const val SUBTITLE_HEADER = 752L
+        const val SIZEOF = 864L
+    }
+
     /** Out-parameter of avcodec_decode_subtitle2; caller-allocated. */
     object Subtitle {
         const val FORMAT = 0L

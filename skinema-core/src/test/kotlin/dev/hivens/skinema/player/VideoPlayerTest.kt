@@ -830,6 +830,65 @@ class VideoPlayerTest {
         }
     }
 
+    private fun subbedFixture(name: String): Path {
+        val srt = dir.resolve("$name.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nHello subs\n")
+        return Fixtures.generate(
+            dir.resolve("$name.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-map", "0:v", "-map", "1", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+        )
+    }
+
+    @Test
+    fun `subtitles select, render and deselect`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        VideoPlayer(subbedFixture("subflow"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val id = player.subtitleTracks.single().id
+            player.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == id }, "the selection must land")
+            var seen = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { seen = seen || it.patches.isNotEmpty() }
+                    seen
+                },
+                "the cue must reach the overlay mailbox",
+            )
+            player.selectSubtitleTrack(null)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == null }, "deselect must land")
+        }
+    }
+
+    @Test
+    fun `a subtitle selection queued before playback works`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        VideoPlayer(subbedFixture("subearly"), loop = true).use { player ->
+            // Enqueued while the player may still be Opening; it must
+            // apply once the decode thread reaches its command loop.
+            player.selectSubtitleTrack(1)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == 1 }, "the early selection must land")
+        }
+    }
+
+    @Test
+    fun `an unknown subtitle id is a no-op`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(subbedFixture("subbogus"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.selectSubtitleTrack(99)
+            Thread.sleep(200)
+            assertEquals(null, player.activeSubtitleTrack)
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback keeps running")
+        }
+    }
+
     @Test
     fun `rotation metadata surfaces on the player`() {
         Fixtures.assumeDecodeEnvironment()
