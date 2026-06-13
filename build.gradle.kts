@@ -1,6 +1,7 @@
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.plugins.signing.SigningExtension
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
@@ -22,6 +23,16 @@ subprojects {
             events("failed")
             exceptionFormat = TestExceptionFormat.FULL
         }
+    }
+}
+
+// Every warning is an error. A batch of them once piled up unseen behind
+// the build cache (which replays a cached compile without re-emitting its
+// warnings); as errors they fail the compile, so none is ever cached
+// green and `gradlew build` catches the first one in CI.
+subprojects {
+    tasks.withType<KotlinCompile>().configureEach {
+        compilerOptions.allWarningsAsErrors.set(true)
     }
 }
 

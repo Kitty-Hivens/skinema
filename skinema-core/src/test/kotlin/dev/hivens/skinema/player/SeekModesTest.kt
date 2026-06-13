@@ -46,7 +46,7 @@ class SeekModesTest {
         player(source).use { p ->
             try {
                 assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-                while (p.acquireFrame() != null) Unit
+                while (p.acquireFrame() != null) { /* drain */ }
 
                 p.seek(250_000_000L)
                 var seen = -1L
@@ -72,7 +72,7 @@ class SeekModesTest {
         val source = ScriptedFrameSource(frameCount = 60, keyframeEvery = 10)
         player(source).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            while (p.acquireFrame() != null) Unit
+            while (p.acquireFrame() != null) { /* drain */ }
 
             p.seek(1_500_000_000L, exact = false)
             var seen = -1L

@@ -102,7 +102,7 @@ class ReadAheadTest {
             assertTrue(awaitTrue { source.maxStartedIndex.get() == 6 }, "inventory must fill")
             // Latest-wins mailbox: drain it so the next acquire is a
             // post-seek publish.
-            while (p.acquireFrame() != null) Unit
+            while (p.acquireFrame() != null) { /* drain */ }
 
             p.seek(0)
             val acquired = mutableListOf<Long>()

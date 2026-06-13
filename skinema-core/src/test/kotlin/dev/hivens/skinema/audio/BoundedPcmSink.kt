@@ -10,6 +10,9 @@ package dev.hivens.skinema.audio
  */
 class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
 
+    // java.lang.Object, not Any: the wait/notifyAll monitor calls below
+    // are not exposed on kotlin.Any.
+    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
     private val lock = Object()
     private var writtenFrames = 0L
     private var consumedFrames = 0L
