@@ -198,7 +198,19 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                     ;;
                 MINGW*|MSYS*)
                     ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # DirectWrite autodetects
-                    ASS_LDFLAGS="-static-libgcc -static-libstdc++"
+                    # -lstdc++: harfbuzz is C++, and once its .a links
+                    # directly (below) the gcc driver will not pull the
+                    # C++ runtime on its own; -static-libstdc++ then keeps
+                    # that copy out of the DLL's import table.
+                    ASS_LDFLAGS="-static-libgcc -static-libstdc++ -lstdc++"
+                    # MinGW libtool refuses to fold a static *.la archive
+                    # into a DLL, so freetype/harfbuzz stay undefined and
+                    # -no-undefined drops the DLL entirely (only libass.a
+                    # builds -> no libass in the Windows bundle). Drop
+                    # their .la so libtool links the .a directly through
+                    # -lfreetype/-lharfbuzz; their .pc files still carry
+                    # the cflags and -l names.
+                    rm -f "$DEPS"/lib/libfreetype.la "$DEPS"/lib/libharfbuzz.la
                     ;;
             esac
             PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
