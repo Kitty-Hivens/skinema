@@ -21,14 +21,9 @@ jobs:
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             caps: decode,subs,webp
-          # 'subs' is dropped on Windows: the MSYS2 libass DLL fails its
-          # -no-undefined link (libtool will not fold the static
-          # freetype/harfbuzz .la into a DLL), so no libass ships in the
-          # Windows bundle yet -- a known gap under repair, stated here so
-          # it is an acknowledged exemption, not a silent skip.
           - os: windows-latest
             platform: windows-x64
-            caps: decode,webp
+            caps: decode,subs,webp
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp
