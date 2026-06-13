@@ -97,6 +97,18 @@ internal class SubtitlePipeline(
     private var timeBaseNum = 1
     private var timeBaseDen = 1
 
+    // The bitmap branch's display schedule: pixels convert ONCE at
+    // decode time, windows close at their own end or at the next event,
+    // whichever comes first.
+    private class BitmapEvent(
+        val startNanos: Long,
+        var endNanos: Long,
+        val patches: List<SubtitlePatch>,
+    )
+
+    private val bitmapEvents = ArrayDeque<BitmapEvent>()
+    private var shownBitmapStart = Long.MIN_VALUE
+
     // Converted text codecs re-number ReadOrder from a flushable decoder
     // counter; only native ASS/SSA packets carry stable ones.
     private val convertedCodec = track.codecName != "ass" && track.codecName != "ssa"
@@ -198,6 +210,13 @@ internal class SubtitlePipeline(
                     Ass.processCodecPrivate(assTrack, header, headerSize)
                 }
             }
+        } else {
+            // Bitmap planes carry their own geometry; the overlay canvas
+            // IS that plane and the consumer scales it onto the video.
+            val planeWidth = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.WIDTH)
+            val planeHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
+            canvasWidth = if (planeWidth > 0) planeWidth else storageSize?.first ?: DEFAULT_CANVAS_WIDTH
+            canvasHeight = if (planeHeight > 0) planeHeight else storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
         }
     }
 
@@ -226,6 +245,8 @@ internal class SubtitlePipeline(
                     if (change.get(JAVA_INT, 0) != 0) {
                         publishPatches(Ass.parseImages(head))
                     }
+                } else {
+                    bitmapTick(now)
                 }
 
                 val cmd = commands.poll(if (moving) TICK_MOVING_MS else TICK_IDLE_MS, TimeUnit.MILLISECONDS)
@@ -279,12 +300,15 @@ internal class SubtitlePipeline(
         if (Libav.avcodecDecodeSubtitle2(codecCtx, subtitle, got, packet) < 0) return // a bad packet is not fatal
         if (got.get(JAVA_INT, 0) == 0) return
         try {
-            if (assTrack == MemorySegment.NULL) return // the bitmap branch lands in its own phase
             val pts = packet.get(JAVA_LONG, LibavAbi.Packet.PTS)
             val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
             val startOffsetMs = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
             val timecodeMs = ptsNanos / 1_000_000 + startOffsetMs
             val durationMs = packetDurationMs(packet, subtitle)
+            if (assTrack == MemorySegment.NULL) {
+                ingestBitmapEvent(subtitle, timecodeMs * 1_000_000, durationMs)
+                return
+            }
 
             val numRects = subtitle.get(JAVA_INT, LibavAbi.Subtitle.NUM_RECTS)
             if (numRects == 0) return
@@ -305,6 +329,85 @@ internal class SubtitlePipeline(
         } finally {
             Libav.avsubtitleFree(subtitle)
         }
+    }
+
+    /**
+     * One decoded bitmap display set joins the schedule. The window
+     * closes at the subtitle's own end time, the packet duration, or
+     * stays open until the NEXT event (the pgs idiom: content sets
+     * follow each other and num_rects == 0 is the explicit clear).
+     */
+    private fun ingestBitmapEvent(subtitle: MemorySegment, startNanos: Long, durationMs: Long) {
+        // The next event ends an open-ended predecessor either way.
+        bitmapEvents.lastOrNull()?.takeIf { it.endNanos == Long.MAX_VALUE }?.endNanos = startNanos
+
+        val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
+        val end = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong()
+        val endNanos = when {
+            end > start -> startNanos + (end - start) * 1_000_000
+            durationMs in 1 until DEFAULT_DURATION_MS -> startNanos + durationMs * 1_000_000
+            else -> Long.MAX_VALUE
+        }
+
+        val numRects = subtitle.get(JAVA_INT, LibavAbi.Subtitle.NUM_RECTS)
+        if (numRects == 0) {
+            bitmapEvents += BitmapEvent(startNanos, Long.MAX_VALUE, emptyList())
+            return
+        }
+        val rects = subtitle.get(ADDRESS, LibavAbi.Subtitle.RECTS)
+            .reinterpret(numRects * ADDRESS.byteSize())
+        val patches = mutableListOf<SubtitlePatch>()
+        for (i in 0 until numRects) {
+            val rect = rects.getAtIndex(ADDRESS, i.toLong()).reinterpret(LibavAbi.SubtitleRect.SIZEOF)
+            if (rect.get(JAVA_INT, LibavAbi.SubtitleRect.TYPE) != LibavAbi.SUBTITLE_BITMAP) continue
+            val width = rect.get(JAVA_INT, LibavAbi.SubtitleRect.W)
+            val height = rect.get(JAVA_INT, LibavAbi.SubtitleRect.H)
+            val colors = rect.get(JAVA_INT, LibavAbi.SubtitleRect.NB_COLORS)
+            val linesize = rect.get(JAVA_INT, LibavAbi.SubtitleRect.LINESIZE)
+            if (width <= 0 || height <= 0 || colors <= 0 || linesize <= 0) continue
+            val indicesPtr = rect.get(ADDRESS, LibavAbi.SubtitleRect.DATA)
+            val palettePtr = rect.get(ADDRESS, LibavAbi.SubtitleRect.DATA + ADDRESS.byteSize())
+            if (indicesPtr == MemorySegment.NULL || palettePtr == MemorySegment.NULL) continue
+
+            val indexBytes = linesize.toLong() * (height - 1) + width
+            val indices = ByteArray(indexBytes.toInt())
+            MemorySegment.copy(indicesPtr.reinterpret(indexBytes), JAVA_BYTE, 0, indices, 0, indices.size)
+            val palette = IntArray(colors)
+            val paletteSeg = palettePtr.reinterpret(colors * 4L)
+            for (c in 0 until colors) palette[c] = paletteSeg.getAtIndex(JAVA_INT, c.toLong())
+
+            patches += SubtitlePatch().apply {
+                x = rect.get(JAVA_INT, LibavAbi.SubtitleRect.X)
+                y = rect.get(JAVA_INT, LibavAbi.SubtitleRect.Y)
+                this.width = width
+                this.height = height
+                rgba = paletteToRgba(indices, linesize, width, height, palette)
+            }
+        }
+        bitmapEvents += BitmapEvent(startNanos, endNanos, patches)
+    }
+
+    /** Publishes the schedule's state whenever the active window changes. */
+    private fun bitmapTick(nowNanos: Long) {
+        while (bitmapEvents.size > 1) {
+            val first = bitmapEvents.first()
+            if (first.endNanos == Long.MAX_VALUE || first.endNanos >= nowNanos - EVICT_NANOS) break
+            bitmapEvents.removeFirst()
+        }
+        val active = bitmapEvents.lastOrNull { it.startNanos <= nowNanos && nowNanos < it.endNanos }
+        val key = active?.startNanos ?: Long.MIN_VALUE
+        if (key == shownBitmapStart) return
+        shownBitmapStart = key
+        publishBitmap(active?.patches ?: emptyList())
+    }
+
+    private fun publishBitmap(patches: List<SubtitlePatch>) {
+        val slot = buffer.writing
+        slot.patches = patches
+        slot.canvasWidth = canvasWidth
+        slot.canvasHeight = canvasHeight
+        slot.generation = ++generation
+        buffer.publish()
     }
 
     /** Packet duration, else the subtitle's own window, else 10s (circus). */
@@ -335,14 +438,16 @@ internal class SubtitlePipeline(
             true
         }
         is Command.SetCanvasSize -> {
-            if (cmd.width > 0 && cmd.height > 0 && (cmd.width != canvasWidth || cmd.height != canvasHeight)) {
+            // Text only: bitmap patches are fixed to their plane and the
+            // consumer scales them; re-sizing their canvas would lie.
+            if (assRenderer != MemorySegment.NULL && cmd.width > 0 && cmd.height > 0 &&
+                (cmd.width != canvasWidth || cmd.height != canvasHeight)
+            ) {
                 canvasWidth = cmd.width
                 canvasHeight = cmd.height
-                if (assRenderer != MemorySegment.NULL) {
-                    // Glyphs rasterize at the displayed size; the storage
-                    // size keeps the PAR/positioning math on the video.
-                    Ass.setFrameSize(assRenderer, canvasWidth, canvasHeight)
-                }
+                // Glyphs rasterize at the displayed size; the storage
+                // size keeps the PAR/positioning math on the video.
+                Ass.setFrameSize(assRenderer, canvasWidth, canvasHeight)
             }
             true
         }
@@ -373,6 +478,11 @@ internal class SubtitlePipeline(
         if (assTrack != MemorySegment.NULL && convertedCodec) {
             Ass.flushEvents(assTrack)
         }
+        // Bitmap windows always rebuild from the preroll replay; the
+        // sentinel forces the next tick to re-publish whatever state the
+        // landing derives, a clear included.
+        bitmapEvents.clear()
+        shownBitmapStart = Long.MAX_VALUE
         eofReached = false
         lastDemuxedPtsNanos = Long.MIN_VALUE
     }
@@ -431,6 +541,9 @@ internal class SubtitlePipeline(
 
         /** Cue length when neither the packet nor the subtitle knows. */
         const val DEFAULT_DURATION_MS = 10_000L
+
+        /** Closed bitmap windows this far behind the clock leave the schedule. */
+        const val EVICT_NANOS = 60_000_000_000L
 
         /** Text render size when the video's geometry is unknown. */
         const val DEFAULT_CANVAS_WIDTH = 640

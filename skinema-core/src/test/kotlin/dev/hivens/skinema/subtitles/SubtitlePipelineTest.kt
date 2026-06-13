@@ -314,6 +314,90 @@ class SubtitlePipelineTest {
         }
     }
 
+    private fun pgsMkv(name: String): Path {
+        val sup = dir.resolve("$name.sup")
+        // The muxer normalizes the input to start at zero; authoring
+        // from zero keeps the schedule deterministic. Window: [0, 2s).
+        Files.write(sup, SupBuilder.build(showMs = 0, clearMs = 2_000))
+        return Fixtures.generate(
+            dir.resolve("$name.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", sup.toString(),
+            "-map", "0:v", "-map", "1", "-t", "6",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
+            "-c:s", "copy",
+        )
+    }
+
+    @Test
+    fun `a pgs window shows its bitmap and clears on schedule`() {
+        Fixtures.assumeDecodeEnvironment()
+        val path = pgsMkv("pgs-window")
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        try {
+            val latest = Latest()
+            frames.set(framesFor(1_000))
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the bitmap must show inside its window",
+            )
+            val overlay = latest.poll(pipeline)!!
+            assertEquals(320, overlay.canvasWidth, "the canvas is the pgs plane")
+            assertEquals(240, overlay.canvasHeight)
+            val patch = overlay.patches.single()
+            assertEquals(10, patch.x)
+            assertEquals(20, patch.y)
+            assertEquals(32, patch.width)
+            assertEquals(16, patch.height)
+            val center = (8 * 32 + 16) * 4
+            assertEquals(255, patch.rgba[center + 3].toInt() and 0xFF, "opaque where the rect is")
+            assertTrue((patch.rgba[center].toInt() and 0xFF) > 200, "the palette entry is white-ish")
+
+            frames.set(framesFor(3_000))
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isEmpty() == true },
+                "the clear set must empty the overlay",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a seek lands inside a pgs window through the preroll`() {
+        Fixtures.assumeDecodeEnvironment()
+        val path = pgsMkv("pgs-seek")
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        try {
+            val latest = Latest()
+            // Cold-start straight into the middle of the window: the
+            // display set began earlier and only the preroll replay can
+            // recover it.
+            frames.set(framesFor(1_000))
+            clock.seek(1_000_000_000L)
+            pipeline.seek(1_000_000_000L)
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the mid-window landing must show the bitmap",
+            )
+
+            // And out again: past the schedule nothing may linger.
+            frames.set(framesFor(5_000))
+            clock.seek(5_000_000_000L)
+            pipeline.seek(5_000_000_000L)
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 })
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isEmpty() == true },
+                "a stale bitmap must not survive the seek",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
     @Test
     fun `a track that cannot open dies clear and harmless`() {
         Fixtures.assumeDecodeEnvironment()
