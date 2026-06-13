@@ -59,6 +59,18 @@ class DestinationRectTest {
     }
 
     @Test
+    fun `subtitle patches map uniformly onto the destination rect`() {
+        // Canvas 640x480 onto a 320x240 dst at (40, 10): half scale.
+        val dst = Rect.makeXYWH(40f, 10f, 320f, 240f)
+        assertRect(
+            Rect.makeXYWH(40f + 50f, 10f + 100f, 60f, 20f),
+            subtitleDrawRect(dst, 640, 480, x = 100, y = 200, width = 120, height = 40),
+        )
+        // A degenerate canvas draws nothing rather than dividing by zero.
+        assertRect(Rect.makeWH(0f, 0f), subtitleDrawRect(dst, 0, 0, 1, 1, 1, 1))
+    }
+
+    @Test
     fun `quarter turns swap the displayed dimensions`() {
         assertEquals(48f to 64f, displayedSize(64f, 48f, 90))
         assertEquals(48f to 64f, displayedSize(64f, 48f, 270))

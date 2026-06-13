@@ -399,6 +399,41 @@ class SubtitlePipelineTest {
     }
 
     @Test
+    fun `an attached font feeds libass without breaking the open`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // A real system font attached the anime-mkv way; the smoke is
+        // that the pipeline opens, registers it and still renders.
+        val font = sequenceOf(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        ).map { java.io.File(it) }.firstOrNull { it.isFile }
+        org.junit.jupiter.api.Assumptions.assumeTrue(font != null, "no known system font to attach")
+        val path = Fixtures.generate(
+            dir.resolve("fonted.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", writeAss("fonted.ass").toString(),
+            "-map", "0:v", "-map", "1", "-t", "5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "ass",
+            "-attach", font!!.absolutePath, "-metadata:s:t:0", "mimetype=font/ttf",
+        )
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            val latest = Latest()
+            frames.set(framesFor(2_000))
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the cue must render with the attachment registered",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `a track that cannot open dies clear and harmless`() {
         Fixtures.assumeDecodeEnvironment()
         val path = fixture("dead.mkv", writeSrt("dead.srt"), "srt", 5)
