@@ -546,7 +546,7 @@ README once the library is usable.
   watchdog around the write (the tail-wait pattern) is the fix when
   the platform pass comes.
 
-- **M8 -- color correctness and playback control (in progress):** the
+- **M8 -- color correctness and playback control (released as 0.5.0, 2026-06-13):** the
   RGBA chokepoint honors what frames declare: the YUV matrix
   (BT.709/601/2020 and friends, via sws_setColorspaceDetails) and the
   sample range. swscale's silent default is BT.601/limited for
@@ -608,7 +608,7 @@ README once the library is usable.
   center, and the pixels are never touched -- a transform, not a
   transpose.
 
-- **M9 -- subtitles (built 2026-06-13):** the full tier in one epic --
+- **M9 -- subtitles (released as 0.5.0, 2026-06-13):** the full tier in one epic --
   libass-rendered text (ASS/SSA native, SRT/mov_text/WebVTT converted),
   bitmap tracks (PGS, dvdsub), external files, track enumeration and
   live selection; off by default, the pipeline starts lazily on first
@@ -655,7 +655,16 @@ README once the library is usable.
   natives.yml -- so a broken bundle fails before it uploads, in the
   workflow that built it -- plus a CapabilitiesTest asserting each
   listed capability loads independently of any fixture, the antidote to
-  a skip reading as green.
+  a skip reading as green. That gate then caught Windows shipping no
+  libass at all: MinGW libtool refuses to fold a static archive into a
+  DLL, so the static freetype/harfbuzz fold that works on Linux/macOS
+  left the Windows libass DLL unbuildable. On Windows freetype and
+  harfbuzz now ship as their own DLLs (the loader preloads them), and
+  the four MinGW runtime libraries the bundle links -- zlib, bzip2,
+  libiconv, winpthread, a pre-M3 gap the runner's PATH had masked for
+  the av* DLLs too -- ride in the bundle and are preloaded by name. The
+  Windows CI test strips mingw/msys from PATH so a green run proves the
+  bundle is self-contained, not leaning on the toolchain.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
