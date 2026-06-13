@@ -134,29 +134,35 @@ class SubtitlePipelineTest {
                 awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
                 "the first showing must render",
             )
-            val first = latest.poll(pipeline)!!.patches.single()
-            val firstHeight = first.height
-            val firstWidth = first.width
+            val firstShown = latest.poll(pipeline)!!
+            val genFirst = firstShown.generation
+            val firstHeight = firstShown.patches.single().height
+            val firstWidth = firstShown.patches.single().width
 
-            // Move past the second cue, then come back.
+            // Move past the second cue and HANDSHAKE on its publish: the
+            // seek must land against a different last render, or
+            // detect_change rightfully publishes nothing.
             frames.set(framesFor(6_000))
             assertTrue(
                 awaitTrue {
                     val o = latest.poll(pipeline)
-                    o != null && o.patches.isNotEmpty() && o.patches.single().height > 0
+                    o != null && o.generation > genFirst && o.patches.isNotEmpty()
                 },
                 "the second cue must render before the seek",
             )
             // The manual clock anchors at the CURRENT frame counter:
             // set the frames first or the seek lands in the past.
+            val genBeforeSeek = latest.poll(pipeline)!!.generation
             frames.set(framesFor(2_000))
             clock.seek(2_000_000_000L)
             pipeline.seek(2_000_000_000L)
             assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            // Stale-proof: only a FRESH publish satisfies the await --
+            // the pre-seek overlay lingers in the mailbox otherwise.
             assertTrue(
                 awaitTrue {
                     val o = latest.poll(pipeline)
-                    o != null && o.patches.isNotEmpty()
+                    o != null && o.generation > genBeforeSeek && o.patches.isNotEmpty()
                 },
                 "the line must show again after the backward seek",
             )
@@ -177,6 +183,47 @@ class SubtitlePipelineTest {
         backwardSeekScenario("replay-ass.mkv", writeAss("replay.ass"), "ass")
 
     @Test
+    fun `a forward seek past the fed window keeps converted cues alive`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // The converted-codec trap in its real shape: the decoder counter
+        // resets on flush, so the cue at the LANDING re-numbers from zero
+        // and collides with a long-fed early cue's ReadOrder -- without
+        // the track flush libass dedups the NEW event away and the
+        // landing plays bare.
+        val srt = dir.resolve("farcue.srt")
+        Files.writeString(
+            srt,
+            "1\n00:00:01,000 --> 00:00:03,000\nEarly line\n\n2\n00:00:40,000 --> 00:00:42,000\nLate line\n",
+        )
+        val path = fixture("farcue.mkv", srt, "srt", 45)
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            val latest = Latest()
+            frames.set(framesFor(2_000))
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the early cue must render (and burn its ReadOrder)",
+            )
+            val genBeforeSeek = latest.poll(pipeline)!!.generation
+            frames.set(framesFor(41_000))
+            clock.seek(41_000_000_000L)
+            pipeline.seek(41_000_000_000L)
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            assertTrue(
+                awaitTrue {
+                    val o = latest.poll(pipeline)
+                    o != null && o.generation > genBeforeSeek && o.patches.isNotEmpty()
+                },
+                "the landing cue must survive the ReadOrder collision",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `a loop wrap recovers events a forward seek flushed away`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeSubtitleRendering()
@@ -195,13 +242,17 @@ class SubtitlePipelineTest {
             assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the flushing seek must land")
 
             // The wrap: time falls back with no seek command.
+            val genBeforeWrap = latest.poll(pipeline)?.generation ?: 0L
             frames.set(framesFor(100))
             clock.seek(100_000_000L)
             Thread.sleep(100)
             frames.set(framesFor(2_000))
             clock.seek(2_000_000_000L)
             assertTrue(
-                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                awaitTrue {
+                    val o = latest.poll(pipeline)
+                    o != null && o.generation > genBeforeWrap && o.patches.isNotEmpty()
+                },
                 "lap 2 must re-show the flushed cue",
             )
         } finally {
@@ -229,6 +280,32 @@ class SubtitlePipelineTest {
                 high < 36_000_000_000L,
                 "the refill must stop at the horizon, read to ${high / 1_000_000_000}s",
             )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
+    fun `a standing clock publishes nothing new`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val path = fixture("standing.mkv", writeSrt("standing.srt"), "srt", 10)
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            val latest = Latest()
+            frames.set(framesFor(2_000))
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the cue must render",
+            )
+            val generation = latest.poll(pipeline)!!.generation
+            // ~20 render ticks with nothing changing: detect_change must
+            // gate every one of them, or static dialogue costs a blend
+            // and a publish per tick.
+            Thread.sleep(300)
+            latest.poll(pipeline)
+            assertEquals(generation, latest.overlay!!.generation, "an unchanged render must not publish")
         } finally {
             pipeline.close()
         }
