@@ -47,7 +47,10 @@ jobs:
 
       - name: Install toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config
+        # libfontconfig-dev: libass's Linux font provider builds against
+        # the system fontconfig (and links it dynamically -- every
+        # desktop ships it).
+        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config libfontconfig-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
