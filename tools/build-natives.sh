@@ -117,12 +117,26 @@ fi
 
 if [ "${STATIC_DEPS:-}" = "1" ]; then
     # --- The libass stack (text subtitles). libass ships SHARED in the
-    # bundle; freetype (FTL) and harfbuzz (MIT) fold in statically;
-    # fribidi is LGPL-2.1 and therefore ships as its OWN shared library
-    # (the libwebp precedent) -- folding it in would change the
-    # licensing story exactly the way ROADMAP section 10 refuses.
+    # bundle; fribidi is LGPL-2.1 and ships as its OWN shared library
+    # (the libwebp precedent). freetype (FTL) and harfbuzz (MIT) fold in
+    # STATICALLY on Linux/macOS -- but MinGW libtool will not put a
+    # static archive into a DLL, so on Windows they too ship as shared
+    # DLLs (installed into the bundle prefix, preloaded by the loader),
+    # each linking the C++/GCC runtime in so it stays self-contained.
+    # Their licenses already travel with every bundle (FTL + harfbuzz
+    # COPYING below), so shipping the DLLs adds no licensing surface.
+    case "$(uname -s)" in MINGW*|MSYS*) WINASS=1 ;; *) WINASS= ;; esac
+    if [ -n "$WINASS" ]; then
+        FT_PREFIX="$PREFIX"; FT_KIND="--enable-shared --disable-static"
+        HB_PREFIX="$PREFIX"; HB_KIND="shared"; HB_PKG="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig"
+        RT_LDFLAGS="-static-libgcc -static-libstdc++"
+    else
+        FT_PREFIX="$DEPS"; FT_KIND="--disable-shared --enable-static"
+        HB_PREFIX="$DEPS"; HB_KIND="static"; HB_PKG="$DEPS/lib/pkgconfig"
+        RT_LDFLAGS=""
+    fi
 
-    if [ ! -f "$DEPS/lib/libfreetype.a" ]; then
+    if [ ! -f "$FT_PREFIX/lib/libfreetype.a" ] && ! ls "$FT_PREFIX"/bin/libfreetype-*.dll >/dev/null 2>&1; then
         fetch "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" freetype.tar.xz
         rm -rf "freetype-$FREETYPE_VERSION"
         tar -xJf freetype.tar.xz
@@ -130,7 +144,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             cd "freetype-$FREETYPE_VERSION"
             # No harfbuzz refinement loop (an auto-hinter nicety) and no
             # optional codecs: glyphs for libass need none of them.
-            ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
+            ./configure --prefix="$FT_PREFIX" $FT_KIND --with-pic \
                 --with-harfbuzz=no --with-brotli=no --with-bzip2=no --with-png=no --with-zlib=no \
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
@@ -153,13 +167,16 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         cp "fribidi-$FRIBIDI_VERSION/COPYING" "$WORK/fribidi-COPYING"
     fi
 
-    if [ ! -f "$DEPS/lib/libharfbuzz.a" ]; then
+    if [ ! -f "$HB_PREFIX/lib/libharfbuzz.a" ] && ! ls "$HB_PREFIX"/bin/libharfbuzz-*.dll >/dev/null 2>&1; then
         fetch "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz" harfbuzz.tar.xz
         rm -rf "harfbuzz-$HARFBUZZ_VERSION"
         tar -xJf harfbuzz.tar.xz
+        # RT_LDFLAGS folds the C++/GCC runtime into the Windows DLL so it
+        # needs no libstdc++-6.dll/libgcc_s alongside; empty elsewhere.
+        LDFLAGS="$RT_LDFLAGS ${LDFLAGS:-}" \
         meson setup "harfbuzz-$HARFBUZZ_VERSION/build" "harfbuzz-$HARFBUZZ_VERSION" \
-            --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
-            --pkg-config-path="$DEPS/lib/pkgconfig" \
+            --prefix="$HB_PREFIX" --libdir=lib --default-library="$HB_KIND" --buildtype=release \
+            --pkg-config-path="$HB_PKG" \
             -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
             -Dicu=disabled -Dchafa=disabled -Dtests=disabled -Ddocs=disabled \
             ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
@@ -198,19 +215,10 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                     ;;
                 MINGW*|MSYS*)
                     ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # DirectWrite autodetects
-                    # -lstdc++: harfbuzz is C++, and once its .a links
-                    # directly (below) the gcc driver will not pull the
-                    # C++ runtime on its own; -static-libstdc++ then keeps
-                    # that copy out of the DLL's import table.
-                    ASS_LDFLAGS="-static-libgcc -static-libstdc++ -lstdc++"
-                    # MinGW libtool refuses to fold a static *.la archive
-                    # into a DLL, so freetype/harfbuzz stay undefined and
-                    # -no-undefined drops the DLL entirely (only libass.a
-                    # builds -> no libass in the Windows bundle). Drop
-                    # their .la so libtool links the .a directly through
-                    # -lfreetype/-lharfbuzz; their .pc files still carry
-                    # the cflags and -l names.
-                    rm -f "$DEPS"/lib/libfreetype.la "$DEPS"/lib/libharfbuzz.la
+                    # freetype/harfbuzz are shared DLLs on Windows (built
+                    # above), so libtool links their import libs cleanly;
+                    # fold libass's own C++/GCC runtime in to match.
+                    ASS_LDFLAGS="$RT_LDFLAGS"
                     ;;
             esac
             PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
