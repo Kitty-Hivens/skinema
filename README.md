@@ -29,16 +29,16 @@ frames itself must do the same.
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.4.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.4.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.4.0:linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.4.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.4.0:macos-x64")
+implementation("dev.hivens:skinema-compose:0.5.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-x64")
 ```
 
-The linux-arm64 classifier ships from the release after 0.4.0; the
-other four exist on every version.
+All five classifiers ship from 0.5.0 (linux-arm64 joined that release);
+the other four exist on earlier versions too.
 
 The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
 platform) plus libwebp; on first use they unpack to a per-user cache.
@@ -135,4 +135,9 @@ texts ship inside every natives bundle. libwebp, libvpx and dav1d are
 BSD-family. libass (ISC) ships with FreeType and HarfBuzz folded in --
 portions of the bundled software are copyright The FreeType Project
 (freetype.org), licensed under the FreeType License -- while FriBidi
-stays a separate shared library precisely because it is LGPL.
+stays a separate shared library precisely because it is LGPL. On
+Windows, where libtool cannot fold a static archive into a DLL,
+FreeType and HarfBuzz ship as their own DLLs instead, and the bundle
+also carries the MinGW runtime they link -- zlib and bzip2 (permissive),
+winpthread, and libiconv (LGPL, dynamically linked like FFmpeg) -- each
+with its license text.
