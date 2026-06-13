@@ -6,6 +6,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -13,9 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import dev.hivens.skinema.player.VideoPlayer
+import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.SamplingMode
+import kotlin.math.roundToInt
 
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
@@ -43,16 +46,30 @@ fun VideoSurface(
     scale: VideoScale = VideoScale.Cover,
 ) {
     val frames = remember(player) { VideoFrameImage() }
+    val subtitles = remember(player) { SubtitleOverlayImage() }
     var frameStamp by remember(player) { mutableLongStateOf(0L) }
+    var subtitleCanvas by remember(player) { mutableStateOf(0 to 0) }
 
     DisposableEffect(player) {
-        onDispose { frames.close() }
+        onDispose {
+            frames.close()
+            subtitles.close()
+        }
     }
     LaunchedEffect(player) {
         while (true) {
             withFrameNanos { }
             player.acquireFrame()?.let { slot ->
                 frames.update(slot.width, slot.height, slot.rgba)
+                frameStamp++
+            }
+            player.acquireSubtitles()?.let { overlay ->
+                subtitles.update(
+                    overlay.patches.map {
+                        SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
+                    },
+                )
+                subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
                 frameStamp++
             }
         }
@@ -80,6 +97,7 @@ fun VideoSurface(
             // Cover overflows the bounds by design; never paint outside them.
             nc.clipRect(Rect.makeWH(size.width, size.height))
             if (rotation != 0) {
+                nc.save()
                 nc.rotate(rotation.toFloat(), (dst.left + dst.right) / 2f, (dst.top + dst.bottom) / 2f)
             }
             nc.drawImageRect(
@@ -90,9 +108,60 @@ fun VideoSurface(
                 null,
                 true,
             )
+            if (rotation != 0) nc.restore()
+            // Subtitles composite upright in DISPLAYED space, over the
+            // (possibly rotated) video, mapped from their canvas onto
+            // the same destination rect.
+            if (player.activeSubtitleTrack != null) {
+                val (canvasW, canvasH) = subtitleCanvas
+                for (placed in subtitles.images) {
+                    nc.drawImageRect(
+                        placed.image,
+                        Rect.makeWH(placed.image.width.toFloat(), placed.image.height.toFloat()),
+                        subtitleDrawRect(
+                            dst, canvasW, canvasH,
+                            placed.x, placed.y, placed.image.width, placed.image.height,
+                        ),
+                        SamplingMode.LINEAR,
+                        null,
+                        true,
+                    )
+                }
+            }
             nc.restore()
         }
+        // The pipeline rasterizes text at whatever size the surface
+        // reports; posting the displayed rect keeps glyphs crisp at any
+        // window size. Cheap and idempotent -- a command only when the
+        // size actually changed.
+        if (player.activeSubtitleTrack != null) {
+            player.setSubtitleCanvasSize(dst.width.roundToInt(), dst.height.roundToInt())
+        }
     }
+}
+
+/**
+ * Where one overlay patch lands on screen: its canvas maps uniformly
+ * onto the video's destination rect. Pure -- tested without a renderer.
+ */
+internal fun subtitleDrawRect(
+    dst: Rect,
+    canvasWidth: Int,
+    canvasHeight: Int,
+    x: Int,
+    y: Int,
+    width: Int,
+    height: Int,
+): Rect {
+    if (canvasWidth <= 0 || canvasHeight <= 0) return Rect.makeWH(0f, 0f)
+    val scaleX = dst.width / canvasWidth
+    val scaleY = dst.height / canvasHeight
+    return Rect.makeXYWH(
+        dst.left + x * scaleX,
+        dst.top + y * scaleY,
+        width * scaleX,
+        height * scaleY,
+    )
 }
 
 /** The source dimensions as the viewer sees them after rotation. */

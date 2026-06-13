@@ -34,6 +34,7 @@ import dev.hivens.skinema.compose.VideoScale
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.rememberPlayerState
 import dev.hivens.skinema.libav.AudioTrack
+import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlin.time.Duration.Companion.milliseconds
@@ -46,6 +47,13 @@ private val RATE_STEPS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f)
 private fun rateLabel(rate: Float): String =
     if (rate % 1f == 0f) "${rate.toInt()}x" else "${rate}x"
 
+private fun subtitleLabel(track: SubtitleTrack): String = buildString {
+    append(track.language ?: "und")
+    track.title?.let { append(" ").append(it) }
+    append(" (").append(track.codecName).append(")")
+    if (track.externalPath != null) append(" ext")
+}
+
 private fun trackLabel(track: AudioTrack): String = buildString {
     append(track.language ?: "und")
     track.title?.let { append(" ").append(it) }
@@ -53,8 +61,9 @@ private fun trackLabel(track: AudioTrack): String = buildString {
 }
 
 fun main(args: Array<String>) {
-    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound]" })
-    val sound = args.getOrNull(1) == "sound"
+    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound] [subs=<file>]" })
+    val sound = args.contains("sound")
+    val externalSubs = args.firstOrNull { it.startsWith("subs=") }?.removePrefix("subs=")
     val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema demo") {
@@ -73,6 +82,11 @@ fun main(args: Array<String>) {
             var coverBytes by remember { mutableStateOf<ByteArray?>(null) }
             var chapterTitle by remember { mutableStateOf("") }
             var rate by remember { mutableFloatStateOf(1f) }
+            var subTracks by remember { mutableStateOf(emptyList<SubtitleTrack>()) }
+            var activeSub by remember { mutableStateOf<Int?>(null) }
+            LaunchedEffect(player) {
+                externalSubs?.let { player.addExternalSubtitles(Path.of(it)) }
+            }
             LaunchedEffect(player) {
                 while (true) {
                     positionMs = player.positionNanos() / 1_000_000
@@ -81,6 +95,8 @@ fun main(args: Array<String>) {
                     activeTrack = player.activeAudioTrack
                     coverBytes = player.coverArt
                     rate = player.rate
+                    subTracks = player.subtitleTracks
+                    activeSub = player.activeSubtitleTrack
                     chapterTitle = player.chapters
                         .lastOrNull { it.startNanos <= positionMs * 1_000_000 }?.title ?: ""
                     kotlinx.coroutines.delay(200.milliseconds)
@@ -199,6 +215,30 @@ fun main(args: Array<String>) {
                             },
                             modifier = Modifier.width(120.dp),
                         )
+                    }
+                    if (subTracks.isNotEmpty()) {
+                        Box {
+                            var subMenu by remember { mutableStateOf(false) }
+                            Button(onClick = { subMenu = true }) {
+                                Text(subTracks.firstOrNull { it.id == activeSub }?.let(::subtitleLabel) ?: "subs off")
+                            }
+                            DropdownMenu(expanded = subMenu, onDismissRequest = { subMenu = false }) {
+                                DropdownMenuItem(onClick = {
+                                    player.selectSubtitleTrack(null)
+                                    subMenu = false
+                                }) {
+                                    Text((if (activeSub == null) "* " else "  ") + "off")
+                                }
+                                subTracks.forEach { track ->
+                                    DropdownMenuItem(onClick = {
+                                        player.selectSubtitleTrack(track.id)
+                                        subMenu = false
+                                    }) {
+                                        Text((if (track.id == activeSub) "* " else "  ") + subtitleLabel(track))
+                                    }
+                                }
+                            }
+                        }
                     }
                     if (tracks.size > 1) {
                         Box {

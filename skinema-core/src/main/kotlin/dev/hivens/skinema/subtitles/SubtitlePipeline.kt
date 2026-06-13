@@ -10,6 +10,7 @@ import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.SubtitleTrack
+import dev.hivens.skinema.libav.dictValue
 import dev.hivens.skinema.libav.streamAt
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -189,6 +190,11 @@ internal class SubtitlePipeline(
             check(Ass.available) { "text subtitles need libass" }
             assLibrary = Ass.libraryInit()
             if (assLibrary == MemorySegment.NULL) throw LibavException("ass_library_init returned NULL")
+            // Anime mkv ships its typesetting fonts as attachments; they
+            // must be in the library before the renderer's font provider
+            // initializes.
+            Ass.setExtractFonts(assLibrary, true)
+            addAttachedFonts()
             assRenderer = Ass.rendererInit(assLibrary)
             if (assRenderer == MemorySegment.NULL) throw LibavException("ass_renderer_init returned NULL")
             canvasWidth = storageSize?.first ?: DEFAULT_CANVAS_WIDTH
@@ -217,6 +223,29 @@ internal class SubtitlePipeline(
             val planeHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
             canvasWidth = if (planeWidth > 0) planeWidth else storageSize?.first ?: DEFAULT_CANVAS_WIDTH
             canvasHeight = if (planeHeight > 0) planeHeight else storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
+        }
+    }
+
+    private fun addAttachedFonts() {
+        val mimeKey = arena.allocateFrom("mimetype")
+        val nameKey = arena.allocateFrom("filename")
+        val count = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)
+        for (i in 0 until count) {
+            val stream = streamAt(fmtCtx, i)
+            val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
+                .reinterpret(LibavAbi.CodecParameters.SIZEOF)
+            if (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_TYPE) != LibavAbi.AVMEDIA_TYPE_ATTACHMENT) continue
+            val metadata = stream.get(ADDRESS, LibavAbi.Stream.METADATA)
+            val mime = dictValue(metadata, mimeKey)?.lowercase()
+            val name = dictValue(metadata, nameKey)
+            val fontLike = mime in FONT_MIMETYPES ||
+                name?.let { n -> FONT_SUFFIXES.any { n.endsWith(it, ignoreCase = true) } } == true
+            if (!fontLike) continue
+            val size = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.EXTRADATA_SIZE)
+            if (size <= 0) continue
+            val data = codecpar.get(ADDRESS, LibavAbi.CodecParameters.EXTRADATA)
+            if (data == MemorySegment.NULL) continue
+            Ass.addFont(assLibrary, arena.allocateFrom(name ?: "embedded"), data, size)
         }
     }
 
@@ -544,6 +573,14 @@ internal class SubtitlePipeline(
 
         /** Closed bitmap windows this far behind the clock leave the schedule. */
         const val EVICT_NANOS = 60_000_000_000L
+
+        /** Attachment mimetypes the wild uses for fonts. */
+        val FONT_MIMETYPES = setOf(
+            "font/ttf", "font/otf", "font/sfnt", "font/collection",
+            "application/x-truetype-font", "application/x-font-ttf",
+            "application/vnd.ms-opentype", "application/font-sfnt",
+        )
+        val FONT_SUFFIXES = listOf(".ttf", ".otf", ".ttc")
 
         /** Text render size when the video's geometry is unknown. */
         const val DEFAULT_CANVAS_WIDTH = 640

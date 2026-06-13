@@ -35,6 +35,7 @@ compose.desktop {
 // Demo runner: ./gradlew :skinema-demo:run -Pvideo=/path/file.mp4 [-Psound]
 val demoVideo = providers.gradleProperty("video")
 val demoSound = providers.gradleProperty("sound")
+val demoSubs = providers.gradleProperty("subs")
 
 // Read-ahead depth for every demo task: -PreadAhead=N (default 1).
 val demoReadAhead = providers.gradleProperty("readAhead")
@@ -44,7 +45,11 @@ tasks.withType<JavaExec>().configureEach {
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
         argumentProviders.add {
-            listOfNotNull(demoVideo.orNull, if (demoSound.isPresent) "sound" else null)
+            listOfNotNull(
+                demoVideo.orNull,
+                if (demoSound.isPresent) "sound" else null,
+                demoSubs.orNull?.let { "subs=$it" },
+            )
         }
     }
 }
