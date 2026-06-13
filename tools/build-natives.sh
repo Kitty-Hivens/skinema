@@ -298,6 +298,27 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/fribidi-COPYING" "$PREFIX/licenses/fribidi-COPYING"
 fi
 
+# The Windows DLLs link MinGW runtime libraries -- zlib1/libbz2-1 (the
+# ffmpeg demuxers), libiconv-2 (avcodec + libass), libwinpthread-1
+# (av threading) -- that live in the MSYS2 prefix, not the bundle, so a
+# clean machine that lacks them cannot load avcodec or libass. Copy them
+# in (enumerated from the shipped DLLs' import tables) with their notices
+# so the bundle is self-contained. Hard-fail on a missing name -- a typo
+# would silently ship a broken bundle that only the build host can load.
+case "$(uname -s)" in
+    MINGW*|MSYS*)
+        MINGW="${MINGW_PREFIX:-/mingw64}"
+        for dll in zlib1 libbz2-1 libiconv-2 libwinpthread-1; do
+            cp "$MINGW/bin/$dll.dll" "$PREFIX/bin/" \
+                || { echo "missing MinGW runtime $dll.dll under $MINGW/bin" >&2; exit 1; }
+        done
+        for lic in zlib bzip2 libiconv winpthreads; do
+            f="$(ls "$MINGW/share/licenses/$lic"/* 2>/dev/null | head -1)"
+            [ -n "$f" ] && cp "$f" "$PREFIX/licenses/mingw-$lic-LICENSE.txt"
+        done
+        ;;
+esac
+
 # Flatten into the bundle layout NativeBundle deploys: real files under
 # the soname-level names the loader asks for (jars cannot carry the
 # symlink chains a normal install uses), licenses, and an index.txt whose
@@ -324,7 +345,9 @@ for f in "$PREFIX"/lib/lib*.dylib; do
         cp -L "$f" "$BUNDLE/$base"
     fi
 done
-for f in "$PREFIX"/bin/*-*.dll; do
+# Plain *.dll, not *-*.dll: the MinGW runtime ships zlib1.dll (no
+# version dash), and everything in bin here is a shipping DLL.
+for f in "$PREFIX"/bin/*.dll; do
     cp "$f" "$BUNDLE/"
 done
 shopt -u nullglob
