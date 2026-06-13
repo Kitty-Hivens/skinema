@@ -27,6 +27,10 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
 WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
+FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
+HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
+FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
+LIBASS_VERSION="${LIBASS_VERSION:-0.17.4}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
@@ -110,6 +114,112 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
 fi
 
+if [ "${STATIC_DEPS:-}" = "1" ]; then
+    # --- The libass stack (text subtitles). libass ships SHARED in the
+    # bundle; freetype (FTL) and harfbuzz (MIT) fold in statically;
+    # fribidi is LGPL-2.1 and therefore ships as its OWN shared library
+    # (the libwebp precedent) -- folding it in would change the
+    # licensing story exactly the way ROADMAP section 10 refuses.
+
+    if [ ! -f "$DEPS/lib/libfreetype.a" ]; then
+        fetch "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" freetype.tar.xz
+        rm -rf "freetype-$FREETYPE_VERSION"
+        tar -xJf freetype.tar.xz
+        (
+            cd "freetype-$FREETYPE_VERSION"
+            # No harfbuzz refinement loop (an auto-hinter nicety) and no
+            # optional codecs: glyphs for libass need none of them.
+            ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
+                --with-harfbuzz=no --with-brotli=no --with-bzip2=no --with-png=no --with-zlib=no \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "$WORK/freetype-FTL.TXT"
+    fi
+
+    if ! ls "$PREFIX"/lib/libfribidi.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libfribidi-*.dll >/dev/null 2>&1; then
+        fetch "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz" fribidi.tar.xz
+        rm -rf "fribidi-$FRIBIDI_VERSION"
+        tar -xJf fribidi.tar.xz
+        (
+            cd "fribidi-$FRIBIDI_VERSION"
+            ./configure --prefix="$PREFIX" --enable-shared --disable-static \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "fribidi-$FRIBIDI_VERSION/COPYING" "$WORK/fribidi-COPYING"
+    fi
+
+    if [ ! -f "$DEPS/lib/libharfbuzz.a" ]; then
+        fetch "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz" harfbuzz.tar.xz
+        rm -rf "harfbuzz-$HARFBUZZ_VERSION"
+        tar -xJf harfbuzz.tar.xz
+        meson setup "harfbuzz-$HARFBUZZ_VERSION/build" "harfbuzz-$HARFBUZZ_VERSION" \
+            --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
+            -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
+            -Dicu=disabled -Dchafa=disabled -Dtests=disabled -Ddocs=disabled \
+            ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
+        ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
+        cp "harfbuzz-$HARFBUZZ_VERSION/COPYING" "$WORK/harfbuzz-COPYING"
+    fi
+
+    if ! ls "$PREFIX"/lib/libass.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libass-*.dll >/dev/null 2>&1; then
+        fetch "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.xz" libass.tar.xz
+        rm -rf "libass-$LIBASS_VERSION"
+        tar -xJf libass.tar.xz
+        (
+            cd "libass-$LIBASS_VERSION"
+            # libunibreak is optional (marginal CJK line-break gain)
+            # and would otherwise bind to a system copy the bundle
+            # cannot promise.
+            ASS_FLAGS="--disable-libunibreak"
+            ASS_LDFLAGS=""
+            case "$(uname -s)" in
+                Linux)
+                    # fontconfig stays a dynamic SYSTEM library (every
+                    # desktop has it); --exclude-libs keeps the static
+                    # freetype's symbols private, or ELF interposition
+                    # binds FT_* across the system copy fontconfig drags
+                    # in -- silent version-skew crashes.
+                    ASS_FLAGS="$ASS_FLAGS --enable-fontconfig"
+                    ASS_LDFLAGS="-Wl,--exclude-libs,ALL"
+                    ;;
+                Darwin)
+                    ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # CoreText autodetects
+                    ;;
+                MINGW*|MSYS*)
+                    ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # DirectWrite autodetects
+                    ASS_LDFLAGS="-static-libgcc -static-libstdc++"
+                    ;;
+            esac
+            PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+            LDFLAGS="$ASS_LDFLAGS ${LDFLAGS:-}" \
+            ./configure --prefix="$PREFIX" --enable-shared --disable-static $ASS_FLAGS \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "libass-$LIBASS_VERSION/COPYING" "$WORK/libass-COPYING"
+        # The static freetype+harfbuzz fold leaves several MB of dead
+        # symbol weight; the bundles ship stripped.
+        case "$(uname -s)" in
+            Darwin) strip -x "$PREFIX"/lib/libass.*.dylib "$PREFIX"/lib/libfribidi.*.dylib 2>/dev/null || true ;;
+            MINGW*|MSYS*) strip --strip-unneeded "$PREFIX"/bin/libass-*.dll "$PREFIX"/bin/libfribidi-*.dll 2>/dev/null || true ;;
+            *) strip --strip-unneeded "$PREFIX"/lib/libass.so.9.* "$PREFIX"/lib/libfribidi.so.0.* 2>/dev/null || true ;;
+        esac
+        if [ "$(uname -s)" = "Darwin" ]; then
+            # Normalize the fribidi edge so the loader resolves it next
+            # to libass regardless of the build prefix.
+            FRIBIDI_REF="$(otool -L "$PREFIX/lib/libass.9.dylib" | awk '/fribidi/ {print $1}')"
+            if [ -n "$FRIBIDI_REF" ]; then
+                install_name_tool -change "$FRIBIDI_REF" "@loader_path/libfribidi.0.dylib" "$PREFIX/lib/libass.9.dylib"
+            fi
+        fi
+    fi
+fi
+
 if [ ! -d "ffmpeg-$FFMPEG_VERSION" ]; then
     fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" ffmpeg.tar.xz
     tar -xJf ffmpeg.tar.xz
@@ -138,8 +248,8 @@ read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
     --disable-avdevice \
     --enable-libvpx --enable-libdav1d \
     --enable-protocol=file,pipe \
-    --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3 \
-    --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
+    --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup \
+    --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
     --enable-filter=atempo,abuffer,abuffersink \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
@@ -155,6 +265,10 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
+    cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
+    cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
+    cp "$WORK/harfbuzz-COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
+    cp "$WORK/fribidi-COPYING" "$PREFIX/licenses/fribidi-COPYING"
 fi
 
 # Flatten into the bundle layout NativeBundle deploys: real files under
