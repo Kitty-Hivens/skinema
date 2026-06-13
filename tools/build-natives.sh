@@ -48,6 +48,7 @@ c = ['clang', '-arch', 'x86_64']
 cpp = ['clang++', '-arch', 'x86_64']
 ar = 'ar'
 strip = 'strip'
+pkg-config = 'pkg-config'
 
 [host_machine]
 system = 'darwin'
