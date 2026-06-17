@@ -79,6 +79,21 @@ class DestinationRectTest {
     }
 
     @Test
+    fun `subtitles map onto the video's pre-rotation rect so they rotate with it`() {
+        // Portrait displayed rect from a landscape (90-rotated) storage.
+        val dst = Rect.makeXYWH(60f, 20f, 80f, 200f)
+        val storage = imageDrawRect(dst, 90)
+        // A full-canvas overlay (canvas == storage geometry) covers the
+        // whole storage rect, which the canvas rotation then carries onto
+        // the picture -- this is what keeps positioned ASS glued to rotated
+        // footage.
+        assertRect(storage, subtitleDrawRect(storage, 200, 80, x = 0, y = 0, width = 200, height = 80))
+        // Upright video maps onto dst unchanged (storage == displayed).
+        val upright = Rect.makeXYWH(0f, 0f, 320f, 240f)
+        assertRect(upright, subtitleDrawRect(imageDrawRect(upright, 0), 320, 240, 0, 0, 320, 240))
+    }
+
+    @Test
     fun `the image rect under a quarter turn swaps sides about the center`() {
         // Displayed rect 80x200 at (60,20): under the canvas rotation the
         // image's natural orientation is 200x80 around the same center.
