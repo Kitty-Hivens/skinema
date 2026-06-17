@@ -567,4 +567,60 @@ class VideoDecoderTest {
         Files.write(junk, ByteArray(4096) { (it * 31).toByte() })
         assertFailsWith<LibavException> { VideoDecoder.open(junk) }
     }
+
+    // Neutral greys: matrix-invariant, so the bt2020 tagging cannot skew the
+    // fixture, and the discriminator is purely the transfer handling.
+    private fun pqClip(name: String, hex: String): Path = hdrClip(name, hex, "smpte2084")
+
+    private fun hlgClip(name: String, hex: String): Path = hdrClip(name, hex, "arib-std-b67")
+
+    private fun hdrClip(name: String, hex: String, trc: String): Path = Fixtures.generate(
+        dir.resolve(name),
+        "-f", "lavfi", "-i", "color=c=$hex:size=64x64:rate=5", "-t", "1",
+        "-vf", "format=yuv420p10le", "-pix_fmt", "yuv420p10le",
+        "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc,
+        "-c:v", "libx265", "-preset", "ultrafast",
+        "-x265-params", "range=limited:colormatrix=bt2020nc:transfer=$trc:colorprim=bt2020:log-level=none",
+    )
+
+    private fun centerLuma(path: Path): Int = VideoDecoder.open(path).use { decoder ->
+        val (r, g, b) = centerRgb(decoder.nextFrame()!!)
+        (2 * r + 5 * g + b) / 8
+    }
+
+    @Test
+    fun `pq hdr decodes through the tone-mapper to a sane opaque value`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libx265")
+        VideoDecoder.open(pqClip("pq.mp4", "0x808080")).use { decoder ->
+            val frame = decoder.nextFrame()!!
+            val (r, g, b) = centerRgb(frame)
+            assertTrue(r in 16..240 && g in 16..240 && b in 16..240, "a mid PQ grey must land mid, got ($r,$g,$b)")
+            val a = frame.rgba[(frame.height / 2 * frame.width + frame.width / 2) * 4 + 3].toInt() and 0xFF
+            assertEquals(255, a, "HDR output is opaque")
+        }
+    }
+
+    @Test
+    fun `pq tone-mapping restores contrast -- the HDR path is engaged`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libx265")
+        // The PQ EOTF pulls shadows down and highlights up. The naive SDR
+        // path (codes read as gamma) spans only ~140 between these greys; a
+        // span this wide can only come from the tone-mapper actually running.
+        val dark = centerLuma(pqClip("pq-dark.mp4", "0x303030"))
+        val bright = centerLuma(pqClip("pq-bright.mp4", "0xC0C0C0"))
+        assertTrue(bright > dark, "brighter source must stay brighter, got dark=$dark bright=$bright")
+        assertTrue(bright - dark > 170, "PQ must restore HDR contrast (naive span is ~140), got dark=$dark bright=$bright")
+    }
+
+    @Test
+    fun `hlg hdr decodes through the tone-mapper to a sane value`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libx265")
+        VideoDecoder.open(hlgClip("hlg.mp4", "0x808080")).use { decoder ->
+            val (r, g, b) = centerRgb(decoder.nextFrame()!!)
+            assertTrue(r in 8..248 && g in 8..248 && b in 8..248, "an HLG grey must land in range, got ($r,$g,$b)")
+        }
+    }
 }

@@ -132,6 +132,8 @@ int main(void) {
     P(offsetof(AVFrame, sample_rate));
     P(offsetof(AVFrame, ch_layout));
     P(offsetof(AVFrame, color_range));
+    P(offsetof(AVFrame, color_primaries));
+    P(offsetof(AVFrame, color_trc));
     P(offsetof(AVFrame, colorspace));
     P(offsetof(AVChannelLayout, nb_channels));
     P(sizeof(AVFrame));
@@ -155,6 +157,13 @@ int main(void) {
     P(AVMEDIA_TYPE_AUDIO);
     P(AV_SAMPLE_FMT_S16);
     P(AV_PIX_FMT_RGBA);
+    P(AV_PIX_FMT_RGBA64LE);
+    P(AVCOL_TRC_BT709);
+    P(AVCOL_TRC_UNSPECIFIED);
+    P(AVCOL_TRC_BT2020_10);
+    P(AVCOL_TRC_BT2020_12);
+    P(AVCOL_TRC_SMPTE2084);
+    P(AVCOL_TRC_ARIB_STD_B67);
     P(SWS_BILINEAR);
     P(AVSEEK_FLAG_BACKWARD);
     P(AV_CODEC_ID_VP8);

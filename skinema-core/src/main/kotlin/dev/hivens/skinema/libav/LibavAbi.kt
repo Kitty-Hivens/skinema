@@ -134,6 +134,9 @@ object LibavAbi {
         const val PTS = 136L
         const val SAMPLE_RATE = 180L
         const val COLOR_RANGE = 280L
+
+        /** AVColorTransferCharacteristic; HDR is detected here (PQ=16, HLG=18). */
+        const val COLOR_TRC = 288L
         const val COLORSPACE = 292L
         const val BEST_EFFORT_TIMESTAMP = 304L
         const val CH_LAYOUT = 384L
@@ -166,6 +169,9 @@ object LibavAbi {
     const val AV_CODEC_ID_ASS = 94230
     const val AV_SAMPLE_FMT_S16 = 1
     const val AV_PIX_FMT_RGBA = 26
+
+    /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */
+    const val AV_PIX_FMT_RGBA64LE = 105
     const val SWS_BILINEAR = 2
     const val AVCOL_SPC_BT709 = 1
     const val AVCOL_SPC_UNSPECIFIED = 2
@@ -176,6 +182,10 @@ object LibavAbi {
     const val AVCOL_SPC_BT2020_NCL = 9
     const val AVCOL_SPC_BT2020_CL = 10
     const val AVCOL_RANGE_JPEG = 2
+
+    /** HDR transfer characteristics -- the only triggers for the tone-mapper. */
+    const val AVCOL_TRC_SMPTE2084 = 16
+    const val AVCOL_TRC_ARIB_STD_B67 = 18
     const val SWS_CS_ITU709 = 1
     const val SWS_CS_FCC = 4
     const val SWS_CS_ITU601 = 5
