@@ -520,4 +520,40 @@ class AudioPipelineTest {
             pipeline.close()
         }
     }
+
+    @Test
+    fun `a silently dead device detaches the clock to wall time`() {
+        Fixtures.assumeDecodeEnvironment()
+        // A bounded buffer nobody drains models a device that accepted the
+        // line and then stopped consuming without raising -- bare ALSA on a
+        // vanished sink, a yanked USB DAC. The audio thread parks in write
+        // forever and the frame position freezes; only the watchdog can
+        // keep media time -- and the video -- moving.
+        val sink = BoundedPcmSink(capacityFrames = 4_410)
+        val pipeline = AudioPipeline(
+            tone("dead.flac"),
+            sink,
+            loop = false,
+            writeStallNanos = 200_000_000L,
+        )
+        try {
+            val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.writerParked }, "the write must block on the frozen device")
+            // The device sits at frame zero, so media time can only move if
+            // the watchdog detached the clock to wall time.
+            assertTrue(
+                awaitTrue { clock.mediaNanos() > 0L },
+                "the watchdog must detach the clock to wall time",
+            )
+            val first = clock.mediaNanos()
+            Thread.sleep(60)
+            assertTrue(
+                clock.mediaNanos() > first,
+                "detached time must keep advancing while the device stays frozen",
+            )
+        } finally {
+            sink.release()
+            pipeline.close()
+        }
+    }
 }
