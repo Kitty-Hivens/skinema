@@ -91,6 +91,9 @@ fun VideoSurface(
             boundsHeight = size.height,
             scale = scale,
         )
+        // The rect the video draws into BEFORE the rotation transform --
+        // the storage orientation. Equals dst for upright video.
+        val imageRect = imageDrawRect(dst, rotation)
         drawIntoCanvas { canvas ->
             val nc = canvas.skiaCanvas
             nc.save()
@@ -103,15 +106,17 @@ fun VideoSurface(
             nc.drawImageRect(
                 image,
                 Rect.makeWH(image.width.toFloat(), image.height.toFloat()),
-                imageDrawRect(dst, rotation),
+                imageRect,
                 SamplingMode.LINEAR,
                 null,
                 true,
             )
-            if (rotation != 0) nc.restore()
-            // Subtitles composite upright in DISPLAYED space, over the
-            // (possibly rotated) video, mapped from their canvas onto
-            // the same destination rect.
+            // Subtitles live in the video's own coordinate space: drawn
+            // inside the SAME rotation transform and mapped onto the
+            // pre-rotation rect, so positioned ASS and bitmap planes stay
+            // glued to the picture rather than compositing upright over a
+            // rotated frame. Upright video (the common case) leaves
+            // imageRect == dst and the transform a no-op -- nothing moves.
             if (player.activeSubtitleTrack != null) {
                 val (canvasW, canvasH) = subtitleCanvas
                 for (placed in subtitles.images) {
@@ -119,7 +124,7 @@ fun VideoSurface(
                         placed.image,
                         Rect.makeWH(placed.image.width.toFloat(), placed.image.height.toFloat()),
                         subtitleDrawRect(
-                            dst, canvasW, canvasH,
+                            imageRect, canvasW, canvasH,
                             placed.x, placed.y, placed.image.width, placed.image.height,
                         ),
                         SamplingMode.LINEAR,
@@ -128,14 +133,16 @@ fun VideoSurface(
                     )
                 }
             }
+            if (rotation != 0) nc.restore()
             nc.restore()
         }
         // The pipeline rasterizes text at whatever size the surface
-        // reports; posting the displayed rect keeps glyphs crisp at any
-        // window size. Cheap and idempotent -- a command only when the
+        // reports; posting the pre-rotation (storage-oriented) rect keeps
+        // the libass frame aspect matched to the video and glyphs crisp at
+        // any window size. Cheap and idempotent -- a command only when the
         // size actually changed.
         if (player.activeSubtitleTrack != null) {
-            player.setSubtitleCanvasSize(dst.width.roundToInt(), dst.height.roundToInt())
+            player.setSubtitleCanvasSize(imageRect.width.roundToInt(), imageRect.height.roundToInt())
         }
     }
 }
