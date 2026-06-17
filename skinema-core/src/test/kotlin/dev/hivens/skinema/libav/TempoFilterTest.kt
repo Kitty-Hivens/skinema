@@ -75,4 +75,20 @@ class TempoFilterTest {
             assertTrue(out > 0, "after flush the graph is spent; reset must revive it")
         }
     }
+
+    @Test
+    fun `many resets stay sound`() {
+        Fixtures.assumeDecodeEnvironment()
+        // The graph's filter strings now live in a per-build transient
+        // arena. Rebuilding a thousand times must neither corrupt the graph
+        // nor leave a use-after-free behind a freed arena.
+        TempoFilter(48_000, 1.5).use { f ->
+            val pcm = sineSecond()
+            repeat(1_000) {
+                f.reset()
+                f.process(pcm, 4096 * 4)
+            }
+            assertTrue(f.process(pcm, pcm.size) + f.flush() >= 0, "the graph survives many rebuilds")
+        }
+    }
 }
