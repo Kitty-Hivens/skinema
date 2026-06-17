@@ -93,10 +93,14 @@ class WebpAnimSourceTest {
     }
 
     @Test
-    fun `animated webp reports no duration`() {
+    fun `animated webp learns its duration after one lap`() {
         assumeWebpEnvironment()
-        FrameSources.open(animated("nodur.webp")).use { source ->
-            assertNull(source.durationNanos(), "the format does not declare one")
+        FrameSources.open(animated("dur.webp")).use { source ->
+            assertNull(source.durationNanos(), "the format declares none up front")
+            // Decode the whole lap; the final frame's end time is the duration.
+            generateSequence { source.nextFrame() }.count()
+            assertNull(source.nextFrame(), "the lap is drained")
+            assertEquals(1_000_000_000L, source.durationNanos(), "one full lap reveals the 1s duration")
         }
     }
 

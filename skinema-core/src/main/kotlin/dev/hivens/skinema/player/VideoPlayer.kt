@@ -545,6 +545,9 @@ class VideoPlayer internal constructor(
 
             val frame = decoder.nextFrame(convert = false)
             if (frame == null) {
+                // Some sources (animated webp) cannot report a duration
+                // until a full lap has been decoded; surface it once known.
+                if (durationNanos == null) durationNanos = decoder.durationNanos()
                 eofPending = true
                 continue
             }
