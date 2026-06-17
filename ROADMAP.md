@@ -641,10 +641,11 @@ README once the library is usable.
   MethodHandles.empty stub silences it -- never dereferencing its
   arguments, va_list as an opaque pointer. mkv font attachments feed
   ass_add_font before the renderer initializes; VideoSurface composites
-  the overlay in displayed space (upright over rotated video -- the
-  positioned-ASS-on-rotated-footage combination is an accepted circus
-  cut) and posts its displayed rect back so glyphs rasterize at screen
-  size. The CI flip then exposed a defect the skip-permissive green
+  the overlay inside the video's own rotation transform, mapped onto the
+  pre-rotation rect and posting that storage-oriented rect back, so
+  positioned ASS and bitmap planes stay glued to rotated footage rather
+  than compositing upright over it. The CI flip then exposed a defect the
+  skip-permissive green
   had hidden: linux libass loaded but exported zero symbols (the build
   script's `-Wl,--exclude-libs,ALL` localized libass's own ass_*
   alongside the static freetype/harfbuzz it meant to keep private), so
