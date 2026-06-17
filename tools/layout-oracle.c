@@ -32,6 +32,7 @@ int main(void) {
     P(offsetof(AVFormatContext, streams));
     P(offsetof(AVFormatContext, nb_chapters));
     P(offsetof(AVFormatContext, chapters));
+    P(offsetof(AVFormatContext, start_time));
     P(offsetof(AVFormatContext, duration));
     P(offsetof(AVFormatContext, metadata));
     P(sizeof(AVFormatContext));

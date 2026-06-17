@@ -27,6 +27,7 @@ class AudioDecoder private constructor(
     val streamIndex: Int,
     private val timeBaseNum: Int,
     private val timeBaseDen: Int,
+    private val startTimeNanos: Long,
     /** Same contract as [FrameSource.durationNanos]; audio-only files need it too. */
     val durationNanos: Long?,
     /** Every audio stream the container carries, [streamIndex] included. */
@@ -83,7 +84,9 @@ class AudioDecoder private constructor(
 
     /** Same contract as [VideoDecoder.seekTo]; also reopens a drained stream. */
     fun seekTo(ptsNanos: Long) {
-        val ts = nanosToPts(ptsNanos, timeBaseNum, timeBaseDen)
+        // Re-apply the container start_time the timeline was normalized
+        // against (see formatStartTimeNanos) before seeking the demuxer.
+        val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
         Libav.checkAv(
             Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD),
             "av_seek_frame(audio)",
@@ -129,7 +132,13 @@ class AudioDecoder private constructor(
         val pts = frame.get(JAVA_LONG, LibavAbi.Frame.PTS)
             .takeIf { it != LibavAbi.AV_NOPTS_VALUE }
             ?: frame.get(JAVA_LONG, LibavAbi.Frame.BEST_EFFORT_TIMESTAMP)
-        val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
+        // Same zero-origin as the video side: subtract the same container
+        // start_time so audio and video stay aligned (see formatStartTimeNanos).
+        val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) {
+            0L
+        } else {
+            (ptsToNanos(pts, timeBaseNum, timeBaseDen) - startTimeNanos).coerceAtLeast(0L)
+        }
         return PcmChunk(pcmHeap, bytes, ptsNanos, rate)
     }
 
@@ -253,12 +262,14 @@ class AudioDecoder private constructor(
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
                 val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
 
+                val startTimeNanos = formatStartTimeNanos(fmtCtx)
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
                 return AudioDecoder(
                     arena, fmtCtx, codecCtx, packet, frame, chosen, timeBaseNum, timeBaseDen,
+                    startTimeNanos,
                     duration, tracks,
                     containerTags(fmtCtx, arena),
-                    containerChapters(fmtCtx, arena),
+                    containerChapters(fmtCtx, arena, startTimeNanos),
                     attachedCoverArt(fmtCtx),
                 )
             } catch (t: Throwable) {

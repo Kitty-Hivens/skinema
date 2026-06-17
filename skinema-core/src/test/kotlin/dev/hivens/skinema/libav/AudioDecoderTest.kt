@@ -158,6 +158,23 @@ class AudioDecoderTest {
     }
 
     @Test
+    fun `nonzero start_time normalizes audio chunk pts to zero`() {
+        Fixtures.assumeDecodeEnvironment()
+        // MPEG-TS carries a nonzero container start_time; the first chunk
+        // must land near zero, not ~1.4s+ into the timeline -- the same
+        // origin the video side subtracts, so A/V stays aligned.
+        val ts = Fixtures.generate(
+            dir.resolve("offset.ts"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1",
+            "-c:a", "aac", "-output_ts_offset", "1.4", "-f", "mpegts",
+        )
+        AudioDecoder.openOrNull(ts)!!.use { decoder ->
+            val first = assertNotNull(decoder.nextChunk(), "the stream must decode").ptsNanos
+            assertTrue(first < 100_000_000L, "audio timeline must normalize to zero, got ${first}ns")
+        }
+    }
+
+    @Test
     fun `seek then decode resumes at-or-before the target`() {
         Fixtures.assumeDecodeEnvironment()
         AudioDecoder.openOrNull(tone("seek.flac", "-c:a", "flac"))!!.use { decoder ->
