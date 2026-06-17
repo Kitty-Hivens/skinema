@@ -1010,16 +1010,19 @@ class VideoPlayer internal constructor(
             }
             val clockNow = clock.mediaNanos()
             val regressed = lastClockReading != Long.MIN_VALUE &&
-                clockNow < lastClockReading - REGRESSION_NANOS
+                clockNow < lastClockReading - CLOCK_NOISE_NANOS
             lastClockReading = clockNow
             if (regressed) {
                 // The clock only jumps backward like this on a loop wrap (a
                 // seek flushes the queue first, resetting the tracking
                 // above): the queued tail belongs to the lap that just
-                // ended -- show it now, not a lap later.
+                // ended -- show it now, not a lap later. The jump is judged
+                // by direction, not magnitude: a sub-second lap wraps by
+                // less than a second, so a fixed threshold stranded its
+                // tail until the next lap reached those pts.
                 while (true) {
                     val h = queue.peekHead() ?: break
-                    if (h.forced || h.ptsNanos <= clockNow + REGRESSION_NANOS) break
+                    if (h.forced || h.ptsNanos <= clockNow + CLOCK_NOISE_NANOS) break
                     publishFromQueue()
                 }
                 continue
@@ -1109,13 +1112,16 @@ class VideoPlayer internal constructor(
         const val IDLE_RECHECK_NANOS = 20_000_000L
 
         /**
-         * A backward clock jump bigger than this, with no seek flush in
-         * between, is a loop wrap. AudioClock clamps device-position
+         * Slack absorbing a clock's own jitter when judging a backward
+         * jump. A reading below the last by more than this -- with no seek
+         * flush in between -- is a loop wrap: both clocks clamp position
          * noise to monotonic, and a seek empties the queue before the
          * pacer can act on its re-anchor, so nothing else moves time
-         * backward under live inventory.
+         * backward under live inventory. Judging by direction past this
+         * slack (rather than a one-second magnitude) is what lets a
+         * sub-second lap's stranded tail present at the wrap.
          */
-        const val REGRESSION_NANOS = 1_000_000_000L
+        const val CLOCK_NOISE_NANOS = 5_000_000L
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
