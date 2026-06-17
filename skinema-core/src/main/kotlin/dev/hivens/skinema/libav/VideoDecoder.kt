@@ -25,6 +25,7 @@ class VideoDecoder private constructor(
     val streamIndex: Int,
     val timeBaseNum: Int,
     val timeBaseDen: Int,
+    private val startTimeNanos: Long,
     private val duration: Long?,
     private val tags: Map<String, String>,
     private val chapters: List<Chapter>,
@@ -105,7 +106,9 @@ class VideoDecoder private constructor(
      * stream, which is how looping works.
      */
     override fun seekTo(ptsNanos: Long) {
-        val ts = nanosToPts(ptsNanos, timeBaseNum, timeBaseDen)
+        // Re-apply the container start_time the timeline was normalized
+        // against before handing the target to the demuxer.
+        val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
         Libav.checkAv(
             Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD),
             "av_seek_frame",
@@ -168,7 +171,10 @@ class VideoDecoder private constructor(
         val pts = frame.get(JAVA_LONG, LibavAbi.Frame.PTS)
             .takeIf { it != LibavAbi.AV_NOPTS_VALUE }
             ?: frame.get(JAVA_LONG, LibavAbi.Frame.BEST_EFFORT_TIMESTAMP)
-        return if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
+        if (pts == LibavAbi.AV_NOPTS_VALUE) return 0L
+        // Normalize to a zero origin: a nonzero container start_time (TS,
+        // IPTV) offsets every pts, while duration is the unoffset span.
+        return (ptsToNanos(pts, timeBaseNum, timeBaseDen) - startTimeNanos).coerceAtLeast(0L)
     }
 
     private fun ensureSws(width: Int, height: Int, format: Int) {
@@ -307,14 +313,16 @@ class VideoDecoder private constructor(
                     throw LibavException("av_packet_alloc/av_frame_alloc returned NULL")
                 }
 
+                val startTimeNanos = formatStartTimeNanos(fmtCtx)
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
                 val codedWidth = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.WIDTH)
                 val codedHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
                 return VideoDecoder(
                     arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen,
+                    startTimeNanos,
                     duration,
                     containerTags(fmtCtx, arena),
-                    containerChapters(fmtCtx, arena),
+                    containerChapters(fmtCtx, arena, startTimeNanos),
                     attachedCoverArt(fmtCtx),
                     displayRotationDegrees(codecpar),
                     enumerateSubtitleTracks(fmtCtx, arena),
@@ -375,10 +383,26 @@ internal fun displayRotationDegrees(codecpar: MemorySegment): Int {
 }
 
 /**
+ * The container start_time as a non-negative nanosecond offset, 0 when
+ * unset. A nonzero start_time (TS captures, some IPTV) means pts are
+ * measured from it; subtracting this normalizes the timeline to zero so
+ * position runs 0..duration. The same constant shifts every stream, so
+ * relative A/V offsets are preserved -- which is why it is the CONTAINER
+ * start_time (the min across streams), not each stream's own.
+ */
+internal fun formatStartTimeNanos(fmtCtx: MemorySegment): Long {
+    val startUs = fmtCtx.get(JAVA_LONG, LibavAbi.FormatContext.START_TIME)
+    if (startUs == LibavAbi.AV_NOPTS_VALUE) return 0L
+    return (startUs * 1_000L).coerceAtLeast(0L)
+}
+
+/**
  * Container-reported duration: the AVFormatContext value (microseconds)
  * when present, the stream's own (its time_base) as the fallback, null
  * when the container does not know. Unknowns appear as AV_NOPTS or
- * non-positive values depending on the demuxer; both read as null.
+ * non-positive values depending on the demuxer; both read as null. This
+ * is the playable SPAN and already excludes start_time, so it is NOT
+ * normalized -- the zero-based position runs 0..span as-is.
  */
 internal fun containerDurationNanos(
     fmtCtx: MemorySegment,
@@ -428,8 +452,8 @@ internal fun containerTags(fmtCtx: MemorySegment, arena: Arena): Map<String, Str
     }
 }
 
-/** The container's chapter list, titles included. */
-internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena): List<Chapter> {
+/** The container's chapter list, titles included, on the zero-based timeline. */
+internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena, startTimeNanos: Long): List<Chapter> {
     val count = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_CHAPTERS)
     if (count == 0) return emptyList()
     val titleKey = arena.allocateFrom("title")
@@ -441,8 +465,10 @@ internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena): List<Chapte
         val num = chapter.get(JAVA_INT, LibavAbi.Chapter.TIME_BASE)
         val den = chapter.get(JAVA_INT, LibavAbi.Chapter.TIME_BASE + 4)
         chapters += Chapter(
-            startNanos = ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.START), num, den),
-            endNanos = ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.END), num, den),
+            startNanos = (ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.START), num, den) - startTimeNanos)
+                .coerceAtLeast(0L),
+            endNanos = (ptsToNanos(chapter.get(JAVA_LONG, LibavAbi.Chapter.END), num, den) - startTimeNanos)
+                .coerceAtLeast(0L),
             title = dictValue(chapter.get(ADDRESS, LibavAbi.Chapter.METADATA), titleKey),
         )
     }

@@ -584,6 +584,9 @@ internal class AudioPipeline(
      * Mutates no pipeline state -- the callers apply their own policy.
      */
     private fun cropAt(d: AudioDecoder, targetNanos: Long): Crop? {
+        // targetNanos and the chunk pts below are both on the zero-origin
+        // timeline (AudioDecoder normalizes both directions), so no
+        // start_time handling belongs here.
         d.seekTo(targetNanos)
         while (true) {
             val chunk = d.nextChunk() ?: return null

@@ -35,6 +35,44 @@ class VideoDecoderTest {
     }
 
     @Test
+    fun `nonzero start_time normalizes the timeline to zero`() {
+        Fixtures.assumeDecodeEnvironment()
+        // MPEG-TS carries a nonzero container start_time (its muxer default
+        // plus -output_ts_offset); mp4 would re-normalize via edit lists.
+        // The exact value does not matter -- normalization brings the first
+        // frame to 0 and the grid back to a clean 100ms step.
+        val video = Fixtures.generate(
+            dir.resolve("offset.ts"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-output_ts_offset", "1.4", "-f", "mpegts",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            val pts = generateSequence { decoder.nextFrame()?.ptsNanos }.take(20).toList()
+            assertEquals(List(20) { it * 100_000_000L }, pts, "the offset timeline must normalize to a zero grid")
+        }
+    }
+
+    @Test
+    fun `seek lands at the normalized target on a nonzero start_time stream`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("offset-seek.ts"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "3",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "5",
+            "-output_ts_offset", "1.4", "-f", "mpegts",
+        )
+        val target = 1_000_000_000L
+        VideoDecoder.open(video).use { decoder ->
+            decoder.seekTo(target)
+            var frame = decoder.nextFrame()!!
+            assertTrue(frame.ptsNanos <= target, "BACKWARD seek lands at-or-before the normalized target, got ${frame.ptsNanos}")
+            while (frame.ptsNanos < target) frame = decoder.nextFrame()!!
+            assertEquals(target, frame.ptsNanos, "decode-forward hits the normalized target exactly")
+        }
+    }
+
+    @Test
     fun `solid red decodes to red pixels`() {
         Fixtures.assumeDecodeEnvironment()
         val video = Fixtures.generate(
