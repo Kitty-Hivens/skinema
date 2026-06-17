@@ -37,8 +37,20 @@ class WebpAnimSource private constructor(
     private var prevEndMs = 0
     private var lastPtsNanos = 0L
 
+    // WebPAnimInfo declares no duration; after one full lap the last
+    // frame's end time is it. Learned once, kept across loop resets.
+    @Volatile
+    private var observedDurationNanos: Long? = null
+
     override fun nextFrame(target: ByteArray?, convert: Boolean): VideoDecoder.RgbaFrame? {
-        if (!Webp.hasMoreFrames(decoder)) return null
+        if (!Webp.hasMoreFrames(decoder)) {
+            // End of a lap: the last frame's end time IS the duration, the
+            // only way to learn it without a probe decode up front.
+            if (observedDurationNanos == null && prevEndMs > 0) {
+                observedDurationNanos = prevEndMs * 1_000_000L
+            }
+            return null
+        }
         if (Webp.getNext(decoder, bufOut, timestampOut) == 0) {
             throw LibavException("WebPAnimDecoderGetNext failed (corrupt animation data)")
         }
@@ -67,10 +79,9 @@ class WebpAnimSource private constructor(
         prevEndMs = 0
     }
 
-    // WebPAnimInfo declares no duration, and learning it means decoding
-    // the whole animation up front -- a looping background pays that for
-    // nothing.
-    override fun durationNanos(): Long? = null
+    // Null up front; known once a full lap has been decoded (a looping
+    // player pays that lap anyway, so the upgrade costs nothing extra).
+    override fun durationNanos(): Long? = observedDurationNanos
 
     override fun close() {
         Webp.delete(decoder)
