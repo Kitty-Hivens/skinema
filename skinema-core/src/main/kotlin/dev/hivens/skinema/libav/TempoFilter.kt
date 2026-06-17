@@ -98,25 +98,31 @@ internal class TempoFilter(
     private fun buildGraph() {
         graph = Libav.avfilterGraphAlloc()
         if (graph == MemorySegment.NULL) throw LibavException("avfilter_graph_alloc returned NULL")
-        src = createFilter(
-            "abuffer", "in",
-            "time_base=1/$sampleRate:sample_rate=$sampleRate:sample_fmt=s16:channel_layout=stereo",
-        )
-        val atempo = createFilter("atempo", "atempo", "tempo=$tempo")
-        sink = createFilter("abuffersink", "out", null)
-        Libav.checkAv(Libav.avfilterLink(src, 0, atempo, 0), "avfilter_link(in->atempo)")
-        Libav.checkAv(Libav.avfilterLink(atempo, 0, sink, 0), "avfilter_link(atempo->out)")
-        Libav.checkAv(Libav.avfilterGraphConfig(graph), "avfilter_graph_config")
+        // The filter name/instance/args strings are needed only until
+        // create_filter parses them into the contexts; a transient arena
+        // reclaims them per build, so a reset (seek, loop wrap, scrub) does
+        // not pile them up in the session arena until close.
+        Arena.ofConfined().use { strings ->
+            src = createFilter(
+                strings, "abuffer", "in",
+                "time_base=1/$sampleRate:sample_rate=$sampleRate:sample_fmt=s16:channel_layout=stereo",
+            )
+            val atempo = createFilter(strings, "atempo", "atempo", "tempo=$tempo")
+            sink = createFilter(strings, "abuffersink", "out", null)
+            Libav.checkAv(Libav.avfilterLink(src, 0, atempo, 0), "avfilter_link(in->atempo)")
+            Libav.checkAv(Libav.avfilterLink(atempo, 0, sink, 0), "avfilter_link(atempo->out)")
+            Libav.checkAv(Libav.avfilterGraphConfig(graph), "avfilter_graph_config")
+        }
         inputFramesFed = 0
     }
 
-    private fun createFilter(filterName: String, instance: String, args: String?): MemorySegment {
-        val filter = Libav.avfilterGetByName(arena.allocateFrom(filterName))
+    private fun createFilter(strings: Arena, filterName: String, instance: String, args: String?): MemorySegment {
+        val filter = Libav.avfilterGetByName(strings.allocateFrom(filterName))
         if (filter == MemorySegment.NULL) throw LibavException("the avfilter build carries no '$filterName'")
         Libav.checkAv(
             Libav.avfilterGraphCreateFilter(
-                graphOut, filter, arena.allocateFrom(instance),
-                args?.let { arena.allocateFrom(it) } ?: MemorySegment.NULL, graph,
+                graphOut, filter, strings.allocateFrom(instance),
+                args?.let { strings.allocateFrom(it) } ?: MemorySegment.NULL, graph,
             ),
             "avfilter_graph_create_filter($filterName)",
         )
