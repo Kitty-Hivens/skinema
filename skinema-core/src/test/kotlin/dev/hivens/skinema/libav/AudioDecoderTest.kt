@@ -160,13 +160,14 @@ class AudioDecoderTest {
     @Test
     fun `nonzero start_time normalizes audio chunk pts to zero`() {
         Fixtures.assumeDecodeEnvironment()
-        // MPEG-TS carries a nonzero container start_time; the first chunk
-        // must land near zero, not ~1.4s+ into the timeline -- the same
+        // Matroska carries a nonzero container start_time via
+        // -output_ts_offset and is in the demuxer whitelist (mpegts is not);
+        // the first chunk must land near zero, not ~1.4s+ in -- the same
         // origin the video side subtracts, so A/V stays aligned.
         val ts = Fixtures.generate(
-            dir.resolve("offset.ts"),
+            dir.resolve("offset.mka"),
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1",
-            "-c:a", "aac", "-output_ts_offset", "1.4", "-f", "mpegts",
+            "-c:a", "aac", "-output_ts_offset", "1.4",
         )
         AudioDecoder.openOrNull(ts)!!.use { decoder ->
             val first = assertNotNull(decoder.nextChunk(), "the stream must decode").ptsNanos
