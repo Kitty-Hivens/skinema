@@ -28,6 +28,7 @@ internal class AudioPipeline(
     private val sink: PcmSink,
     private val loop: Boolean,
     private val initialTrack: Int? = null,
+    private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
 ) {
 
     val clockFuture = CompletableFuture<AudioClock?>()
@@ -122,6 +123,16 @@ internal class AudioPipeline(
     // until the clock (= the device) reaches it.
     private var lastWrittenEndNanos = 0L
 
+    // Set true around each blocking sink write so the watchdog can tell a
+    // genuinely stuck device (the write never returns, the position stays
+    // frozen) from a legitimately stopped one (pause, seek, landing).
+    @Volatile
+    private var writeInFlight = false
+
+    @Volatile
+    private var watchdogStop = false
+    private var watchdog: Thread? = null
+
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
         start()
@@ -176,6 +187,8 @@ internal class AudioPipeline(
         } catch (_: Throwable) {
             clock?.detachToWallTime()
         } finally {
+            watchdogStop = true
+            watchdog?.interrupt()
             // The hostage guarantee comes first: a throwing close must not
             // leave the video side gated on seeks no one will perform.
             pendingSeeks.set(0)
@@ -205,9 +218,10 @@ internal class AudioPipeline(
         clock = theClock
         theClock.start(first.ptsNanos)
         clockFuture.complete(theClock)
+        startWatchdog()
         sampleRate = first.sampleRate
         lastWrittenEndNanos = first.ptsNanos + (first.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / first.sampleRate
-        sink.write(first.pcm, 0, first.byteCount)
+        guardedWrite(first.pcm, 0, first.byteCount)
 
         while (true) {
             var cmd = commands.poll()
@@ -234,7 +248,7 @@ internal class AudioPipeline(
                 // next lap (or nothing) from a clean graph.
                 tempoFilter?.let { f ->
                     val n = f.flush()
-                    if (n > 0) sink.write(f.output, 0, n)
+                    if (n > 0) guardedWrite(f.output, 0, n)
                     f.reset()
                 }
                 // Let the buffered tail play out before deciding the time.
@@ -264,11 +278,70 @@ internal class AudioPipeline(
     private fun writeOut(pcm: ByteArray, byteCount: Int) {
         val filter = tempoFilter
         if (filter == null) {
-            sink.write(pcm, 0, byteCount)
+            guardedWrite(pcm, 0, byteCount)
             return
         }
         val n = filter.process(pcm, byteCount)
-        if (n > 0) sink.write(filter.output, 0, n)
+        if (n > 0) guardedWrite(filter.output, 0, n)
+    }
+
+    /**
+     * The blocking write, watched. [writeInFlight] tells [runWatchdog] a
+     * write is in progress, so a stalled one detaches the clock; off the
+     * write the device may legitimately sit still (pause, seek, landing).
+     */
+    private fun guardedWrite(data: ByteArray, offset: Int, length: Int) {
+        writeInFlight = true
+        try {
+            sink.write(data, offset, length)
+        } finally {
+            writeInFlight = false
+        }
+    }
+
+    private fun startWatchdog() {
+        watchdog = Thread(::runWatchdog, "skinema-audio-watchdog").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /**
+     * Frees video when the device dies silently. A [PcmSink.write] that
+     * blocks without throwing -- a vanished ALSA sink, a yanked USB DAC --
+     * never reaches the catch in [run], so a frozen frame position would
+     * freeze the picture with it. While a write is in flight this watches
+     * the device's frame position; if it stops advancing for
+     * [writeStallNanos] the clock detaches to wall time and video keeps
+     * moving. The audio thread stays blocked (SourceDataLine.write cannot
+     * be interrupted), so the watchdog fires once and exits.
+     */
+    private fun runWatchdog() {
+        val pollMs = (writeStallNanos / 4_000_000L).coerceIn(20L, 250L)
+        var lastFrames = Long.MIN_VALUE
+        var lastProgressWall = System.nanoTime()
+        while (!watchdogStop) {
+            try {
+                Thread.sleep(pollMs)
+            } catch (_: InterruptedException) {
+                return
+            }
+            val theClock = clock ?: continue
+            if (!writeInFlight) {
+                lastFrames = Long.MIN_VALUE
+                continue
+            }
+            val pos = sink.framePosition()
+            if (lastFrames == Long.MIN_VALUE || pos != lastFrames) {
+                lastFrames = pos
+                lastProgressWall = System.nanoTime()
+                continue
+            }
+            if (System.nanoTime() - lastProgressWall >= writeStallNanos) {
+                theClock.detachToWallTime()
+                return
+            }
+        }
     }
 
     private fun handle(cmd: Command): Boolean = when (cmd) {
@@ -561,6 +634,12 @@ internal class AudioPipeline(
 
         /** Slack past the tail's nominal duration before giving up on the device. */
         const val TAIL_GRACE_NANOS = 500_000_000L
+
+        /**
+         * A write blocked this long with the device's frame position frozen
+         * is a dead device; the watchdog detaches the clock to wall time.
+         */
+        const val DEFAULT_WRITE_STALL_NANOS = 3_000_000_000L
 
         // Same switch as VideoPlayer's landing diagnostics: the anchor
         // positions printed here are the forensics for the remaining
