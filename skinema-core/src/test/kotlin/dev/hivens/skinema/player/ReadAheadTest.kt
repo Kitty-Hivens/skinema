@@ -338,4 +338,48 @@ class WrapStrandedTailTest {
             )
         }
     }
+
+    @Test
+    fun `a sub-second pre-wrap tail presents at the wrap`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Same stranding, but a sub-second lap: the backward jump is
+        // smaller than a second, so a fixed one-second threshold never
+        // recognized the wrap and held the tail until the next lap. The
+        // video runs to 0.9s at 60 fps (a dense tail to drain, so the
+        // stranded frames are observable past the latest-wins mailbox),
+        // the audio ends at 0.4s.
+        val av = Fixtures.generate(
+            dir.resolve("strand-short.mp4"),
+            "-f", "lavfi", "-t", "0.9", "-i", "testsrc2=size=64x64:rate=60",
+            "-f", "lavfi", "-t", "0.4", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac",
+        )
+        val sink = FakePcmSink()
+        sink.positionFrames.set(0)
+        VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = 8).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            // Pin the pacer's last clock reading below the audio's end.
+            sink.positionFrames.set(44_100 * 3 / 10)
+            var seen = -1L
+            assertTrue(
+                awaitTrue {
+                    p.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 300_000_000L
+                },
+                "video must follow the device clock to ~0.3s, saw ${seen}ns",
+            )
+            // The device reaches the audio's 0.4s end; the audio thread
+            // wraps the clock to zero under the queued sub-second video tail.
+            sink.positionFrames.set(44_100 * 4 / 10)
+            assertTrue(
+                awaitTrue(deadlineMs = 5_000) {
+                    p.acquireFrame()?.let { seen = it.ptsNanos }
+                    seen >= 500_000_000L
+                },
+                "the sub-second stranded tail must present at the wrap, saw ${seen}ns",
+            )
+        }
+    }
 }
