@@ -37,15 +37,16 @@ class VideoDecoderTest {
     @Test
     fun `nonzero start_time normalizes the timeline to zero`() {
         Fixtures.assumeDecodeEnvironment()
-        // MPEG-TS carries a nonzero container start_time (its muxer default
-        // plus -output_ts_offset); mp4 would re-normalize via edit lists.
-        // The exact value does not matter -- normalization brings the first
+        // Matroska carries a nonzero container start_time via
+        // -output_ts_offset and is in the trimmed-build demuxer whitelist
+        // (mpegts is not). Its pts and start_time stay consistent, so the
+        // exact offset does not matter -- normalization brings the first
         // frame to 0 and the grid back to a clean 100ms step.
         val video = Fixtures.generate(
-            dir.resolve("offset.ts"),
+            dir.resolve("offset.mkv"),
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "2",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
-            "-output_ts_offset", "1.4", "-f", "mpegts",
+            "-output_ts_offset", "1.4",
         )
         VideoDecoder.open(video).use { decoder ->
             val pts = generateSequence { decoder.nextFrame()?.ptsNanos }.take(20).toList()
@@ -57,10 +58,10 @@ class VideoDecoderTest {
     fun `seek lands at the normalized target on a nonzero start_time stream`() {
         Fixtures.assumeDecodeEnvironment()
         val video = Fixtures.generate(
-            dir.resolve("offset-seek.ts"),
+            dir.resolve("offset-seek.mkv"),
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "3",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "5",
-            "-output_ts_offset", "1.4", "-f", "mpegts",
+            "-output_ts_offset", "1.4",
         )
         val target = 1_000_000_000L
         VideoDecoder.open(video).use { decoder ->
