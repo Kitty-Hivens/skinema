@@ -17,6 +17,9 @@ object LibavAbi {
         const val NB_CHAPTERS = 72L
         const val CHAPTERS = 80L
 
+        /** int64 in AV_TIME_BASE units (microseconds); the timeline origin. */
+        const val START_TIME = 96L
+
         /** int64 in AV_TIME_BASE units (microseconds). */
         const val DURATION = 104L
         const val METADATA = 192L

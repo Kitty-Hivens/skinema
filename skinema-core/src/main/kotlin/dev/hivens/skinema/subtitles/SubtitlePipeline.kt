@@ -11,6 +11,7 @@ import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.dictValue
+import dev.hivens.skinema.libav.formatStartTimeNanos
 import dev.hivens.skinema.libav.streamAt
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -98,6 +99,10 @@ internal class SubtitlePipeline(
     private var timeBaseNum = 1
     private var timeBaseDen = 1
 
+    // Container start_time; subtracted so subtitle times share the video
+    // and audio zero origin (see formatStartTimeNanos).
+    private var startTimeNanos = 0L
+
     // The bitmap branch's display schedule: pixels convert ONCE at
     // decode time, windows close at their own end or at the next event,
     // whichever comes first.
@@ -167,6 +172,7 @@ internal class SubtitlePipeline(
         )
         fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
         Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info(subs)")
+        startTimeNanos = formatStartTimeNanos(fmtCtx)
 
         val streamCount = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)
         if (track.streamIndex >= streamCount) throw LibavException("stream ${track.streamIndex} is out of range")
@@ -305,7 +311,9 @@ internal class SubtitlePipeline(
             val pts = packet.get(JAVA_LONG, LibavAbi.Packet.PTS)
             if (pts != LibavAbi.AV_NOPTS_VALUE) {
                 val (num, den) = timeBaseOf(streamIndex)
-                val ptsNanos = ptsToNanos(pts, num, den)
+                // Normalize to the shared zero origin: this gate compares
+                // against nowNanos (the master clock), which is normalized.
+                val ptsNanos = (ptsToNanos(pts, num, den) - startTimeNanos).coerceAtLeast(0L)
                 if (ptsNanos > lastDemuxedPtsNanos) lastDemuxedPtsNanos = ptsNanos
             }
             if (streamIndex == track.streamIndex) {
@@ -333,7 +341,11 @@ internal class SubtitlePipeline(
             // decoders allocate into the struct regardless of got_sub_ptr.
             if (got.get(JAVA_INT, 0) == 0) return
             val pts = packet.get(JAVA_LONG, LibavAbi.Packet.PTS)
-            val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
+            val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) {
+                0L
+            } else {
+                (ptsToNanos(pts, timeBaseNum, timeBaseDen) - startTimeNanos).coerceAtLeast(0L)
+            }
             val startOffsetMs = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
             val timecodeMs = ptsNanos / 1_000_000 + startOffsetMs
             val durationMs = packetDurationMs(packet, subtitle)
@@ -444,6 +456,7 @@ internal class SubtitlePipeline(
 
     /** Packet duration, else the subtitle's own window, else 10s (circus). */
     private fun packetDurationMs(packet: MemorySegment, subtitle: MemorySegment): Long {
+        // A duration delta, not a timestamp -- start_time does not apply.
         val packetDuration = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION)
         if (packetDuration > 0) return ptsToNanos(packetDuration, timeBaseNum, timeBaseDen) / 1_000_000
         val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
@@ -500,7 +513,8 @@ internal class SubtitlePipeline(
             Libav.checkAv(
                 Libav.avSeekFrame(
                     fmtCtx, track.streamIndex,
-                    nanosToPts(preroll, timeBaseNum, timeBaseDen),
+                    // Re-apply the container start_time after the preroll math.
+                    nanosToPts(preroll + startTimeNanos, timeBaseNum, timeBaseDen),
                     LibavAbi.AVSEEK_FLAG_BACKWARD,
                 ),
                 "av_seek_frame(subs)",
