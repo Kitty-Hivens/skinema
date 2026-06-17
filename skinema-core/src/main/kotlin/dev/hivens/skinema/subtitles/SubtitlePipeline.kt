@@ -327,8 +327,11 @@ internal class SubtitlePipeline(
 
     private fun decodePacket(packet: MemorySegment, subtitle: MemorySegment, got: MemorySegment) {
         if (Libav.avcodecDecodeSubtitle2(codecCtx, subtitle, got, packet) < 0) return // a bad packet is not fatal
-        if (got.get(JAVA_INT, 0) == 0) return
         try {
+            // FFmpeg's contract is to free the AVSubtitle after any
+            // non-negative decode, even when no event was produced -- some
+            // decoders allocate into the struct regardless of got_sub_ptr.
+            if (got.get(JAVA_INT, 0) == 0) return
             val pts = packet.get(JAVA_LONG, LibavAbi.Packet.PTS)
             val ptsNanos = if (pts == LibavAbi.AV_NOPTS_VALUE) 0L else ptsToNanos(pts, timeBaseNum, timeBaseDen)
             val startOffsetMs = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
