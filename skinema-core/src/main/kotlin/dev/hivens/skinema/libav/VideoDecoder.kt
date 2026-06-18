@@ -8,6 +8,7 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
+import java.lang.foreign.ValueLayout.JAVA_SHORT
 import java.nio.file.Path
 
 /**
@@ -70,6 +71,28 @@ class VideoDecoder private constructor(
     private var dstStride = MemorySegment.NULL
     private var rgbaNative = MemorySegment.NULL
     private var rgbaHeap = ByteArray(0)
+
+    // HDR (PQ/HLG) path: a parallel swscale context outputs 16-bit RGBA64
+    // so the transfer is inverted before 8-bit quantization, then a pure-
+    // Kotlin ToneMapper writes the SDR 8-bit result into its OWN hdrOutHeap
+    // -- never the SDR rgbaHeap, whose size ensureSws caches and early-
+    // returns on (a shared buffer would mis-size a later SDR frame). Built
+    // lazily on the first HDR frame; hdrFallback latches the SDR path if the
+    // 16-bit context cannot be created.
+    private var hdrCtx = MemorySegment.NULL
+    private var hdrWidth = 0
+    private var hdrHeight = 0
+    private var hdrFormat = Int.MIN_VALUE
+    private var hdrColorspace = Int.MIN_VALUE
+    private var hdrRange = Int.MIN_VALUE
+    private var hdrTrc = Int.MIN_VALUE
+    private var hdrNative = MemorySegment.NULL
+    private var hdrDstData = MemorySegment.NULL
+    private var hdrDstStride = MemorySegment.NULL
+    private var hdrShorts = ShortArray(0)
+    private var hdrOutHeap = ByteArray(0)
+    private var toneMapper: ToneMapper? = null
+    private var hdrFallback = false
 
     /**
      * Decodes and converts the next frame; null at end of stream. When
@@ -150,6 +173,10 @@ class VideoDecoder private constructor(
         val width = frame.get(JAVA_INT, LibavAbi.Frame.WIDTH)
         val height = frame.get(JAVA_INT, LibavAbi.Frame.HEIGHT)
         val format = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
+        val trc = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_TRC)
+        if (!hdrFallback && isHdrTransfer(trc) && ensureHdr(width, height, format, trc)) {
+            return toneMappedFrame(width, height, target)
+        }
         ensureSws(width, height, format)
         ensureColorspaceDetails(width, height)
 
@@ -223,8 +250,92 @@ class VideoDecoder private constructor(
         Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
     }
 
+    /** PQ and HLG are the only transfers the tone-mapper handles. */
+    private fun isHdrTransfer(trc: Int): Boolean =
+        trc == LibavAbi.AVCOL_TRC_SMPTE2084 || trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67
+
+    /**
+     * Prepares the HDR path for the current frame: a parallel swscale
+     * context that outputs 16-bit RGBA64 (so the transfer can be inverted
+     * before 8-bit quantization), the matching BT.2020 colourspace details,
+     * the staging buffers, and a [ToneMapper] for the transfer. Returns
+     * false -- and latches [hdrFallback] -- if the 16-bit context cannot be
+     * built, so playback degrades to the (washed-out) SDR path instead of
+     * failing. Rebuilds on any geometry/format/colour change, like ensureSws.
+     */
+    private fun ensureHdr(width: Int, height: Int, format: Int, trc: Int): Boolean {
+        val colorspace = frame.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
+        val range = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
+        if (hdrCtx != MemorySegment.NULL && width == hdrWidth && height == hdrHeight && format == hdrFormat &&
+            trc == hdrTrc && colorspace == hdrColorspace && range == hdrRange
+        ) {
+            return true
+        }
+        if (hdrCtx != MemorySegment.NULL) {
+            Libav.swsFreeContext(hdrCtx)
+            hdrCtx = MemorySegment.NULL
+        }
+        val ctx = Libav.swsGetContext(
+            width, height, format, width, height, LibavAbi.AV_PIX_FMT_RGBA64LE, LibavAbi.SWS_BILINEAR,
+        )
+        if (ctx == MemorySegment.NULL) return fallBackFromHdr("sws_getContext(RGBA64) refused")
+        // The 16-bit context needs the same matrix + range as the 8-bit one;
+        // swscale converts the matrix, never the transfer (that is the
+        // ToneMapper's job). Without this the YUV->RGB range is wrong and
+        // every decoded nit is off.
+        val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(colorspace, width, height))
+        val srcFullRange = if (range == LibavAbi.AVCOL_RANGE_JPEG) 1 else 0
+        if (Libav.swsSetColorspaceDetails(ctx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT) < 0) {
+            Libav.swsFreeContext(ctx)
+            return fallBackFromHdr("sws_setColorspaceDetails(RGBA64) refused")
+        }
+        hdrCtx = ctx
+        hdrWidth = width
+        hdrHeight = height
+        hdrFormat = format
+        hdrTrc = trc
+        hdrColorspace = colorspace
+        hdrRange = range
+        val pixels = width.toLong() * height
+        hdrNative = arena.allocate(pixels * 8) // RGBA64 -- 4 channels x 2 bytes
+        hdrShorts = ShortArray((pixels * 4).toInt())
+        hdrOutHeap = ByteArray((pixels * 4).toInt())
+        hdrDstData = arena.allocate(ADDRESS, 8)
+        hdrDstData.setAtIndex(ADDRESS, 0, hdrNative)
+        hdrDstStride = arena.allocate(JAVA_INT, 8)
+        hdrDstStride.setAtIndex(JAVA_INT, 0, width * 8)
+        toneMapper = ToneMapper(
+            if (trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67) ToneMapper.HdrTransfer.HLG else ToneMapper.HdrTransfer.PQ,
+        )
+        return true
+    }
+
+    private fun fallBackFromHdr(reason: String): Boolean {
+        hdrFallback = true
+        System.err.println("[skinema] HDR tone-mapping unavailable ($reason); playing through the SDR path")
+        return false
+    }
+
+    /** swscale to 16-bit RGBA, then the pure-Kotlin tone-map to 8-bit RGBA. */
+    private fun toneMappedFrame(width: Int, height: Int, target: ByteArray?): RgbaFrame {
+        Libav.swsScale(
+            hdrCtx,
+            frame.asSlice(LibavAbi.Frame.DATA),
+            frame.asSlice(LibavAbi.Frame.LINESIZE),
+            0,
+            height,
+            hdrDstData,
+            hdrDstStride,
+        )
+        MemorySegment.copy(hdrNative, JAVA_SHORT, 0, hdrShorts, 0, hdrShorts.size)
+        val out = target?.takeIf { it.size == hdrOutHeap.size } ?: hdrOutHeap
+        checkNotNull(toneMapper).toneMap(hdrShorts, out, width * height)
+        return RgbaFrame(width, height, currentPtsNanos(), out)
+    }
+
     override fun close() {
         if (swsCtx != MemorySegment.NULL) Libav.swsFreeContext(swsCtx)
+        if (hdrCtx != MemorySegment.NULL) Libav.swsFreeContext(hdrCtx)
         // The free functions take T** and null the pointer; one scratch slot.
         val ptrPtr = arena.allocate(ADDRESS)
         ptrPtr.set(ADDRESS, 0, frame)

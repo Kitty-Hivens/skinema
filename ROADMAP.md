@@ -707,9 +707,14 @@ without breaking changes. Not before.
   a freeze.
 - Whether Nexira's existing background "animated" path (Coil) migrates to
   skinema or stays separate until skinema proves itself.
-- HDR: today's reality is a naive swscale conversion (PQ content plays
-  washed out; README says so honestly). The BT.2020 matrix is honored
-  since M8 -- what remains wrong is the transfer (PQ/HLG), which only
-  tone-mapping fixes: either avfilter+tonemap in the trim (real, costs
-  size) or a small software tonemap on the RGBA path. Decide when a
-  consumer actually brings HDR files.
+- HDR: PQ and HLG are tone-mapped to SDR in software on the RGBA path
+  (ToneMap.kt) -- detected by color_trc, swscaled to 16-bit RGBA, then
+  inverse-EOTF -> extended-Reinhard knee against BT.2408 diffuse white
+  -> BT.2020->709 -> sRGB, all LUT-driven so the hot loop carries no
+  per-pixel pow. The avfilter+tonemap route (zimg/libplacebo) was
+  rejected on bundle size and the no-GPU rule; the BT.2020 matrix has
+  been honored since M8. The two aesthetic knobs are the diffuse-white
+  and assumed-peak nits in ToneMap.kt. Future: BT.2446 Method A and
+  hue-preserving gamut compression for fidelity. Native-HDR passthrough
+  needs Wayland colour-management plus a 10-bit Compose/Skia path and
+  stays out of scope.
