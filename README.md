@@ -58,7 +58,7 @@ Compose -- are restricted methods that otherwise warn on every run.
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
 | Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
 | Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
-| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored         |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
@@ -68,9 +68,11 @@ reverse). Audio-only files play frameless. Files with several audio
 tracks expose them (`audioTracks`, language and title included) and
 switch in place (`selectAudioTrack`) -- the picture keeps playing and
 the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with
-the pitch preserved (FFmpeg's atempo). HDR content plays through a
-naive SDR conversion for now -- washed out, not tone-mapped; proper
-tone-mapping is a roadmap item.
+the pitch preserved (FFmpeg's atempo). HDR content (PQ/HLG over
+BT.2020) is tone-mapped to SDR on the decode path -- the transfer is
+inverted, highlights roll off against BT.2408 diffuse white, and the
+gamut maps to BT.709 -- so it no longer plays washed out. Native-HDR
+passthrough (driving an HDR display) is out of scope.
 
 Subtitles: `subtitleTracks` enumerates what the container carries
 (language, title, default/forced); `selectSubtitleTrack` turns one on
