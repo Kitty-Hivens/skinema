@@ -74,7 +74,9 @@ class VideoDecoder private constructor(
 
     // HDR (PQ/HLG) path: a parallel swscale context outputs 16-bit RGBA64
     // so the transfer is inverted before 8-bit quantization, then a pure-
-    // Kotlin ToneMapper writes the SDR 8-bit result into rgbaHeap. Built
+    // Kotlin ToneMapper writes the SDR 8-bit result into its OWN hdrOutHeap
+    // -- never the SDR rgbaHeap, whose size ensureSws caches and early-
+    // returns on (a shared buffer would mis-size a later SDR frame). Built
     // lazily on the first HDR frame; hdrFallback latches the SDR path if the
     // 16-bit context cannot be created.
     private var hdrCtx = MemorySegment.NULL
@@ -88,6 +90,7 @@ class VideoDecoder private constructor(
     private var hdrDstData = MemorySegment.NULL
     private var hdrDstStride = MemorySegment.NULL
     private var hdrShorts = ShortArray(0)
+    private var hdrOutHeap = ByteArray(0)
     private var toneMapper: ToneMapper? = null
     private var hdrFallback = false
 
@@ -296,7 +299,7 @@ class VideoDecoder private constructor(
         val pixels = width.toLong() * height
         hdrNative = arena.allocate(pixels * 8) // RGBA64 -- 4 channels x 2 bytes
         hdrShorts = ShortArray((pixels * 4).toInt())
-        rgbaHeap = ByteArray((pixels * 4).toInt())
+        hdrOutHeap = ByteArray((pixels * 4).toInt())
         hdrDstData = arena.allocate(ADDRESS, 8)
         hdrDstData.setAtIndex(ADDRESS, 0, hdrNative)
         hdrDstStride = arena.allocate(JAVA_INT, 8)
@@ -325,7 +328,7 @@ class VideoDecoder private constructor(
             hdrDstStride,
         )
         MemorySegment.copy(hdrNative, JAVA_SHORT, 0, hdrShorts, 0, hdrShorts.size)
-        val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
+        val out = target?.takeIf { it.size == hdrOutHeap.size } ?: hdrOutHeap
         checkNotNull(toneMapper).toneMap(hdrShorts, out, width * height)
         return RgbaFrame(width, height, currentPtsNanos(), out)
     }
