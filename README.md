@@ -26,6 +26,9 @@ exposed, sound intact. Phone footage's orientation surfaces as
 `rotationDegrees`; `VideoSurface` applies it, a consumer drawing
 frames itself must do the same.
 
+Full developer documentation -- a consumer guide and the contributor
+internals -- lives in [docs/](docs/README.md).
+
 ## Dependencies
 
 ```kotlin
