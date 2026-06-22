@@ -1,5 +1,6 @@
 package dev.hivens.skinema.encode
 
+import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
@@ -7,6 +8,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -77,5 +79,39 @@ class MediaWriterTest {
             MediaWriter.open(out, VideoEncodeConfig("definitely-not-a-codec", 64, 64, 10))
         }.isFailure
         assertTrue(threw, "an unknown encoder name must throw, not half-open")
+    }
+
+    @Test
+    fun `encodes video and audio to a file that decodes both streams back`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        Fixtures.assumeLibraryEncoder("aac")
+        val w = 64
+        val h = 64
+        val fps = 10
+        val frames = 10
+        val rate = 48000
+        val out = dir.resolve("av.mp4")
+
+        MediaWriter.open(
+            out,
+            VideoEncodeConfig("libx264", w, h, fps, options = mapOf("preset" to "ultrafast", "crf" to "23")),
+            AudioEncodeConfig("aac", rate),
+        ).use { writer ->
+            // One second: 10 video frames plus 1s of stereo S16 silence in 0.1s chunks.
+            val chunk = ByteArray(rate / 10 * 4)
+            repeat(frames) { i ->
+                writer.writeFrame(solidGreen(w, h), i * 1_000_000_000L / fps)
+                writer.writeAudio(chunk)
+            }
+            writer.finish()
+        }
+
+        assertTrue(Files.size(out) > 0, "the muxed file must not be empty")
+        VideoDecoder.open(out).use { d ->
+            assertTrue(generateSequence { d.nextFrame() }.count() >= frames - 1, "video stream must decode back")
+        }
+        val audioDec = AudioDecoder.openOrNull(out)
+        assertNotNull(audioDec, "the muxed file must carry a decodable audio stream")
+        audioDec.use { assertNotNull(it.nextChunk(), "the audio stream must decode at least one chunk") }
     }
 }

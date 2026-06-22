@@ -127,6 +127,14 @@ object LibavAbi {
         const val MAX_B_FRAMES = 200L
         const val GOP_SIZE = 332L
 
+        // -- M12 audio encode write fields --
+        const val SAMPLE_RATE = 344L
+        const val SAMPLE_FMT = 348L
+        const val CH_LAYOUT = 352L
+
+        /** Samples per encoded frame, reported by the encoder after open (0 = variable). */
+        const val FRAME_SIZE = 376L
+
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
 
@@ -220,6 +228,9 @@ object LibavAbi {
     const val AV_CODEC_ID_WEBVTT = 94226
     const val AV_CODEC_ID_ASS = 94230
     const val AV_SAMPLE_FMT_S16 = 1
+
+    /** Planar 32-bit float -- the native AAC encoder's input format. */
+    const val AV_SAMPLE_FMT_FLTP = 8
     const val AV_PIX_FMT_RGBA = 26
 
     /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */

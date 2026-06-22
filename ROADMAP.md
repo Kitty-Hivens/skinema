@@ -712,7 +712,7 @@ README once the library is usable.
   SHIPPED bundle decodes on the GPU -- system-FFmpeg development already
   does. NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are deferred.
 
-- **M12 -- software video encode + mux (video DONE; audio + bundle pending, 2026-06-22).**
+- **M12 -- software encode + mux (video + audio DONE; bundle pending, 2026-06-22).**
   The push-side inverse of the decode pipeline. `MediaWriter`
   (dev.hivens.skinema.encode) takes a `VideoEncodeConfig` (encoder name,
   geometry, fps, bitrate, private options), opens the muxer inferred from the

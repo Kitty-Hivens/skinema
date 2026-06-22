@@ -223,6 +223,7 @@ int main(void) {
     P(offsetof(AVCodecContext, color_primaries));
     P(offsetof(AVCodecContext, sample_rate));
     P(offsetof(AVCodecContext, sample_fmt));
+    P(offsetof(AVCodecContext, frame_size));
     P(offsetof(AVCodecContext, ch_layout));
     P(offsetof(AVCodecContext, profile));
 
