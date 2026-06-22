@@ -53,8 +53,11 @@ jobs:
         if: runner.os == 'Linux'
         # libfontconfig-dev: libass's Linux font provider builds against
         # the system fontconfig (and links it dynamically -- every
-        # desktop ships it).
-        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config libfontconfig-dev
+        # desktop ships it). libva-dev: the VAAPI hwaccel (M11) builds
+        # against libva and links it dynamically, the same pattern -- a
+        # ubiquitous Linux desktop lib, pulled in here for the build and
+        # for the on-runner acceptance test (libva-dev depends on libva2).
+        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config libfontconfig-dev libva-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
