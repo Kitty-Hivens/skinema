@@ -117,6 +117,22 @@ object Fixtures {
     }
 
     /**
+     * Skips when the loaded libav has no encoder [name] (MediaWriter calls
+     * avcodec_find_encoder_by_name, not the CLI). The decode-only shipped
+     * bundle carries none, so encode tests skip there until the encode
+     * milestone adds them; a dev box's full system FFmpeg runs them.
+     */
+    fun assumeLibraryEncoder(name: String) {
+        assumeDecodeEnvironment()
+        val available = runCatching {
+            java.lang.foreign.Arena.ofConfined().use { a ->
+                Libav.avcodecFindEncoderByName(a.allocateFrom(name)) != java.lang.foreign.MemorySegment.NULL
+            }
+        }.getOrDefault(false)
+        assumeTrue(available, "libav has no encoder '$name' -- skipping encode test")
+    }
+
+    /**
      * Runs `ffmpeg <args> <output>` and returns [output]. Fixture codecs
      * mirror the shipped decode whitelist (h264 via libx264, vp9 via
      * libvpx) -- tests must exercise what the trimmed builds carry, so CI

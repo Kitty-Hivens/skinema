@@ -259,6 +259,29 @@ cd "ffmpeg-$FFMPEG_VERSION"
 # default and quiet shellcheck.
 read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
 
+# Hardware decode (M11). --disable-everything turns every hwaccel off, so
+# the platform's are re-enabled explicitly. VideoToolbox (macOS) and
+# D3D11VA/DXVA2 (Windows) need only the system SDK; VAAPI (Linux) links
+# libva, which the CI build image must provide (libva-dev) and the user's
+# machine provides at runtime like fontconfig. NVDEC/NVENC/QSV/AMF need
+# extra SDKs and stay a follow-up. UNVALIDATED until a natives.yml run --
+# the hw decode code is proven against the system FFmpeg, not yet a bundle.
+HWACCEL=()
+case "$(uname -s)" in
+    Linux)
+        HWACCEL=(--enable-vaapi
+            --enable-hwaccel=h264_vaapi,hevc_vaapi,vp8_vaapi,vp9_vaapi,av1_vaapi)
+        ;;
+    Darwin)
+        HWACCEL=(--enable-videotoolbox
+            --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox)
+        ;;
+    MINGW*|MSYS*)
+        HWACCEL=(--enable-d3d11va --enable-dxva2
+            --enable-hwaccel=h264_d3d11va,hevc_d3d11va,vp9_d3d11va,av1_d3d11va,h264_dxva2,hevc_dxva2,vp9_dxva2,av1_dxva2)
+        ;;
+esac
+
 # Decode whitelist (ROADMAP.md section 4). Demuxers cover the consumer's
 # container set plus standalone audio for M5; native opus/vorbis/aac/mp3/
 # flac decoders need no external libraries. The real-life audio set --
@@ -279,6 +302,7 @@ read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
     --enable-filter=atempo,abuffer,abuffersink \
+    ${HWACCEL[@]+"${HWACCEL[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
