@@ -86,12 +86,28 @@ object LibavAbi {
      * Direct reads on AVCodecContext are otherwise avoided (functions
      * cover everything); subtitle_header has no accessor, and converted
      * text decoders synthesize the ASS style header THERE at open --
-     * codecpar extradata is empty for them.
+     * codecpar extradata is empty for them. The two hwaccel fields are
+     * WRITTEN, not read: get_format installs the negotiation upcall and
+     * hw_device_ctx hands the decoder its device.
      */
     object CodecContext {
+        /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
+        const val GET_FORMAT = 192L
+
+        /** AVBufferRef* to the AVHWDeviceContext driving hardware decode. */
+        const val HW_DEVICE_CTX = 560L
+
         const val SUBTITLE_HEADER_SIZE = 748L
         const val SUBTITLE_HEADER = 752L
         const val SIZEOF = 864L
+    }
+
+    /** AVCodecHWConfig, walked by avcodec_get_hw_config to find a usable hwaccel. */
+    object CodecHWConfig {
+        const val PIX_FMT = 0L
+        const val METHODS = 4L
+        const val DEVICE_TYPE = 8L
+        const val SIZEOF = 12L
     }
 
     /** Out-parameter of avcodec_decode_subtitle2; caller-allocated. */
@@ -172,6 +188,32 @@ object LibavAbi {
 
     /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */
     const val AV_PIX_FMT_RGBA64LE = 105
+
+    /** Sentinel: no pixel format -- the "decode in software" answer and the get_format list terminator. */
+    const val AV_PIX_FMT_NONE = -1
+
+    // Hardware-surface pixel formats: a frame in one of these lives in GPU
+    // memory; av_hwframe_transfer_data brings it down to a software format
+    // swscale can read. The get_format upcall pins one to keep frames on
+    // the device.
+    const val AV_PIX_FMT_VAAPI = 44
+    const val AV_PIX_FMT_DXVA2_VLD = 51
+    const val AV_PIX_FMT_QSV = 114
+    const val AV_PIX_FMT_CUDA = 117
+    const val AV_PIX_FMT_VIDEOTOOLBOX = 157
+    const val AV_PIX_FMT_D3D11 = 171
+
+    /** AVHWDeviceType selectors for av_hwdevice_ctx_create, per platform. */
+    const val AV_HWDEVICE_TYPE_CUDA = 2
+    const val AV_HWDEVICE_TYPE_VAAPI = 3
+    const val AV_HWDEVICE_TYPE_DXVA2 = 4
+    const val AV_HWDEVICE_TYPE_QSV = 5
+    const val AV_HWDEVICE_TYPE_VIDEOTOOLBOX = 6
+    const val AV_HWDEVICE_TYPE_D3D11VA = 7
+
+    /** AVCodecHWConfig.methods bit: the decoder accepts an AVHWDeviceContext. */
+    const val AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX = 1
+
     const val SWS_BILINEAR = 2
     const val AVCOL_SPC_BT709 = 1
     const val AVCOL_SPC_UNSPECIFIED = 2

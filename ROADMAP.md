@@ -192,8 +192,9 @@ In: local files; play, loop, seek-to-frame; RGBA software pipeline; alpha preser
 GIF / APNG / animated WebP through the same pipeline (covers the consumer's
 "animated background" category for free).
 
-Out (explicitly, revisit only with a consumer in hand): hardware decode
-and GPU YUV shaders; network sources and custom AVIO; Dolby Vision
+Out (explicitly, revisit only with a consumer in hand): ~~hardware decode
+and GPU YUV shaders~~ (hardware decode landed in M11; zero-copy GPU->Skia
+interop still deferred); network sources and custom AVIO; Dolby Vision
 profile 5 (proprietary colorspace -- out of scope forever unless
 licensing changes).
 
@@ -666,6 +667,50 @@ README once the library is usable.
   the av* DLLs too -- ride in the bundle and are preloaded by name. The
   Windows CI test strips mingw/msys from PATH so a green run proves the
   bundle is self-contained, not leaning on the toolchain.
+
+- **M10 -- direction change: encode + hardware (decided 2026-06-22).** The
+  charter widens past decode-only software playback: the consumer now needs
+  encoding/transcoding and GPU acceleration. Two consequences are recorded
+  before any code so later work does not re-litigate them. Licensing:
+  software H.264/HEVC encode means x264/x265, which are GPL, so the shipped
+  FFmpeg flips to `--enable-gpl` and the natives become GPL -- accepted. The
+  README's LGPL paragraph and section 10 are rewritten only when GPL natives
+  actually ship (an encode milestone), never before, so the public face
+  never claims a licence the bundles do not yet carry. GPU encoders
+  (NVENC/VAAPI/QSV/VideoToolbox) live in the driver and stay LGPL, so they
+  are the licence-clean route to H.264/HEVC OUTPUT regardless.
+  `--disable-network` survives both (writing a local file needs no I/O
+  beyond it). Sequence: M11 GPU decode, M12 software encode + mux, M13 GPU
+  encode, M14 transcode/record; CPU decode is the existing engine.
+
+- **M11 -- hardware decode (code DONE; bundle CI-pending, 2026-06-22).**
+  VideoDecoder grew an opt-in GPU path behind `HwAccel` (OFF default / AUTO /
+  REQUIRE), threaded through FrameSources and a VideoPlayer `hardware`
+  parameter; `VideoPlayer.hardwareActive` (and `FrameSource.hardwareActive`)
+  report whether it engaged -- the only signal for a feature a GPU-less CI
+  cannot test. AUTO tries VAAPI then NVDEC (Linux), D3D11VA then DXVA2
+  (Windows), VideoToolbox (macOS): a decoder hw config is matched with
+  avcodec_get_hw_config, the device created with av_hwdevice_ctx_create, and
+  skinema's FIRST upcall-carrying-logic installed at AVCodecContext.get_format
+  pins the hw surface format (falling through to the software format is the
+  graceful no-device answer). Decoded GPU frames download via
+  av_hwframe_transfer_data into a reused sw frame, props copied so HDR/matrix
+  detection still reads true, then run the existing swscale chokepoint -- so
+  the RGBA8888 contract is identical on every path. AUTO falls back per file
+  (no device, unsupported codec, a per-frame software frame); REQUIRE fails
+  closed. The convert=false drop-run reads pts/geometry off the raw frame
+  with NO transfer, so seeks stay cheap on the hw path too. ABI:
+  AVCodecContext.get_format/hw_device_ctx and AVCodecHWConfig, from a re-run
+  of tools/layout-oracle.c. Validated end to end on real VAAPI (a dev box):
+  AUTO and REQUIRE engage, decode every frame, and stay pixel-faithful to
+  software -- the acceptance suite (VideoDecoderHwTest) is gated behind
+  SKINEMA_TEST_HWACCEL=1 so a GPU-less CI, and macOS's always-present
+  VideoToolbox, are not silently exercised on a path this change cannot see.
+  PENDING: the trimmed natives must enable the platform hwaccels
+  (build-natives.sh carries the flags, UNVALIDATED until a natives.yml run;
+  VAAPI adds a libva system dependency on Linux, like fontconfig) before a
+  SHIPPED bundle decodes on the GPU -- system-FFmpeg development already
+  does. NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are deferred.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

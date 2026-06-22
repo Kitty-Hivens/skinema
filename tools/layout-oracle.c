@@ -17,6 +17,7 @@
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <libavutil/hwcontext.h>
 
 #define P(expr) printf("%-44s = %lld\n", #expr, (long long)(expr))
 
@@ -173,5 +174,36 @@ int main(void) {
     P(AVERROR_EOF);
     P(AVERROR_INVALIDDATA);
     P(AV_NOPTS_VALUE);
+
+    /* -- M11 hardware decode: hwcontext + the get_format negotiation -- */
+    P(offsetof(AVCodecContext, pix_fmt));
+    P(offsetof(AVCodecContext, sw_pix_fmt));
+    P(offsetof(AVCodecContext, hw_device_ctx));
+    P(offsetof(AVCodecContext, hw_frames_ctx));
+    P(offsetof(AVCodecContext, get_format));
+    P(offsetof(AVCodecContext, coded_width));
+    P(offsetof(AVCodecContext, coded_height));
+
+    P(offsetof(AVCodecHWConfig, pix_fmt));
+    P(offsetof(AVCodecHWConfig, methods));
+    P(offsetof(AVCodecHWConfig, device_type));
+    P(sizeof(AVCodecHWConfig));
+    P(AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX);
+
+    P(AV_HWDEVICE_TYPE_VAAPI);
+    P(AV_HWDEVICE_TYPE_CUDA);
+    P(AV_HWDEVICE_TYPE_VIDEOTOOLBOX);
+    P(AV_HWDEVICE_TYPE_D3D11VA);
+    P(AV_HWDEVICE_TYPE_DXVA2);
+    P(AV_HWDEVICE_TYPE_QSV);
+
+    P(AV_PIX_FMT_VAAPI);
+    P(AV_PIX_FMT_CUDA);
+    P(AV_PIX_FMT_VIDEOTOOLBOX);
+    P(AV_PIX_FMT_D3D11);
+    P(AV_PIX_FMT_DXVA2_VLD);
+    P(AV_PIX_FMT_QSV);
+    P(AV_PIX_FMT_NV12);
+    P(AV_PIX_FMT_P010LE);
     return 0;
 }

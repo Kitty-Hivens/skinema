@@ -60,4 +60,7 @@ interface FrameSource : AutoCloseable {
 
     /** Coded video geometry (width to height); null when unknown. */
     fun videoSize(): Pair<Int, Int>? = null
+
+    /** True when frames are decoding on the GPU (hardware acceleration engaged). */
+    fun hardwareActive(): Boolean = false
 }

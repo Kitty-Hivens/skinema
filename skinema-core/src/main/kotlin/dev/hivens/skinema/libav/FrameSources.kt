@@ -12,9 +12,11 @@ import java.nio.file.Path
  */
 object FrameSources {
 
-    fun open(path: Path): FrameSource {
+    fun open(path: Path, hardware: HwAccel = HwAccel.OFF): FrameSource {
+        // Animated WebP rides libwebp, which has no hardware path; the
+        // hardware policy applies to the libav decoder only.
         if (Webp.available && isWebp(path)) return WebpAnimSource.open(path)
-        return VideoDecoder.open(path)
+        return VideoDecoder.open(path, hardware)
     }
 
     private fun isWebp(path: Path): Boolean = runCatching {

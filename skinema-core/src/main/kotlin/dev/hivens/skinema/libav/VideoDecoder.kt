@@ -34,6 +34,12 @@ class VideoDecoder private constructor(
     private val rotationDegrees: Int,
     private val subtitleTracks: List<SubtitleTrack>,
     private val videoSize: Pair<Int, Int>?,
+    // AV_PIX_FMT_NONE for software; otherwise the GPU surface format decoded
+    // frames arrive in, downloaded to a CPU frame before conversion.
+    private val hwPixFmt: Int,
+    // AVBufferRef* to the hw device this decoder owns, unref'd at close; NULL
+    // for software.
+    private val hwDeviceCtx: MemorySegment,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = duration
@@ -43,6 +49,7 @@ class VideoDecoder private constructor(
     override fun rotationDegrees(): Int = rotationDegrees
     override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
     override fun videoSize(): Pair<Int, Int>? = videoSize
+    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -58,6 +65,11 @@ class VideoDecoder private constructor(
     )
 
     private var draining = false
+
+    // Hardware decode: when [hwPixFmt] is set, decoded frames land in GPU
+    // memory and are downloaded into this reused frame before conversion;
+    // allocated on the first hw frame.
+    private var swFrame = MemorySegment.NULL
 
     // swscale state, (re)built lazily on the first frame and on any
     // mid-stream geometry/format change.
@@ -113,11 +125,16 @@ class VideoDecoder private constructor(
 
     override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
 
-    /** The decoded frame's pts and geometry without touching its pixels. */
+    /**
+     * The decoded frame's pts and geometry without touching its pixels.
+     * Reads the raw decoded [frame] -- a hw frame carries both -- with NO
+     * GPU->CPU transfer, keeping the convert=false drop-run cheap on the
+     * hardware path too.
+     */
     private fun metadataOnlyFrame(): RgbaFrame = RgbaFrame(
         width = frame.get(JAVA_INT, LibavAbi.Frame.WIDTH),
         height = frame.get(JAVA_INT, LibavAbi.Frame.HEIGHT),
-        ptsNanos = currentPtsNanos(),
+        ptsNanos = currentPtsNanos(frame),
         rgba = NO_PIXELS,
     )
 
@@ -170,20 +187,21 @@ class VideoDecoder private constructor(
     }
 
     private fun convertCurrentFrame(target: ByteArray?): RgbaFrame {
-        val width = frame.get(JAVA_INT, LibavAbi.Frame.WIDTH)
-        val height = frame.get(JAVA_INT, LibavAbi.Frame.HEIGHT)
-        val format = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
-        val trc = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_TRC)
-        if (!hdrFallback && isHdrTransfer(trc) && ensureHdr(width, height, format, trc)) {
-            return toneMappedFrame(width, height, target)
+        val src = mapHwFrame()
+        val width = src.get(JAVA_INT, LibavAbi.Frame.WIDTH)
+        val height = src.get(JAVA_INT, LibavAbi.Frame.HEIGHT)
+        val format = src.get(JAVA_INT, LibavAbi.Frame.FORMAT)
+        val trc = src.get(JAVA_INT, LibavAbi.Frame.COLOR_TRC)
+        if (!hdrFallback && isHdrTransfer(trc) && ensureHdr(src, width, height, format, trc)) {
+            return toneMappedFrame(src, width, height, target)
         }
         ensureSws(width, height, format)
-        ensureColorspaceDetails(width, height)
+        ensureColorspaceDetails(src, width, height)
 
         Libav.swsScale(
             swsCtx,
-            frame.asSlice(LibavAbi.Frame.DATA),
-            frame.asSlice(LibavAbi.Frame.LINESIZE),
+            src.asSlice(LibavAbi.Frame.DATA),
+            src.asSlice(LibavAbi.Frame.LINESIZE),
             0,
             height,
             dstData,
@@ -191,13 +209,37 @@ class VideoDecoder private constructor(
         )
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         MemorySegment.copy(rgbaNative, JAVA_BYTE, 0, out, 0, out.size)
-        return RgbaFrame(width, height, currentPtsNanos(), out)
+        return RgbaFrame(width, height, currentPtsNanos(src), out)
     }
 
-    private fun currentPtsNanos(): Long {
-        val pts = frame.get(JAVA_LONG, LibavAbi.Frame.PTS)
+    /**
+     * The frame to read pixels and colour metadata from: the decoded
+     * [frame] for software, or -- when hardware decode put it in GPU
+     * memory -- a CPU copy downloaded with av_hwframe_transfer_data into
+     * the reused [swFrame]. A frame the decoder produced in software anyway
+     * (a per-frame hw fallback, a non-hw stream) passes straight through,
+     * so swscale always sees a readable software format.
+     */
+    private fun mapHwFrame(): MemorySegment {
+        if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE) return frame
+        if (frame.get(JAVA_INT, LibavAbi.Frame.FORMAT) != hwPixFmt) return frame
+        if (swFrame == MemorySegment.NULL) {
+            swFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+            if (swFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(sw) returned NULL")
+        }
+        Libav.avFrameUnref(swFrame)
+        Libav.checkAv(Libav.avHwframeTransferData(swFrame, frame), "av_hwframe_transfer_data")
+        // Transfer copies pixels only; pts, colourspace, range and transfer
+        // characteristics ride along so HDR detection and the YUV matrix
+        // still read the right values off the downloaded frame.
+        Libav.avFrameCopyProps(swFrame, frame)
+        return swFrame
+    }
+
+    private fun currentPtsNanos(src: MemorySegment): Long {
+        val pts = src.get(JAVA_LONG, LibavAbi.Frame.PTS)
             .takeIf { it != LibavAbi.AV_NOPTS_VALUE }
-            ?: frame.get(JAVA_LONG, LibavAbi.Frame.BEST_EFFORT_TIMESTAMP)
+            ?: src.get(JAVA_LONG, LibavAbi.Frame.BEST_EFFORT_TIMESTAMP)
         if (pts == LibavAbi.AV_NOPTS_VALUE) return 0L
         // Normalize to a zero origin: a nonzero container start_time (TS,
         // IPTV) offsets every pts, while duration is the unoffset span.
@@ -236,9 +278,9 @@ class VideoDecoder private constructor(
      * its BT.601/limited defaults -- subtly wrong colors on every BT.709
      * (HD) file, crushed levels on full-range streams.
      */
-    private fun ensureColorspaceDetails(width: Int, height: Int) {
-        val colorspace = frame.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
-        val range = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
+    private fun ensureColorspaceDetails(src: MemorySegment, width: Int, height: Int) {
+        val colorspace = src.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
+        val range = src.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
         if (colorspace == swsColorspace && range == swsRange) return
         swsColorspace = colorspace
         swsRange = range
@@ -263,9 +305,9 @@ class VideoDecoder private constructor(
      * built, so playback degrades to the (washed-out) SDR path instead of
      * failing. Rebuilds on any geometry/format/colour change, like ensureSws.
      */
-    private fun ensureHdr(width: Int, height: Int, format: Int, trc: Int): Boolean {
-        val colorspace = frame.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
-        val range = frame.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
+    private fun ensureHdr(src: MemorySegment, width: Int, height: Int, format: Int, trc: Int): Boolean {
+        val colorspace = src.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
+        val range = src.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
         if (hdrCtx != MemorySegment.NULL && width == hdrWidth && height == hdrHeight && format == hdrFormat &&
             trc == hdrTrc && colorspace == hdrColorspace && range == hdrRange
         ) {
@@ -317,11 +359,11 @@ class VideoDecoder private constructor(
     }
 
     /** swscale to 16-bit RGBA, then the pure-Kotlin tone-map to 8-bit RGBA. */
-    private fun toneMappedFrame(width: Int, height: Int, target: ByteArray?): RgbaFrame {
+    private fun toneMappedFrame(src: MemorySegment, width: Int, height: Int, target: ByteArray?): RgbaFrame {
         Libav.swsScale(
             hdrCtx,
-            frame.asSlice(LibavAbi.Frame.DATA),
-            frame.asSlice(LibavAbi.Frame.LINESIZE),
+            src.asSlice(LibavAbi.Frame.DATA),
+            src.asSlice(LibavAbi.Frame.LINESIZE),
             0,
             height,
             hdrDstData,
@@ -330,7 +372,7 @@ class VideoDecoder private constructor(
         MemorySegment.copy(hdrNative, JAVA_SHORT, 0, hdrShorts, 0, hdrShorts.size)
         val out = target?.takeIf { it.size == hdrOutHeap.size } ?: hdrOutHeap
         checkNotNull(toneMapper).toneMap(hdrShorts, out, width * height)
-        return RgbaFrame(width, height, currentPtsNanos(), out)
+        return RgbaFrame(width, height, currentPtsNanos(src), out)
     }
 
     override fun close() {
@@ -340,10 +382,20 @@ class VideoDecoder private constructor(
         val ptrPtr = arena.allocate(ADDRESS)
         ptrPtr.set(ADDRESS, 0, frame)
         Libav.avFrameFree(ptrPtr)
+        if (swFrame != MemorySegment.NULL) {
+            ptrPtr.set(ADDRESS, 0, swFrame)
+            Libav.avFrameFree(ptrPtr)
+        }
         ptrPtr.set(ADDRESS, 0, packet)
         Libav.avPacketFree(ptrPtr)
         ptrPtr.set(ADDRESS, 0, codecCtx)
         Libav.avcodecFreeContext(ptrPtr)
+        // The codec held its own ref to the hw device (released just above);
+        // release the one this decoder kept.
+        if (hwDeviceCtx != MemorySegment.NULL) {
+            ptrPtr.set(ADDRESS, 0, hwDeviceCtx)
+            Libav.avBufferUnref(ptrPtr)
+        }
         ptrPtr.set(ADDRESS, 0, fmtCtx)
         Libav.avformatCloseInput(ptrPtr)
         arena.close()
@@ -373,11 +425,70 @@ class VideoDecoder private constructor(
             return if (libvpx == MemorySegment.NULL) defaultDecoder else libvpx
         }
 
+        private class HwSetup(val pixFmt: Int, val deviceCtx: MemorySegment)
+
+        /** The platform's hw device types, best first (see [HwAccel]). */
+        private fun preferredHwTypes(): IntArray = when (Os.current()) {
+            // VAAPI before NVDEC on Linux: Intel/AMD, no proprietary driver.
+            Os.LINUX -> intArrayOf(LibavAbi.AV_HWDEVICE_TYPE_VAAPI, LibavAbi.AV_HWDEVICE_TYPE_CUDA)
+            Os.WINDOWS -> intArrayOf(LibavAbi.AV_HWDEVICE_TYPE_D3D11VA, LibavAbi.AV_HWDEVICE_TYPE_DXVA2)
+            Os.MAC -> intArrayOf(LibavAbi.AV_HWDEVICE_TYPE_VIDEOTOOLBOX)
+        }
+
+        /**
+         * The hw surface format a decoder exposes for [deviceType] through
+         * the hw_device_ctx method, or AV_PIX_FMT_NONE when it offers none.
+         */
+        private fun decoderHwPixFmt(decoder: MemorySegment, deviceType: Int): Int {
+            var i = 0
+            while (true) {
+                val config = Libav.avcodecGetHwConfig(decoder, i)
+                if (config == MemorySegment.NULL) return LibavAbi.AV_PIX_FMT_NONE
+                val sized = config.reinterpret(LibavAbi.CodecHWConfig.SIZEOF)
+                val methods = sized.get(JAVA_INT, LibavAbi.CodecHWConfig.METHODS)
+                val type = sized.get(JAVA_INT, LibavAbi.CodecHWConfig.DEVICE_TYPE)
+                if (methods and LibavAbi.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX != 0 && type == deviceType) {
+                    return sized.get(JAVA_INT, LibavAbi.CodecHWConfig.PIX_FMT)
+                }
+                i++
+            }
+        }
+
+        /**
+         * Tries each platform device type until one both decodes this codec
+         * and opens a device, then wires that device and the get_format
+         * negotiation upcall into [codecCtx]. Returns the hw surface format
+         * to expect on decoded frames; AV_PIX_FMT_NONE (software) when none
+         * opens -- unless [hardware] is REQUIRE, which throws instead. Only
+         * a successful device touches [codecCtx], so AUTO-without-a-device
+         * is byte-for-byte the software path.
+         */
+        private fun setupHwAccel(arena: Arena, codecCtx: MemorySegment, decoder: MemorySegment, hardware: HwAccel): HwSetup {
+            val ctx = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+            for (type in preferredHwTypes()) {
+                val hwPixFmt = decoderHwPixFmt(decoder, type)
+                if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE) continue
+                val deviceOut = arena.allocate(ADDRESS)
+                if (Libav.avHwdeviceCtxCreate(deviceOut, type) < 0) continue
+                val device = deviceOut.get(ADDRESS, 0)
+                // The context owns the ref it is handed (avcodec_free_context
+                // releases it); we keep the original to unref at close.
+                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, Libav.avBufferRef(device))
+                ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
+                return HwSetup(hwPixFmt, device)
+            }
+            if (hardware == HwAccel.REQUIRE) {
+                throw LibavException("no hardware decoder available for this file (HwAccel.REQUIRE)")
+            }
+            return HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL)
+        }
+
         /** Opens [path] and prepares a decoder for its best video stream. */
-        fun open(path: Path): VideoDecoder {
+        fun open(path: Path, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
             val arena = Arena.ofConfined()
             var fmtCtx = MemorySegment.NULL
             var codecCtx = MemorySegment.NULL
+            var hwDevice = MemorySegment.NULL
             try {
                 val ctxOut = arena.allocate(ADDRESS)
                 Libav.checkAv(
@@ -416,6 +527,15 @@ class VideoDecoder private constructor(
                     Libav.avOptSet(codecCtx, arena.allocateFrom("threads"), arena.allocateFrom("auto")),
                     "av_opt_set(threads)",
                 )
+                // Wire a hardware device + the get_format upcall before open,
+                // or stay on AV_PIX_FMT_NONE (software). REQUIRE turns "no
+                // device" into a throw; AUTO falls through to software.
+                val hw = if (hardware == HwAccel.OFF) {
+                    HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL)
+                } else {
+                    setupHwAccel(arena, codecCtx, decoder, hardware)
+                }
+                hwDevice = hw.deviceCtx
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
@@ -438,12 +558,19 @@ class VideoDecoder private constructor(
                     displayRotationDegrees(codecpar),
                     enumerateSubtitleTracks(fmtCtx, arena),
                     (codedWidth to codedHeight).takeIf { codedWidth > 0 && codedHeight > 0 },
+                    hw.pixFmt,
+                    hwDevice,
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
                 if (codecCtx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, codecCtx)
                     Libav.avcodecFreeContext(ptrPtr)
+                }
+                // free_context released the codec's ref; release ours.
+                if (hwDevice != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, hwDevice)
+                    Libav.avBufferUnref(ptrPtr)
                 }
                 if (fmtCtx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, fmtCtx)

@@ -10,6 +10,8 @@ import java.lang.foreign.ValueLayout.JAVA_DOUBLE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
 import java.nio.file.Path
 
 /** The byte stream did not decode, or a libav call refused it. */
@@ -90,6 +92,11 @@ object Libav {
     private val hAvFrameGetBuffer = fn(LibavLibrary.AVUTIL, "av_frame_get_buffer", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT))
     private val hAvFrameUnref = fn(LibavLibrary.AVUTIL, "av_frame_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvChannelLayoutDefault = fn(LibavLibrary.AVUTIL, "av_channel_layout_default", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
+    private val hAvHwdeviceCtxCreate = fn(LibavLibrary.AVUTIL, "av_hwdevice_ctx_create", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
+    private val hAvHwframeTransferData = fn(LibavLibrary.AVUTIL, "av_hwframe_transfer_data", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
+    private val hAvBufferRef = fn(LibavLibrary.AVUTIL, "av_buffer_ref", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvBufferUnref = fn(LibavLibrary.AVUTIL, "av_buffer_unref", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvFrameCopyProps = fn(LibavLibrary.AVUTIL, "av_frame_copy_props", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
 
     // -- swresample --------------------------------------------------------------
 
@@ -132,6 +139,7 @@ object Libav {
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
     private val hAvPacketSideDataGet = fn(
         LibavLibrary.AVCODEC, "av_packet_side_data_get",
         FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT),
@@ -233,6 +241,62 @@ object Libav {
     fun avFrameGetBuffer(frame: MemorySegment, align: Int): Int = hAvFrameGetBuffer.invoke(frame, align) as Int
     fun avFrameUnref(frame: MemorySegment) { hAvFrameUnref.invoke(frame) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
+
+    // -- hwaccel (M11): device setup, GPU->CPU frame transfer, get_format --------
+
+    fun avHwdeviceCtxCreate(deviceCtxOut: MemorySegment, type: Int): Int =
+        hAvHwdeviceCtxCreate.invoke(deviceCtxOut, type, MemorySegment.NULL, MemorySegment.NULL, 0) as Int
+
+    fun avHwframeTransferData(dst: MemorySegment, src: MemorySegment): Int =
+        hAvHwframeTransferData.invoke(dst, src, 0) as Int
+
+    fun avBufferRef(buf: MemorySegment): MemorySegment = hAvBufferRef.invoke(buf) as MemorySegment
+    fun avBufferUnref(bufPtrPtr: MemorySegment) { hAvBufferUnref.invoke(bufPtrPtr) }
+    fun avFrameCopyProps(dst: MemorySegment, src: MemorySegment): Int = hAvFrameCopyProps.invoke(dst, src) as Int
+
+    /** const AVCodecHWConfig* at [index]; NULL past the last config. */
+    fun avcodecGetHwConfig(codec: MemorySegment, index: Int): MemorySegment =
+        hAvcodecGetHwConfig.invoke(codec, index) as MemorySegment
+
+    /**
+     * The get_format hwaccel negotiation. avcodec passes the formats it can
+     * emit, terminated by AV_PIX_FMT_NONE; returning a hardware-surface
+     * format keeps decoding on the GPU, and falling through to the last
+     * (software) entry is the graceful no-device answer. skinema's first
+     * upcall carrying real logic -- it runs on the decode thread,
+     * synchronously inside avcodec, so there is no concurrency to guard.
+     */
+    @JvmStatic
+    @Suppress("unused", "UNUSED_PARAMETER")
+    private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int {
+        val list = formats.reinterpret(Long.MAX_VALUE)
+        var i = 0L
+        var last = LibavAbi.AV_PIX_FMT_NONE
+        while (true) {
+            val fmt = list.getAtIndex(JAVA_INT, i)
+            if (fmt == LibavAbi.AV_PIX_FMT_NONE) return last
+            if (fmt in HW_PIX_FORMATS) return fmt
+            last = fmt
+            i++
+        }
+    }
+
+    private val HW_PIX_FORMATS = intArrayOf(
+        LibavAbi.AV_PIX_FMT_VAAPI, LibavAbi.AV_PIX_FMT_CUDA, LibavAbi.AV_PIX_FMT_VIDEOTOOLBOX,
+        LibavAbi.AV_PIX_FMT_D3D11, LibavAbi.AV_PIX_FMT_DXVA2_VLD, LibavAbi.AV_PIX_FMT_QSV,
+    )
+
+    private val getFormatStub: MemorySegment = linker.upcallStub(
+        MethodHandles.lookup().findStatic(
+            Libav::class.java, "chooseHwFormat",
+            MethodType.methodType(Integer.TYPE, MemorySegment::class.java, MemorySegment::class.java),
+        ),
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
+        Arena.global(),
+    )
+
+    /** The get_format upcall to install at AVCodecContext.get_format for hw decode. */
+    fun getFormatUpcall(): MemorySegment = getFormatStub
 
     fun swrAllocSetOpts2(
         ctxOut: MemorySegment,
