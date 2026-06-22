@@ -15,8 +15,11 @@ object LibavAbi {
         /** AVOutputFormat* -- the muxer (avformat_alloc_output_context2 sets it). */
         const val OFORMAT = 16L
 
-        /** AVIOContext* -- the output byte sink (avio_open fills it). */
+        /** AVIOContext* -- the byte sink/source (avio_open, or a custom AVIO context for input). */
         const val PB = 32L
+
+        /** AVFMT_FLAG_*; CUSTOM_IO is set here for a custom AVIO input source. */
+        const val FLAGS = 128L
         const val NB_STREAMS = 44L
         const val STREAMS = 48L
 
@@ -38,6 +41,11 @@ object LibavAbi {
     object OutputFormat {
         const val FLAGS = 44L
         const val SIZEOF = 64L
+    }
+
+    /** AVIOContext: only its buffer pointer is read, to free it after a custom-IO session. */
+    object AvioContext {
+        const val BUFFER = 8L
     }
 
     object Stream {
@@ -272,6 +280,18 @@ object LibavAbi {
 
     /** av_opt_set flag: also search a context's private child (codec) options -- crf, preset, ... */
     const val AV_OPT_SEARCH_CHILDREN = 1
+
+    // -- custom AVIO input (segment/stream feeding) --
+    const val AVFMT_FLAG_CUSTOM_IO = 128
+
+    /** seek "whence" that returns the total stream size instead of seeking. */
+    const val AVSEEK_SIZE = 65536
+    const val SEEK_SET = 0
+    const val SEEK_CUR = 1
+    const val SEEK_END = 2
+
+    /** The avio_alloc_context bounce buffer: one read-callback fill (FFmpeg owns and may realloc it). */
+    const val AVIO_BUFFER_SIZE = 32768
 
     const val SWS_BILINEAR = 2
     const val AVCOL_SPC_BT709 = 1

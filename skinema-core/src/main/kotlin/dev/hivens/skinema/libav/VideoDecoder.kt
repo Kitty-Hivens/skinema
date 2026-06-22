@@ -40,6 +40,9 @@ class VideoDecoder private constructor(
     // AVBufferRef* to the hw device this decoder owns, unref'd at close; NULL
     // for software.
     private val hwDeviceCtx: MemorySegment,
+    // The custom byte source backing this decoder (freed at close, after the
+    // format context); null for a file-Path decoder.
+    private val avioSource: AvioSource?,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = duration
@@ -398,6 +401,8 @@ class VideoDecoder private constructor(
         }
         ptrPtr.set(ADDRESS, 0, fmtCtx)
         Libav.avformatCloseInput(ptrPtr)
+        // After the demuxer let go of the pb, release the custom AVIO (if any).
+        avioSource?.free(ptrPtr)
         arena.close()
     }
 
@@ -486,16 +491,66 @@ class VideoDecoder private constructor(
         /** Opens [path] and prepares a decoder for its best video stream. */
         fun open(path: Path, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
             val arena = Arena.ofConfined()
-            var fmtCtx = MemorySegment.NULL
-            var codecCtx = MemorySegment.NULL
-            var hwDevice = MemorySegment.NULL
-            try {
+            val fmtCtx = try {
                 val ctxOut = arena.allocate(ADDRESS)
                 Libav.checkAv(
                     Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
                     "avformat_open_input($path)",
                 )
-                fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+            } catch (t: Throwable) {
+                arena.close()
+                throw t
+            }
+            return openVideo(arena, fmtCtx, null, hardware, path.toString())
+        }
+
+        /**
+         * Opens a decoder over a custom byte [source] instead of a file --
+         * the segment/stream feeding seam. skinema does no I/O of its own;
+         * the demuxer pulls bytes through [source]'s callbacks, so
+         * --disable-network is untouched.
+         */
+        fun open(source: MediaSource, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
+            val arena = Arena.ofConfined()
+            var avioSource: AvioSource? = null
+            val fmtCtx = try {
+                val avio = AvioSource(arena, source)
+                avioSource = avio
+                val ctx = Libav.avformatAllocContext()
+                if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
+                val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
+                sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
+                sized.set(
+                    JAVA_INT, LibavAbi.FormatContext.FLAGS,
+                    sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
+                )
+                val ctxOut = arena.allocate(ADDRESS)
+                ctxOut.set(ADDRESS, 0, sized)
+                // url NULL: the input is the custom pb, not a path.
+                Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
+                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+            } catch (t: Throwable) {
+                // A failed open frees the format context itself; the avio
+                // context, its buffer and the source are ours to release.
+                avioSource?.free(arena.allocate(ADDRESS))
+                arena.close()
+                throw t
+            }
+            return openVideo(arena, fmtCtx, avioSource, hardware, "custom source")
+        }
+
+        /** Shared tail: an opened [fmtCtx] -> a video decoder, or fail-closed. */
+        private fun openVideo(
+            arena: Arena,
+            fmtCtx: MemorySegment,
+            avioSource: AvioSource?,
+            hardware: HwAccel,
+            label: String,
+        ): VideoDecoder {
+            var codecCtx = MemorySegment.NULL
+            var hwDevice = MemorySegment.NULL
+            try {
                 Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info")
 
                 val decoderOut = arena.allocate(ADDRESS)
@@ -509,7 +564,7 @@ class VideoDecoder private constructor(
                     // picture): playing it would end the player at its one
                     // frame while the sound runs on. Refuse, so the player
                     // takes the frameless path; the cover ships as bytes.
-                    throw LibavException("the only video stream of $path is an attached picture")
+                    throw LibavException("the only video stream of $label is an attached picture")
                 }
                 val timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
                 val timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
@@ -560,6 +615,7 @@ class VideoDecoder private constructor(
                     (codedWidth to codedHeight).takeIf { codedWidth > 0 && codedHeight > 0 },
                     hw.pixFmt,
                     hwDevice,
+                    avioSource,
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
@@ -576,6 +632,7 @@ class VideoDecoder private constructor(
                     ptrPtr.set(ADDRESS, 0, fmtCtx)
                     Libav.avformatCloseInput(ptrPtr)
                 }
+                avioSource?.free(ptrPtr)
                 arena.close()
                 throw t
             }
