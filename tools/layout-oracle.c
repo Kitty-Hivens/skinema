@@ -205,5 +205,50 @@ int main(void) {
     P(AV_PIX_FMT_QSV);
     P(AV_PIX_FMT_NV12);
     P(AV_PIX_FMT_P010LE);
+
+    /* -- M12 encode + mux: AVCodecContext write fields, output muxer, packet -- */
+    P(offsetof(AVCodecContext, codec_type));
+    P(offsetof(AVCodecContext, codec_id));
+    P(offsetof(AVCodecContext, bit_rate));
+    P(offsetof(AVCodecContext, flags));
+    P(offsetof(AVCodecContext, width));
+    P(offsetof(AVCodecContext, height));
+    P(offsetof(AVCodecContext, time_base));
+    P(offsetof(AVCodecContext, framerate));
+    P(offsetof(AVCodecContext, gop_size));
+    P(offsetof(AVCodecContext, max_b_frames));
+    P(offsetof(AVCodecContext, sample_aspect_ratio));
+    P(offsetof(AVCodecContext, global_quality));
+    P(offsetof(AVCodecContext, color_primaries));
+    P(offsetof(AVCodecContext, sample_rate));
+    P(offsetof(AVCodecContext, sample_fmt));
+    P(offsetof(AVCodecContext, ch_layout));
+    P(offsetof(AVCodecContext, profile));
+
+    P(offsetof(AVStream, index));
+    P(offsetof(AVStream, id));
+
+    P(offsetof(AVFormatContext, oformat));
+    P(offsetof(AVFormatContext, pb));
+    P(offsetof(AVFormatContext, url));
+
+    P(offsetof(AVPacket, flags));
+    P(offsetof(AVPacket, dts));
+    P(offsetof(AVPacket, pos));
+
+    P(sizeof(AVRational));
+    P(AVFMT_GLOBALHEADER);
+    P(AVFMT_NOFILE);
+    P(AV_CODEC_FLAG_GLOBAL_HEADER);
+    P(AVIO_FLAG_WRITE);
+    P(AV_PKT_FLAG_KEY);
+    P(AV_PIX_FMT_YUV420P);
+    P(AV_SAMPLE_FMT_FLTP);
+    P(AV_CODEC_ID_H264);
+    P(AV_CODEC_ID_HEVC);
+    P(AV_CODEC_ID_AV1);
+    P(AV_CODEC_ID_VP9);
+    P(AV_CODEC_ID_AAC);
+    P(AV_CODEC_ID_OPUS);
     return 0;
 }
