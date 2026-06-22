@@ -12,8 +12,16 @@ package dev.hivens.skinema.libav
 object LibavAbi {
 
     object FormatContext {
+        /** AVOutputFormat* -- the muxer (avformat_alloc_output_context2 sets it). */
+        const val OFORMAT = 16L
+
+        /** AVIOContext* -- the output byte sink (avio_open fills it). */
+        const val PB = 32L
         const val NB_STREAMS = 44L
         const val STREAMS = 48L
+
+        /** Output URL/filename string. */
+        const val URL = 88L
         const val NB_CHAPTERS = 72L
         const val CHAPTERS = 80L
 
@@ -26,7 +34,14 @@ object LibavAbi {
         const val SIZEOF = 480L
     }
 
+    /** AVOutputFormat: only its AVFMT_* flags are read (header/IO gating). */
+    object OutputFormat {
+        const val FLAGS = 44L
+        const val SIZEOF = 64L
+    }
+
     object Stream {
+        const val INDEX = 8L
         const val CODECPAR = 16L
         const val TIME_BASE = 32L
 
@@ -56,9 +71,11 @@ object LibavAbi {
 
     object Packet {
         const val PTS = 8L
+        const val DTS = 16L
         const val DATA = 24L
         const val SIZE = 32L
         const val STREAM_INDEX = 36L
+        const val FLAGS = 40L
         const val DURATION = 64L
         const val SIZEOF = 104L
     }
@@ -91,6 +108,25 @@ object LibavAbi {
      * hw_device_ctx hands the decoder its device.
      */
     object CodecContext {
+        // -- M12 encode write fields --
+        const val BIT_RATE = 56L
+
+        /** AV_CODEC_FLAG_*; the encode side sets GLOBAL_HEADER here. */
+        const val FLAGS = 64L
+
+        /** AVRational time_base (num at +0, den at +4): the unit of encoded pts. */
+        const val TIME_BASE = 84L
+
+        /** AVRational framerate: the encoder's rate-control hint. */
+        const val FRAMERATE = 100L
+        const val WIDTH = 112L
+        const val HEIGHT = 116L
+
+        /** AVPixelFormat the encoder takes (set to YUV420P). */
+        const val PIX_FMT = 136L
+        const val MAX_B_FRAMES = 200L
+        const val GOP_SIZE = 332L
+
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
 
@@ -213,6 +249,18 @@ object LibavAbi {
 
     /** AVCodecHWConfig.methods bit: the decoder accepts an AVHWDeviceContext. */
     const val AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX = 1
+
+    // -- M12 encode + mux --
+    const val AV_PIX_FMT_YUV420P = 0
+
+    /** AVOutputFormat.flags: NOFILE skips avio_open; GLOBALHEADER moves extradata into the header. */
+    const val AVFMT_NOFILE = 1
+    const val AVFMT_GLOBALHEADER = 64
+    const val AV_CODEC_FLAG_GLOBAL_HEADER = 0x400000
+    const val AVIO_FLAG_WRITE = 2
+
+    /** av_opt_set flag: also search a context's private child (codec) options -- crf, preset, ... */
+    const val AV_OPT_SEARCH_CHILDREN = 1
 
     const val SWS_BILINEAR = 2
     const val AVCOL_SPC_BT709 = 1

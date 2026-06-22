@@ -712,6 +712,33 @@ README once the library is usable.
   SHIPPED bundle decodes on the GPU -- system-FFmpeg development already
   does. NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are deferred.
 
+- **M12 -- software video encode + mux (video DONE; audio + bundle pending, 2026-06-22).**
+  The push-side inverse of the decode pipeline. `MediaWriter`
+  (dev.hivens.skinema.encode) takes a `VideoEncodeConfig` (encoder name,
+  geometry, fps, bitrate, private options), opens the muxer inferred from the
+  output extension, and accepts RGBA8888 frames -- reverse-swscaled to
+  YUV420P, encoded, interleaved into the container -- with `finish` draining
+  the encoder and writing the trailer. One confined Arena on the calling
+  thread; fail-closed (an unknown encoder or any libav refusal throws and
+  leaves nothing allocated). GLOBAL_HEADER is set when the muxer wants it,
+  and codec-private options (crf, preset) go through av_opt_set with
+  SEARCH_CHILDREN. The codec time_base is microseconds (VFR-friendly);
+  packets rescale by hand to the muxer's stream time_base, since av_rescale_q
+  would pass AVRational by value and the bindings avoid that. New bindings:
+  the encode half (avcodec_find_encoder_by_name / send_frame / receive_packet
+  / parameters_from_context, av_frame_make_writable) and the avformat output
+  half (alloc_output_context2, new_stream, avio_open/closep, write_header,
+  interleaved_write_frame, write_trailer, free_context); ABI for the
+  AVCodecContext write fields, AVOutputFormat.flags, AVStream.index and the
+  packet/format pointers from the oracle. Validated by a semantic round-trip:
+  ten RGBA frames -> libx264/mp4 -> decoded back, frame count and a solid
+  colour within yuv tolerance (MediaWriterTest, gated on the loaded libav
+  carrying the encoder, so a decode-only bundle skips). PENDING: audio encode
+  (a second stream + swresample the other way), the GPL build flip (x264/x265
+  in build-natives.sh plus the README/section-10 licence rewrite -- the M10
+  identity change, to confirm before shipping), and M13 GPU encode on the
+  same MediaWriter.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

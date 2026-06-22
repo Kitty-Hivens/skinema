@@ -90,6 +90,7 @@ object Libav {
     private val hAvFrameAlloc = fn(LibavLibrary.AVUTIL, "av_frame_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvFrameFree = fn(LibavLibrary.AVUTIL, "av_frame_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvFrameGetBuffer = fn(LibavLibrary.AVUTIL, "av_frame_get_buffer", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT))
+    private val hAvFrameMakeWritable = fn(LibavLibrary.AVUTIL, "av_frame_make_writable", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     private val hAvFrameUnref = fn(LibavLibrary.AVUTIL, "av_frame_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvChannelLayoutDefault = fn(LibavLibrary.AVUTIL, "av_channel_layout_default", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
     private val hAvHwdeviceCtxCreate = fn(LibavLibrary.AVUTIL, "av_hwdevice_ctx_create", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
@@ -149,6 +150,10 @@ object Libav {
     private val hAvcodecOpen2 = fn(LibavLibrary.AVCODEC, "avcodec_open2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS))
     private val hAvcodecSendPacket = fn(LibavLibrary.AVCODEC, "avcodec_send_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecReceiveFrame = fn(LibavLibrary.AVCODEC, "avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvcodecFindEncoderByName = fn(LibavLibrary.AVCODEC, "avcodec_find_encoder_by_name", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvcodecSendFrame = fn(LibavLibrary.AVCODEC, "avcodec_send_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvcodecReceivePacket = fn(LibavLibrary.AVCODEC, "avcodec_receive_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvcodecParametersFromContext = fn(LibavLibrary.AVCODEC, "avcodec_parameters_from_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecFreeContext = fn(LibavLibrary.AVCODEC, "avcodec_free_context", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecFlushBuffers = fn(LibavLibrary.AVCODEC, "avcodec_flush_buffers", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecDecodeSubtitle2 = fn(
@@ -184,6 +189,14 @@ object Libav {
     private val hAvReadFrame = fn(LibavLibrary.AVFORMAT, "av_read_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvSeekFrame = fn(LibavLibrary.AVFORMAT, "av_seek_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT))
     private val hAvformatCloseInput = fn(LibavLibrary.AVFORMAT, "avformat_close_input", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvformatAllocOutputContext2 = fn(LibavLibrary.AVFORMAT, "avformat_alloc_output_context2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    private val hAvformatNewStream = fn(LibavLibrary.AVFORMAT, "avformat_new_stream", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS))
+    private val hAvformatWriteHeader = fn(LibavLibrary.AVFORMAT, "avformat_write_header", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvInterleavedWriteFrame = fn(LibavLibrary.AVFORMAT, "av_interleaved_write_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvWriteTrailer = fn(LibavLibrary.AVFORMAT, "av_write_trailer", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+    private val hAvformatFreeContext = fn(LibavLibrary.AVFORMAT, "avformat_free_context", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvioOpen = fn(LibavLibrary.AVFORMAT, "avio_open", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
+    private val hAvioClosep = fn(LibavLibrary.AVFORMAT, "avio_closep", FunctionDescriptor.of(JAVA_INT, ADDRESS))
 
     /** Loaded library versions as "major.minor.micro", keyed by library. */
     val versions: Map<LibavLibrary, String>
@@ -371,4 +384,30 @@ object Libav {
     fun avSeekFrame(ctx: MemorySegment, streamIndex: Int, timestamp: Long, flags: Int): Int =
         hAvSeekFrame.invoke(ctx, streamIndex, timestamp, flags) as Int
     fun avformatCloseInput(ctxPtrPtr: MemorySegment) { hAvformatCloseInput.invoke(ctxPtrPtr) }
+
+    // -- encode + mux (M12) ------------------------------------------------------
+
+    fun avcodecFindEncoderByName(name: MemorySegment): MemorySegment = hAvcodecFindEncoderByName.invoke(name) as MemorySegment
+    fun avcodecSendFrame(ctx: MemorySegment, frame: MemorySegment): Int = hAvcodecSendFrame.invoke(ctx, frame) as Int
+    fun avcodecReceivePacket(ctx: MemorySegment, packet: MemorySegment): Int = hAvcodecReceivePacket.invoke(ctx, packet) as Int
+    fun avcodecParametersFromContext(par: MemorySegment, ctx: MemorySegment): Int = hAvcodecParametersFromContext.invoke(par, ctx) as Int
+
+    /** Clones the frame's buffer if the encoder still references it, so it is safe to overwrite. */
+    fun avFrameMakeWritable(frame: MemorySegment): Int = hAvFrameMakeWritable.invoke(frame) as Int
+
+    /** av_opt_set searching a context's private child options (crf, preset, ...). */
+    fun avOptSet(obj: MemorySegment, name: MemorySegment, value: MemorySegment, searchFlags: Int): Int =
+        hAvOptSet.invoke(obj, name, value, searchFlags) as Int
+
+    /** Allocates an output context, inferring the muxer from [filename]'s extension. */
+    fun avformatAllocOutputContext2(ctxOut: MemorySegment, filename: MemorySegment): Int =
+        hAvformatAllocOutputContext2.invoke(ctxOut, MemorySegment.NULL, MemorySegment.NULL, filename) as Int
+
+    fun avformatNewStream(fmtCtx: MemorySegment): MemorySegment = hAvformatNewStream.invoke(fmtCtx, MemorySegment.NULL) as MemorySegment
+    fun avioOpen(pbOut: MemorySegment, url: MemorySegment, flags: Int): Int = hAvioOpen.invoke(pbOut, url, flags) as Int
+    fun avioClosep(pbPtrPtr: MemorySegment): Int = hAvioClosep.invoke(pbPtrPtr) as Int
+    fun avformatWriteHeader(ctx: MemorySegment): Int = hAvformatWriteHeader.invoke(ctx, MemorySegment.NULL) as Int
+    fun avInterleavedWriteFrame(ctx: MemorySegment, packet: MemorySegment): Int = hAvInterleavedWriteFrame.invoke(ctx, packet) as Int
+    fun avWriteTrailer(ctx: MemorySegment): Int = hAvWriteTrailer.invoke(ctx) as Int
+    fun avformatFreeContext(ctx: MemorySegment) { hAvformatFreeContext.invoke(ctx) }
 }

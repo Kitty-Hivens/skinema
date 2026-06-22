@@ -14,6 +14,7 @@
 #include <libavfilter/avfilter.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
@@ -231,6 +232,8 @@ int main(void) {
     P(offsetof(AVFormatContext, oformat));
     P(offsetof(AVFormatContext, pb));
     P(offsetof(AVFormatContext, url));
+    P(offsetof(AVOutputFormat, flags));
+    P(sizeof(AVOutputFormat));
 
     P(offsetof(AVPacket, flags));
     P(offsetof(AVPacket, dts));
@@ -244,6 +247,7 @@ int main(void) {
     P(AV_PKT_FLAG_KEY);
     P(AV_PIX_FMT_YUV420P);
     P(AV_SAMPLE_FMT_FLTP);
+    P(AV_OPT_SEARCH_CHILDREN);
     P(AV_CODEC_ID_H264);
     P(AV_CODEC_ID_HEVC);
     P(AV_CODEC_ID_AV1);
