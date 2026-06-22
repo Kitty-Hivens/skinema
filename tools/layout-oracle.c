@@ -233,8 +233,17 @@ int main(void) {
     P(offsetof(AVFormatContext, oformat));
     P(offsetof(AVFormatContext, pb));
     P(offsetof(AVFormatContext, url));
+    P(offsetof(AVFormatContext, flags));
     P(offsetof(AVOutputFormat, flags));
     P(sizeof(AVOutputFormat));
+
+    /* -- custom AVIO input (segment/stream feeding) -- */
+    P(offsetof(AVIOContext, buffer));
+    P(AVFMT_FLAG_CUSTOM_IO);
+    P(AVSEEK_SIZE);
+    P(SEEK_SET);
+    P(SEEK_CUR);
+    P(SEEK_END);
 
     P(offsetof(AVPacket, flags));
     P(offsetof(AVPacket, dts));
