@@ -11,6 +11,7 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
+import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.libav.probeSubtitleFile
@@ -84,7 +85,16 @@ class VideoPlayer internal constructor(
          * [selectAudioTrack].
          */
         audioTrack: Int? = null,
-    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, FrameSources::open)
+        /**
+         * Hardware-decode policy. [HwAccel.OFF] (default) is pure software
+         * decode -- the historical behaviour and the only CI-tested path.
+         * [HwAccel.AUTO] uses the platform's GPU decoder when present and
+         * falls back to software per file otherwise; [HwAccel.REQUIRE]
+         * fails the open ([State.Failed]) when hardware decode cannot be
+         * set up. The RGBA frame contract is identical on every path.
+         */
+        hardware: HwAccel = HwAccel.OFF,
+    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, { FrameSources.open(it, hardware) })
 
     sealed interface State {
         data object Opening : State
@@ -197,6 +207,17 @@ class VideoPlayer internal constructor(
      */
     @Volatile
     var rotationDegrees: Int = 0
+        private set
+
+    /**
+     * True when video is decoding on the GPU. False for software decode,
+     * frameless playback, and while [State.Opening]. Hardware decode is
+     * opt-in (the `hardware` constructor parameter) and silently falls back
+     * to software when no device or codec support is present, so this is
+     * the only signal that it actually engaged.
+     */
+    @Volatile
+    var hardwareActive: Boolean = false
         private set
 
     /**
@@ -461,6 +482,7 @@ class VideoPlayer internal constructor(
         chapters = decoder.chapters()
         coverArt = decoder.coverArt()
         rotationDegrees = decoder.rotationDegrees()
+        hardwareActive = decoder.hardwareActive()
         synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
         val pacer = Thread(::paceLoop, "skinema-pace").apply {
             isDaemon = true
