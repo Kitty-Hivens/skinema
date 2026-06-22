@@ -730,14 +730,22 @@ README once the library is usable.
   half (alloc_output_context2, new_stream, avio_open/closep, write_header,
   interleaved_write_frame, write_trailer, free_context); ABI for the
   AVCodecContext write fields, AVOutputFormat.flags, AVStream.index and the
-  packet/format pointers from the oracle. Validated by a semantic round-trip:
-  ten RGBA frames -> libx264/mp4 -> decoded back, frame count and a solid
-  colour within yuv tolerance (MediaWriterTest, gated on the loaded libav
-  carrying the encoder, so a decode-only bundle skips). PENDING: audio encode
-  (a second stream + swresample the other way), the GPL build flip (x264/x265
-  in build-natives.sh plus the README/section-10 licence rewrite -- the M10
-  identity change, to confirm before shipping), and M13 GPU encode on the
-  same MediaWriter.
+  packet/format pointers from the oracle. Audio rides the same writer: an
+  optional `AudioEncodeConfig` adds a second stream -- interleaved S16LE
+  stereo reverse-swresampled to the encoder's planar format and chunked to
+  its frame_size, both streams interleaved by the muxer, both encoders
+  drained at finish. Audio encoders (native AAC, libopus, FLAC) are
+  LGPL/BSD, so sound needs NO GPL; it reuses the existing swresample
+  bindings, and only the AVCodecContext audio write fields plus
+  AV_SAMPLE_FMT_FLTP joined the ABI. Validated by semantic round-trips: ten
+  RGBA frames -> libx264/mp4 decoded back (frame count, a solid colour
+  within yuv tolerance), and a video+audio file -> libx264+aac decoded back
+  through BOTH VideoDecoder and AudioDecoder (MediaWriterTest, gated on the
+  loaded libav carrying the encoder, so a decode-only bundle skips).
+  PENDING: the trimmed-bundle encoder build -- the GPL flip plus
+  x264/x265/SVT-AV1/libopus in build-natives.sh (accepted 2026-06-22; the
+  bundle grows ~3x toward ~40 MB) and the README/section-10 licence rewrite
+  that ships with it -- then M13 GPU encode on the same MediaWriter.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
