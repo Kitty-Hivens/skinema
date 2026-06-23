@@ -38,6 +38,9 @@ class AudioDecoder private constructor(
     val chapters: List<Chapter>,
     /** Encoded cover-art bytes; the frameless player's picture. */
     val coverArt: ByteArray?,
+    // The custom byte source backing this decoder (freed at close, after the
+    // format context); null for a file-Path decoder.
+    private val avioSource: AvioSource? = null,
 ) : AutoCloseable {
 
     class PcmChunk internal constructor(
@@ -190,6 +193,7 @@ class AudioDecoder private constructor(
         Libav.avcodecFreeContext(ptrPtr)
         ptrPtr.set(ADDRESS, 0, fmtCtx)
         Libav.avformatCloseInput(ptrPtr)
+        avioSource?.free(ptrPtr)
         arena.close()
     }
 
@@ -205,15 +209,62 @@ class AudioDecoder private constructor(
          */
         fun openOrNull(path: Path, streamIndex: Int? = null): AudioDecoder? {
             val arena = Arena.ofConfined()
-            var fmtCtx = MemorySegment.NULL
-            var codecCtx = MemorySegment.NULL
-            try {
+            val fmtCtx = try {
                 val ctxOut = arena.allocate(ADDRESS)
                 Libav.checkAv(
                     Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
                     "avformat_open_input($path)",
                 )
-                fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+            } catch (t: Throwable) {
+                arena.close()
+                throw t
+            }
+            return openAudio(arena, fmtCtx, null, streamIndex, path.toString())
+        }
+
+        /**
+         * Opens an audio stream over a custom byte [source] instead of a
+         * file -- the streaming seam for audio-only streams (a music radio
+         * feed). Same null-on-no-audio contract; skinema does no I/O of its
+         * own, the demuxer pulls bytes through [source].
+         */
+        fun openOrNull(source: MediaSource, streamIndex: Int? = null): AudioDecoder? {
+            val arena = Arena.ofConfined()
+            var avioSource: AvioSource? = null
+            val fmtCtx = try {
+                val avio = AvioSource(arena, source)
+                avioSource = avio
+                val ctx = Libav.avformatAllocContext()
+                if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
+                val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
+                sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
+                sized.set(
+                    JAVA_INT, LibavAbi.FormatContext.FLAGS,
+                    sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
+                )
+                val ctxOut = arena.allocate(ADDRESS)
+                ctxOut.set(ADDRESS, 0, sized)
+                Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
+                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+            } catch (t: Throwable) {
+                avioSource?.free(arena.allocate(ADDRESS))
+                arena.close()
+                throw t
+            }
+            return openAudio(arena, fmtCtx, avioSource, streamIndex, "custom source")
+        }
+
+        /** Shared tail: an opened [fmtCtx] -> an audio decoder, null when there is no audio. */
+        private fun openAudio(
+            arena: Arena,
+            fmtCtx: MemorySegment,
+            avioSource: AvioSource?,
+            streamIndex: Int?,
+            label: String,
+        ): AudioDecoder? {
+            var codecCtx = MemorySegment.NULL
+            try {
                 Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info")
 
                 val tracks = enumerateTracks(fmtCtx, arena)
@@ -228,6 +279,7 @@ class AudioDecoder private constructor(
                         val ptrPtr = arena.allocate(ADDRESS)
                         ptrPtr.set(ADDRESS, 0, fmtCtx)
                         Libav.avformatCloseInput(ptrPtr)
+                        avioSource?.free(ptrPtr)
                         arena.close()
                         return null
                     }
@@ -235,7 +287,7 @@ class AudioDecoder private constructor(
                     decoder = decoderOut.get(ADDRESS, 0)
                 } else {
                     if (tracks.none { it.streamIndex == streamIndex }) {
-                        throw LibavException("stream $streamIndex is not an audio track of $path")
+                        throw LibavException("stream $streamIndex is not an audio track of $label")
                     }
                     chosen = streamIndex
                     val codecId = streamAt(fmtCtx, chosen)
@@ -244,7 +296,7 @@ class AudioDecoder private constructor(
                         .get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)
                     decoder = Libav.avcodecFindDecoder(codecId)
                     if (decoder == MemorySegment.NULL) {
-                        throw LibavException("no decoder for audio stream $streamIndex of $path")
+                        throw LibavException("no decoder for audio stream $streamIndex of $label")
                     }
                 }
 
@@ -271,6 +323,7 @@ class AudioDecoder private constructor(
                     containerTags(fmtCtx, arena),
                     containerChapters(fmtCtx, arena, startTimeNanos),
                     attachedCoverArt(fmtCtx),
+                    avioSource,
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
@@ -282,6 +335,7 @@ class AudioDecoder private constructor(
                     ptrPtr.set(ADDRESS, 0, fmtCtx)
                     Libav.avformatCloseInput(ptrPtr)
                 }
+                avioSource?.free(ptrPtr)
                 arena.close()
                 throw t
             }
