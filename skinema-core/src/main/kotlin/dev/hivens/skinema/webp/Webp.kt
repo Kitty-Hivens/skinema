@@ -1,5 +1,6 @@
 package dev.hivens.skinema.webp
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.Os
 import java.lang.foreign.Arena
@@ -79,7 +80,8 @@ object Webp {
         }
     }
 
-    private val bindings: Bindings? = runCatching { Bindings() }.getOrNull()
+    private val bindings: Bindings? =
+        runCatching { Bindings() }.onFailure { Debug.trace("libwebp bindings unavailable", it) }.getOrNull()
 
     /** True when libwebp + libwebpdemux loaded; false degrades to the libav path. */
     val available: Boolean get() = bindings != null
