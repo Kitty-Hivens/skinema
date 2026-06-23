@@ -342,6 +342,7 @@ esac
     --disable-programs --disable-doc --disable-debug \
     --disable-everything --disable-network \
     --disable-avdevice \
+    --pkg-config-flags=--static \
     --enable-libvpx --enable-libdav1d \
     --enable-gpl --enable-libx264 --enable-libx265 \
     --enable-protocol=file,pipe \
