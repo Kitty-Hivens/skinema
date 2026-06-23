@@ -27,6 +27,7 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
 WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
+X264_VERSION="${X264_VERSION:-stable}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
@@ -112,6 +113,25 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
+    fi
+
+    # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
+    # into FFmpeg like dav1d/libvpx so the shipped library carries no extra
+    # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
+    # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
+    if [ ! -f "$DEPS/lib/libx264.a" ]; then
+        fetch "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz" x264.tar.gz
+        rm -rf "x264-$X264_VERSION"
+        tar -xzf x264.tar.gz
+        (
+            cd "x264-$X264_VERSION"
+            ./configure --prefix="$DEPS" --enable-static --enable-pic \
+                --disable-cli --disable-opencl \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "x264-$X264_VERSION/COPYING" "$WORK/x264-COPYING"
     fi
 fi
 
@@ -297,10 +317,13 @@ esac
     --disable-everything --disable-network \
     --disable-avdevice \
     --enable-libvpx --enable-libdav1d \
+    --enable-gpl --enable-libx264 \
     --enable-protocol=file,pipe \
     --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup \
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
+    --enable-encoder=libx264,aac,flac \
+    --enable-muxer=mov,mp4,matroska,webm \
     --enable-filter=atempo,abuffer,abuffersink \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
@@ -315,6 +338,7 @@ cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
 if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
+    cp "$WORK/x264-COPYING" "$PREFIX/licenses/x264-COPYING"
     cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
     cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
     cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
