@@ -146,6 +146,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         cmake -G Ninja -S "x265_$X265_VERSION/source" -B "x265_$X265_VERSION/build" \
             -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
         ninja -C "x265_$X265_VERSION/build" install
         cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
