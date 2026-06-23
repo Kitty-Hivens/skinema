@@ -57,11 +57,11 @@ jobs:
         # against libva and links it dynamically, the same pattern -- a
         # ubiquitous Linux desktop lib, pulled in here for the build and
         # for the on-runner acceptance test (libva-dev depends on libva2).
-        run: sudo apt-get update && sudo apt-get install -y nasm meson ninja-build pkg-config libfontconfig-dev libva-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config libfontconfig-dev libva-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
-        run: brew install nasm meson ninja pkg-config
+        run: brew install nasm cmake meson ninja pkg-config
 
       - name: Install toolchain (Windows / MSYS2)
         if: runner.os == 'Windows'
@@ -73,6 +73,7 @@ jobs:
             base-devel
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-cmake
             mingw-w64-x86_64-meson
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkgconf
