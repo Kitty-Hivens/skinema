@@ -1,5 +1,6 @@
 package dev.hivens.skinema.subtitles
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.ass.AssPatch
 import dev.hivens.skinema.core.MediaClock
@@ -153,14 +154,15 @@ internal class SubtitlePipeline(
         try {
             open()
             pump()
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Debug.trace("subtitle pipeline failed", t)
         } finally {
             pendingSeeks.set(0)
             isDead = true
             // The mailbox is single-producer: the clear that hides a dead
             // or deselected track must come from this thread.
-            runCatching { publishPatches(emptyList()) }
-            runCatching { closeNatives() }
+            runCatching { publishPatches(emptyList()) }.onFailure { Debug.trace("subtitle clear on teardown", it) }
+            runCatching { closeNatives() }.onFailure { Debug.trace("subtitle native close", it) }
         }
     }
 

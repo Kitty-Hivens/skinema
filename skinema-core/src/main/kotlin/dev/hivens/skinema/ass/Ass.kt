@@ -1,5 +1,6 @@
 package dev.hivens.skinema.ass
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.Os
 import java.lang.foreign.Arena
@@ -132,7 +133,8 @@ object Ass {
         }
     }
 
-    private val bindings: Bindings? = runCatching { Bindings() }.getOrNull()
+    private val bindings: Bindings? =
+        runCatching { Bindings() }.onFailure { Debug.trace("libass bindings unavailable", it) }.getOrNull()
 
     /** True when libass loaded; false refuses text tracks, bitmap ones work on. */
     val available: Boolean get() = bindings != null
