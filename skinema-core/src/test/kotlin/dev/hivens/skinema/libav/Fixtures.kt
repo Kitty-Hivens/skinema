@@ -46,7 +46,7 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp", "encode")
+    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats")
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -61,6 +61,9 @@ object Fixtures {
         // The full tier always carries x264 (mac/win keep enc-h264 even
         // without x265, #22), so libx264 is the encode path's load probe.
         "encode" -> libavHasEncoder("libx264")
+        // The broad legacy/extended decode set (the formats feature): mpeg2
+        // is its canonical member, present whenever the feature is on.
+        "formats" -> libavHasDecoder("mpeg2video")
         else -> error("unknown capability '$cap'")
     }
 
@@ -117,6 +120,19 @@ object Fixtures {
             return
         }
         assumeTrue(Webp.available, "libwebpdemux not loadable -- optional capability, skipping")
+    }
+
+    /**
+     * The broad legacy/extended decode set (the formats feature) is OPTIONAL
+     * -- the core tier ships without it. Absence is legal unless
+     * SKINEMA_REQUIRE_CAPS lists 'formats'; a core bundle skips these tests.
+     */
+    fun assumeFormats() {
+        if (requires("formats")) {
+            check(capLoads("formats")) { "SKINEMA_REQUIRE_CAPS lists 'formats' but the extended decoders did not load" }
+            return
+        }
+        assumeTrue(capLoads("formats"), "extended formats absent in the bundle -- skipping")
     }
 
     private val encoders: Set<String> by lazy {
