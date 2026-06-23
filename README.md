@@ -45,18 +45,21 @@ The natives classifier is `<tier>-<platform>`: pick one tier for the
 platforms you target. The tier sets what the bundle carries -- and its
 license:
 
-| Tier     | Carries                                                      | License |
-|----------|--------------------------------------------------------------|---------|
-| `core`   | decode (H.264/HEVC/VP8/VP9/AV1, audio, images), no subtitles | LGPL    |
-| `decode` | core + text/bitmap subtitles (the libass stack)              | LGPL    |
-| `full`   | decode + subtitles + H.264/HEVC software encode              | GPL     |
+| Tier     | Carries                                                            | License |
+|----------|-------------------------------------------------------------------|---------|
+| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles | LGPL |
+| `decode` | core + subtitles + the broad legacy/extended format set           | LGPL    |
+| `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
-`core` drops the multi-MB libass stack for apps that only play video;
-`decode` (used above) is the complete LGPL player; `full` adds encode and
-is GPL because it bundles x264/x265. HEVC encode ships on Linux only for
-now -- macOS/Windows `full` carry H.264 encode (issue #22). On first use
-the jars unpack to a per-user cache. Without a natives jar, skinema looks
-for matching system libraries -- fine for development, not what you ship.
+`core` is the lean tier -- the modern codecs only, no subtitles -- for apps
+that just play current video. `decode` (used above) is the complete LGPL
+player: it adds the libass subtitle stack and the broad `formats` set (the
+legacy and broadcast containers and codecs in "What it plays" below). `full`
+adds software encode and is GPL because it bundles x264/x265; HEVC encode
+ships on Linux only for now -- macOS/Windows `full` carry H.264 encode
+(issue #22). On first use the jars unpack to a per-user cache. Without a
+natives jar, skinema looks for matching system libraries -- fine for
+development, not what you ship.
 
 On JDK 24+ launch with `--enable-native-access=ALL-UNNAMED` (or grant
 your named module): skinema's FFM calls -- and Skiko's, if you use
@@ -66,12 +69,14 @@ Compose -- are restricted methods that otherwise warn on every run.
 
 |                 |                                                                                               |
 |-----------------|-----------------------------------------------------------------------------------------------|
-| Containers      | mp4/mov/m4a, webm/mkv, gif, apng, webp, ogg, mp3, flac, wav, raw ac3/eac3                     |
-| Video           | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                                  |
+| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
+| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
 | Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
-| Audio           | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM -- the device clock masters A/V sync |
+| Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
 | Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
+
+The legacy and broadcast formats (avi/MPEG-TS/flv/asf/dv/RealMedia and the older codecs) ride the `decode` and `full` tiers; the lean `core` tier carries only the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio). H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode

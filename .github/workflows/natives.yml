@@ -59,12 +59,12 @@ jobs:
         shell: bash
         run: |
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp hwaccel";                        caps="decode,webp" ;;
-            decode) feat="av1 vpx webp hwaccel subs";                   caps="decode,webp,subs" ;;
-            full)   feat="av1 vpx webp hwaccel subs enc-h264 enc-hevc"; caps="decode,webp,subs,encode" ;;
+            core)   feat="av1 vpx webp hwaccel";                                caps="decode,webp" ;;
+            decode) feat="av1 vpx webp hwaccel subs formats";                   caps="decode,webp,subs,formats" ;;
+            full)   feat="av1 vpx webp hwaccel subs formats enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
           esac
           case "${{ runner.os }}:${{ matrix.tier }}" in
-            macOS:full|Windows:full) feat="av1 vpx webp hwaccel subs enc-h264" ;;
+            macOS:full|Windows:full) feat="av1 vpx webp hwaccel subs formats enc-h264" ;;
           esac
           echo "features=$feat" >> "$GITHUB_OUTPUT"
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
