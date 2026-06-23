@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Trimmed FFmpeg build for skinema (ROADMAP.md section 4): shared, LGPL,
-# decode-only whitelist, no network. Used both locally (against system
-# libvpx/dav1d) and in CI (STATIC_DEPS=1 builds them from source as static
-# PIC so the shipped libav* carry no extra runtime dependencies).
+# Trimmed FFmpeg build for skinema (ROADMAP.md section 4): shared, a
+# FEATURES-selected whitelist, no network. Used both locally (against
+# system libraries) and in CI (STATIC_DEPS=1 builds the dependencies from
+# source as static PIC so the shipped libav* carry no extra runtime
+# dependency). FEATURES drives the modular tiers (core/decode/full); a
+# bundle stays LGPL until an encoder feature pulls in GPL x264/x265.
 #
 #   tools/build-natives.sh [prefix]
 #
@@ -27,11 +29,31 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
 WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
+X264_VERSION="${X264_VERSION:-stable}"
+X265_VERSION="${X265_VERSION:-4.1}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
 LIBASS_VERSION="${LIBASS_VERSION:-0.17.4}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
+
+# Which optional capabilities this bundle carries (modular tiers, ROADMAP
+# section 4). Comma- or space-separated; default is the complete LGPL decode
+# set. Both the dependency builds above and the ffmpeg whitelist below gate
+# on these, so an absent feature ships neither its library nor its codecs.
+#   core    av1 vpx webp hwaccel                          (LGPL, no subtitles)
+#   decode  av1 vpx webp hwaccel subs                     (LGPL, full decode)
+#   full    av1 vpx webp hwaccel subs enc-h264 enc-hevc   (GPL, + encode)
+FEATURES="${FEATURES:-av1 vpx webp hwaccel subs}"
+FEATURES="${FEATURES//,/ }"
+has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+for _f in $FEATURES; do
+    case "$_f" in
+        av1|vpx|webp|subs|hwaccel|enc-h264|enc-hevc) ;;
+        *) echo "build-natives: unknown FEATURE '$_f'" >&2; exit 1 ;;
+    esac
+done
+
 mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
@@ -70,7 +92,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     DEPS="$WORK/deps"
     export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$DEPS/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 
-    if [ ! -f "$DEPS/lib/libdav1d.a" ]; then
+    if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
         fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz" dav1d.tar.gz
         rm -rf "dav1d-$DAV1D_VERSION"
         tar -xzf dav1d.tar.gz
@@ -84,7 +106,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # it at runtime; it is not linked into ffmpeg). Autotools, not cmake:
     # libtool produces the soname naming the loader expects on every OS
     # (libwebp.so.7 / libwebp.7.dylib / libwebp-7.dll).
-    if ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
+    if has webp && ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
         fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz" libwebp-dist.tar.gz
         rm -rf "libwebp-$WEBP_VERSION"
         tar -xzf libwebp-dist.tar.gz
@@ -99,7 +121,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         cp "libwebp-$WEBP_VERSION/COPYING" "$WORK/libwebp-COPYING"
     fi
 
-    if [ ! -f "$DEPS/lib/libvpx.a" ]; then
+    if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
         fetch "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz" libvpx.tar.gz
         rm -rf "libvpx-${VPX_VERSION#v}"
         tar -xzf libvpx.tar.gz
@@ -113,9 +135,45 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make install
         )
     fi
+
+    # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
+    # into FFmpeg like dav1d/libvpx so the shipped library carries no extra
+    # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
+    # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
+    if has enc-h264 && [ ! -f "$DEPS/lib/libx264.a" ]; then
+        fetch "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz" x264.tar.gz
+        rm -rf "x264-$X264_VERSION"
+        tar -xzf x264.tar.gz
+        (
+            cd "x264-$X264_VERSION"
+            ./configure --prefix="$DEPS" --enable-static --enable-pic \
+                --disable-cli --disable-opencl \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "x264-$X264_VERSION/COPYING" "$WORK/x264-COPYING"
+    fi
+
+    # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit (10/12-bit HDR
+    # multilib skipped -- 8-bit is the common case), PIC, folded in. x265 is
+    # C++, so on Windows the ffmpeg link folds the C++ runtime in (see FFLD
+    # at the configure below); Linux/macOS take the system C++ runtime.
+    if has enc-hevc && [ ! -f "$DEPS/lib/libx265.a" ]; then
+        fetch "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz" x265.tar.gz
+        rm -rf "x265_$X265_VERSION"
+        tar -xzf x265.tar.gz
+        cmake -G Ninja -S "x265_$X265_VERSION/source" -B "x265_$X265_VERSION/build" \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
+        ninja -C "x265_$X265_VERSION/build" install
+        cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
+    fi
 fi
 
-if [ "${STATIC_DEPS:-}" = "1" ]; then
+if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     # --- The libass stack (text subtitles). libass ships SHARED in the
     # bundle; fribidi is LGPL-2.1 and ships as its OWN shared library
     # (the libwebp precedent). freetype (FTL) and harfbuzz (MIT) fold in
@@ -259,14 +317,14 @@ cd "ffmpeg-$FFMPEG_VERSION"
 # default and quiet shellcheck.
 read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
 
-# Hardware decode (M11). --disable-everything turns every hwaccel off, so
-# the platform's are re-enabled explicitly. VideoToolbox (macOS) and
-# D3D11VA/DXVA2 (Windows) need only the system SDK; VAAPI (Linux) links
-# libva, which the CI build image must provide (libva-dev) and the user's
-# machine provides at runtime like fontconfig. NVDEC/NVENC/QSV/AMF need
-# extra SDKs and stay a follow-up. UNVALIDATED until a natives.yml run --
-# the hw decode code is proven against the system FFmpeg, not yet a bundle.
+# Hardware decode (the hwaccel feature, M11). --disable-everything turns
+# every hwaccel off, so the platform's are re-enabled explicitly.
+# VideoToolbox (macOS) and D3D11VA/DXVA2 (Windows) need only the system SDK;
+# VAAPI (Linux) links libva, which the CI build image must provide
+# (libva-dev) and the user's machine provides at runtime like fontconfig.
+# NVDEC/NVENC/QSV/AMF need extra SDKs and stay a follow-up.
 HWACCEL=()
+if has hwaccel; then
 case "$(uname -s)" in
     Linux)
         HWACCEL=(--enable-vaapi
@@ -281,45 +339,95 @@ case "$(uname -s)" in
             --enable-hwaccel=h264_d3d11va,hevc_d3d11va,vp9_d3d11va,av1_d3d11va,h264_dxva2,hevc_dxva2,vp9_dxva2,av1_dxva2)
         ;;
 esac
+fi
 
-# Decode whitelist (ROADMAP.md section 4). Demuxers cover the consumer's
-# container set plus standalone audio for M5; native opus/vorbis/aac/mp3/
-# flac decoders need no external libraries. The real-life audio set --
-# ac3/eac3 (movie rips), alac (m4a lossless), 24/32-bit and float WAV --
-# rides the same native decoders. The ac3 parser frames both ac3 and
-# eac3. libvpx is required, not a nicety: the native vp8/vp9 decoders
-# drop the webm alpha side-channel. libavfilter carries exactly the
-# playback-rate chain: atempo plus its abuffer/abuffersink endpoints.
+# x265 is C++; on Windows fold the MinGW C++/GCC runtime into the ffmpeg
+# libraries so avcodec needs no libstdc++-6.dll / libgcc_s alongside (the
+# libass DLLs already do this). Empty elsewhere -- the Linux/macOS C++
+# runtime is a system library.
+FFLD=()
+if has enc-hevc; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*) FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc) ;;
+    esac
+fi
+
+# The whitelist is assembled from FEATURES (ROADMAP.md section 4). The
+# always-on base is the core playback set: H.264/HEVC video, the native
+# audio decoders (opus/vorbis/aac/mp3/flac plus the real-life rip set --
+# ac3/eac3, alac, 24/32-bit and float WAV; the ac3 parser frames both ac3
+# and eac3), the still-image decoders, the consumer's containers, and the
+# playback-rate filter chain (atempo plus its abuffer/abuffersink ends).
+# Each optional feature adds its decoders/demuxers and, for av1/vpx, links
+# its external library; vp8/vp9 ride the vpx feature because the bundle
+# uses libvpx (the native decoders drop the webm alpha channel). The
+# encoders pull in the output muxers and the native aac/flac encoders and
+# flip --enable-gpl, since x264/x265 are GPL.
+DEMUX="mov,matroska,gif,apng,image2,png_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3"
+DECODE="h264,hevc,mjpeg,png,apng,gif,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le"
+PARSE="h264,hevc,mjpeg,png,gif,aac,mpegaudio,opus,vorbis,flac,ac3"
+LIBS=()
+ENC=()
+has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1"; }
+has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
+has webp && { DEMUX+=",webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
+has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub"; }
+has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); }
+has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); }
+
+GPL=()
+ENCFLAG=()
+MUXFLAG=()
+if [ ${#ENC[@]} -gt 0 ]; then
+    GPL=(--enable-gpl)
+    ENC+=(aac flac)
+    ENCFLAG=(--enable-encoder="$(IFS=,; echo "${ENC[*]}")")
+    MUXFLAG=(--enable-muxer=mov,mp4,matroska,webm)
+fi
+
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-debug \
     --disable-everything --disable-network \
     --disable-avdevice \
-    --enable-libvpx --enable-libdav1d \
+    --pkg-config-flags=--static \
+    ${GPL[@]+"${GPL[@]}"} \
+    ${LIBS[@]+"${LIBS[@]}"} \
     --enable-protocol=file,pipe \
-    --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup \
-    --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub \
-    --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
+    --enable-demuxer="$DEMUX" \
+    --enable-decoder="$DECODE" \
+    --enable-parser="$PARSE" \
+    ${ENCFLAG[@]+"${ENCFLAG[@]}"} \
+    ${MUXFLAG[@]+"${MUXFLAG[@]}"} \
     --enable-filter=atempo,abuffer,abuffersink \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
+    ${FFLD[@]+"${FFLD[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
 make install
 
-# LGPL compliance travels with the binaries: license texts ship inside
-# every native bundle, and the exact source is pinned by FFMPEG_VERSION.
+# License compliance travels with the binaries: the texts ship inside every
+# native bundle, and the exact source is pinned by FFMPEG_VERSION. FFmpeg's
+# own license is LGPL until an encoder flips --enable-gpl, so the GPL build
+# ships the GPL text too; each dependency's text ships only when its feature
+# put that dependency in the bundle.
 mkdir -p "$PREFIX/licenses"
 cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
+[ ${#GPL[@]} -gt 0 ] && cp COPYING.GPLv2 "$PREFIX/licenses/"
 if [ "${STATIC_DEPS:-}" = "1" ]; then
-    cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
-    cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
-    cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
-    cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
-    cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
-    cp "$WORK/harfbuzz-COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
-    cp "$WORK/fribidi-COPYING" "$PREFIX/licenses/fribidi-COPYING"
+    has av1      && cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
+    has vpx      && cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
+    has webp     && cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
+    has enc-h264 && cp "$WORK/x264-COPYING" "$PREFIX/licenses/x264-COPYING"
+    has enc-hevc && cp "$WORK/x265-COPYING" "$PREFIX/licenses/x265-COPYING"
+    if has subs; then
+        cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
+        cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
+        cp "$WORK/harfbuzz-COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
+        cp "$WORK/fribidi-COPYING" "$PREFIX/licenses/fribidi-COPYING"
+    fi
 fi
 
 # The Windows DLLs link MinGW runtime libraries -- zlib1/libbz2-1 (the

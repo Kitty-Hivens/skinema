@@ -131,6 +131,29 @@ macOS CoreText. libunibreak is deliberately off -- optional, and a
 system copy must not become a silent dependency. Expected size: 11-15 MB
 per platform against ~70 MB for a full build.
 
+Modular tiers (M16, 2026-06): the whitelist above is the union, not a
+single fixed bundle. `tools/build-natives.sh` assembles it from a FEATURES
+set -- each feature gates both its source-built dependency and its slice of
+the demuxer/decoder/parser/encoder/muxer list -- so one script produces
+three curated tiers, because some support (the libass stack above all)
+weighs a lot and not every consumer wants it. The always-on base is the
+core playback set (H.264/HEVC, the native audio decoders, the still images,
+the containers, the atempo chain); each tier layers features on:
+
+| Tier     | Features over the base               | License |
+|----------|--------------------------------------|---------|
+| `core`   | av1 vpx webp hwaccel                 | LGPL    |
+| `decode` | + subs (the libass stack)            | LGPL    |
+| `full`   | + enc-h264 enc-hevc (x264/x265)      | GPL     |
+
+A bundle stays LGPL until an `enc-*` feature pulls in GPL x264/x265, so
+`core` and `decode` are LGPL and only `full` is GPL -- the LGPL decode path
+is a first-class tier now, not "ship your own FFmpeg". enc-hevc (x265)
+ships on Linux only for the moment: cmake 4.x cannot configure x265 4.1
+(issue #22), so macOS/Windows `full` carry x264 alone. CI builds the
+3 x 5 tier-by-platform matrix; the natives module publishes each as the
+classifier `<tier>-<platform>`.
+
 ## 5. Bindings
 
 Surface: roughly 30 functions -- avformat_open_input,
@@ -244,13 +267,19 @@ README once the library is usable.
 ## 10. Distribution and licensing
 
 - skinema: Apache-2.0.
-- FFmpeg: LGPL build (decode-only needs no GPL components), **dynamically
-  linked shared libraries only**, license texts shipped, source of the
-  exact build referenced (BtbN tag or our CI artifact). Static linking is
-  off the table -- it would change the licensing story.
-- Natives packaging: per-OS/arch classifier jars (the lwjgl/skiko
-  pattern) carrying the trimmed runtime plus an `index.txt`; NativeBundle
-  deploys them to a fingerprint-keyed per-user cache (atomic, race-safe).
+- FFmpeg: licensed per tier (the modular FEATURES, section 4). `core` and
+  `decode` carry no encoders and stay LGPL; `full` adds the x264/x265
+  software encoders, which are GPL, so `--enable-gpl` flips that tier's build
+  (decode was LGPL throughout; M10 records the encode pivot, M12 the
+  subsystem, M16 the tiers). **Dynamically linked shared libraries only**,
+  license texts shipped (the GPL text on `full`, LGPL on the rest), source of
+  the exact build referenced (BtbN tag or our CI artifact). Static linking is
+  off the table. A consumer needing LGPL takes `core` or `decode`; only one
+  shipping `full` takes on GPL.
+- Natives packaging: per-tier/OS/arch classifier jars `<tier>-<platform>`
+  (the lwjgl/skiko pattern) carrying the trimmed runtime plus an `index.txt`;
+  NativeBundle deploys them to a fingerprint-keyed per-user cache (atomic,
+  race-safe), keyed by platform so the loader stays tier-agnostic.
 - Natives delivery is asynchronous by design: every platform build
   uploads independently to the rolling `natives-<ffmpeg version>` release
   the moment it passes its on-runner acceptance suite. A queued or broken
@@ -769,6 +798,19 @@ README once the library is usable.
   `() -> MediaSource` factory (a fresh reader per decoder; fine for a
   buffered/seekable source, not a forkable live one) or a single unified
   demux. That decision belongs with the streaming consumer.
+
+- **M16 -- GPL encode bundle (x264 landed; x265/SVT-AV1/libopus pending,
+  2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
+  H.264 encoder (static, folded in like dav1d/libvpx -- no runtime
+  dependency), the libx264/aac/flac encoders and the mov/mp4/matroska/webm
+  muxers, so a SHIPPED bundle runs MediaWriter, not only a full system
+  FFmpeg. README and section 10 are rewritten for the GPL bundle (skinema
+  stays Apache; a decode-only consumer can ship its own LGPL FFmpeg). The
+  series is incremental by cross-build risk: x264 is autotools + nasm (no
+  cmake); the cmake encoders (x265, SVT-AV1) and libopus follow, each its own
+  round (and x265/SVT-AV1 add cmake to the CI image). The MediaWriter encode
+  test stops skipping once the bundle carries libx264, so the natives
+  acceptance suite exercises encode on metal.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

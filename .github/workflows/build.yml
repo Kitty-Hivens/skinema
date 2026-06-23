@@ -14,19 +14,22 @@ jobs:
           # Every platform tests against OUR trimmed bundles from the
           # rolling natives release -- CI dogfoods exactly the bytes that
           # ship to users, loaded through the same SKINEMA_LIBAV_DIR
-          # mechanism the classifier jars use.
+          # mechanism the classifier jars use. It pulls the full tier: the
+          # superset bundle exercises decode, subtitles, webp and encode in
+          # one run, so the suite runs whole (the per-tier bundles are gated
+          # at build time in natives.yml itself).
           - os: ubuntu-latest
             platform: linux-x64
-            caps: decode,subs,webp
+            caps: decode,subs,webp,encode
           - os: ubuntu-24.04-arm
             platform: linux-arm64
-            caps: decode,subs,webp
+            caps: decode,subs,webp,encode
           - os: windows-latest
             platform: windows-x64
-            caps: decode,subs,webp
+            caps: decode,subs,webp,encode
           - os: macos-14
             platform: macos-arm64
-            caps: decode,subs,webp
+            caps: decode,subs,webp,encode
     runs-on: ${{ matrix.os }}
     env:
       # The capabilities CI holds mandatory on this platform: a bundle
@@ -70,7 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rev=$(gh api repos/${{ github.repository }}/releases/tags/natives-8.1.1 \
-            --jq '[.assets[] | select(.name == "skinema-natives-${{ matrix.platform }}.tar.gz")][0].updated_at' \
+            --jq '[.assets[] | select(.name == "skinema-natives-full-${{ matrix.platform }}.tar.gz")][0].updated_at' \
             2>/dev/null | tr -dc '0-9TZ:-' || true)
           echo "rev=${rev:-unknown}" >> "$GITHUB_OUTPUT"
 
@@ -79,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libav-bundle
-          key: skinema-natives-8.1.1-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
+          key: skinema-natives-8.1.1-full-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
 
       - name: Download the trimmed natives bundle
         if: steps.libav-cache.outputs.cache-hit != 'true'
@@ -87,7 +90,7 @@ jobs:
         run: |
           mkdir -p libav-bundle
           curl -fsSL -o bundle.tar.gz \
-            "https://github.com/Kitty-Hivens/skinema/releases/download/natives-8.1.1/skinema-natives-${{ matrix.platform }}.tar.gz"
+            "https://github.com/Kitty-Hivens/skinema/releases/download/natives-8.1.1/skinema-natives-full-${{ matrix.platform }}.tar.gz"
           tar -xzf bundle.tar.gz -C libav-bundle
 
       - name: Point skinema at the bundle under test

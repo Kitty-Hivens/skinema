@@ -1,11 +1,12 @@
 # skinema
 
-Video decode and playback for JVM desktop apps. FFmpeg through
-hand-written Java FFM (Panama) bindings, frames out as raw RGBA or Skia
-images, a Compose Desktop surface on top. No JNI wrapper stacks, no
-embedded player engines, and no network access -- the bundled FFmpeg is
-built with `--disable-network`, so the library physically cannot perform
-I/O beyond the file you hand it.
+Video decode, encode and playback for JVM desktop apps. FFmpeg through
+hand-written Java FFM (Panama) bindings: frames out as raw RGBA or Skia
+images with a Compose Desktop surface on top, and frames back in to a
+muxed file. No JNI wrapper stacks, no embedded player engines. The bundled
+FFmpeg is built with `--disable-network`, so skinema performs no network
+I/O of its own -- it works on the file you hand it (or the bytes a
+`MediaSource` feeds it) and nothing more.
 
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)
@@ -33,20 +34,29 @@ internals -- lives in [docs/](docs/README.md).
 
 ```kotlin
 implementation("dev.hivens:skinema-compose:0.5.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-x64")
 ```
 
-All five classifiers ship from 0.5.0 (linux-arm64 joined that release);
-the other four exist on earlier versions too.
+The natives classifier is `<tier>-<platform>`: pick one tier for the
+platforms you target. The tier sets what the bundle carries -- and its
+license:
 
-The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
-platform) plus libwebp; on first use they unpack to a per-user cache.
-Without a natives jar, skinema looks for matching system libraries --
-fine for development, not what you ship.
+| Tier     | Carries                                                      | License |
+|----------|--------------------------------------------------------------|---------|
+| `core`   | decode (H.264/HEVC/VP8/VP9/AV1, audio, images), no subtitles | LGPL    |
+| `decode` | core + text/bitmap subtitles (the libass stack)              | LGPL    |
+| `full`   | decode + subtitles + H.264/HEVC software encode              | GPL     |
+
+`core` drops the multi-MB libass stack for apps that only play video;
+`decode` (used above) is the complete LGPL player; `full` adds encode and
+is GPL because it bundles x264/x265. HEVC encode ships on Linux only for
+now -- macOS/Windows `full` carry H.264 encode (issue #22). On first use
+the jars unpack to a per-user cache. Without a natives jar, skinema looks
+for matching system libraries -- fine for development, not what you ship.
 
 On JDK 24+ launch with `--enable-native-access=ALL-UNNAMED` (or grant
 your named module): skinema's FFM calls -- and Skiko's, if you use
@@ -120,7 +130,7 @@ CoreText); a fontless headless box renders blank overlays.
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
 | `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
-| `skinema-natives` | trimmed FFmpeg + libwebp, classifier jar per platform   | --                               |
+| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 
 ROADMAP.md is the project's working memory: every architectural
 decision, with its reasoning, lives there.
@@ -134,15 +144,25 @@ maintainer's discretion.
 
 ## License
 
-Apache-2.0 for skinema itself. FFmpeg is consumed as separate LGPL
-shared libraries, dynamically linked, never statically embedded; license
-texts ship inside every natives bundle. libwebp, libvpx and dav1d are
-BSD-family. libass (ISC) ships with FreeType and HarfBuzz folded in --
-portions of the bundled software are copyright The FreeType Project
-(freetype.org), licensed under the FreeType License -- while FriBidi
-stays a separate shared library precisely because it is LGPL. On
-Windows, where libtool cannot fold a static archive into a DLL,
-FreeType and HarfBuzz ship as their own DLLs instead, and the bundle
-also carries the MinGW runtime they link -- zlib and bzip2 (permissive),
-winpthread, and libiconv (LGPL, dynamically linked like FFmpeg) -- each
-with its license text.
+skinema itself (core, skiko, compose) is Apache-2.0. The natives bundle's
+license is set by its tier (see Dependencies): the `core` and `decode` tiers
+carry no encoders and are LGPL; the `full` tier adds the x264/x265 software
+encoders, which are GPL, so its FFmpeg build is configured `--enable-gpl` and
+its libraries are GPL. Either way the natives ride in separate per-tier,
+per-platform classifier jars, dynamically linked, never statically embedded
+into the Apache code, and every bundle ships its license texts (the GPL text
+on `full`, LGPL on the rest). An application that distributes the `full`
+natives takes on FFmpeg's GPL obligations, as anyone distributing a GPL
+FFmpeg build does; a consumer that needs to stay LGPL takes `core` or
+`decode`. skinema's own Apache code is unaffected either way.
+
+libwebp, libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
+the `full` build is `--enable-gpl`). libass (ISC) ships with FreeType and
+HarfBuzz folded in
+-- portions of the bundled software are copyright The FreeType Project
+(freetype.org), licensed under the FreeType License -- while FriBidi stays a
+separate shared library precisely because it is LGPL. On Windows, where
+libtool cannot fold a static archive into a DLL, FreeType and HarfBuzz ship
+as their own DLLs instead, and the bundle also carries the MinGW runtime
+they link -- zlib and bzip2 (permissive), winpthread, and libiconv (LGPL,
+dynamically linked) -- each with its license text.
