@@ -229,6 +229,14 @@ internal class AudioPipeline(
             clockFuture.complete(null)
             return
         }
+        if (closing) {
+            // The player gave up waiting for the device (clockFuture timeout,
+            // #17) and closed us; do not resolve a second clock or hold the
+            // device it has stopped expecting.
+            runCatching { sink.close() }
+            clockFuture.complete(null)
+            return
+        }
         clock = theClock
         theClock.start(first.ptsNanos)
         clockFuture.complete(theClock)

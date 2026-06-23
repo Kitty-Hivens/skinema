@@ -20,6 +20,7 @@ import dev.hivens.skinema.subtitles.SubtitlePipeline
 import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -447,8 +448,20 @@ class VideoPlayer internal constructor(
     private fun run() {
         // The audio thread reports whether this file has sound; that
         // decides whose clock rules before any pacing starts.
-        val audioClock = audioPipeline?.let {
-            runCatching { it.clockFuture.get(5, TimeUnit.SECONDS) }.getOrNull()
+        val audioClock = audioPipeline?.let { pipe ->
+            try {
+                pipe.clockFuture.get(5, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                // The device is taking too long to open. Abandon audio and
+                // close the pipeline: letting it resolve its own clock later,
+                // behind the wall clock adopted here, is the two-clock
+                // split-brain the MediaClock seam exists to prevent, and it
+                // would orphan the device. (#17)
+                pipe.close()
+                null
+            } catch (_: Throwable) {
+                null
+            }
         }
         clock = explicitClock ?: audioClock ?: PlaybackClock()
         ownsClock = explicitClock != null || audioClock == null
