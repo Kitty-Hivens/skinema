@@ -244,10 +244,13 @@ README once the library is usable.
 ## 10. Distribution and licensing
 
 - skinema: Apache-2.0.
-- FFmpeg: LGPL build (decode-only needs no GPL components), **dynamically
-  linked shared libraries only**, license texts shipped, source of the
-  exact build referenced (BtbN tag or our CI artifact). Static linking is
-  off the table -- it would change the licensing story.
+- FFmpeg: GPL build since M12 -- software H.264 encode means x264, which is
+  GPL, so `--enable-gpl` flips the whole build (it was LGPL while decode-only;
+  M10 records the pivot, M12 the encode subsystem). **Dynamically linked
+  shared libraries only**, license texts shipped, source of the exact build
+  referenced (BtbN tag or our CI artifact). Static linking is off the table.
+  A consumer needing LGPL decode-only can ship its own LGPL FFmpeg rather
+  than the GPL bundle.
 - Natives packaging: per-OS/arch classifier jars (the lwjgl/skiko
   pattern) carrying the trimmed runtime plus an `index.txt`; NativeBundle
   deploys them to a fingerprint-keyed per-user cache (atomic, race-safe).
@@ -769,6 +772,19 @@ README once the library is usable.
   `() -> MediaSource` factory (a fresh reader per decoder; fine for a
   buffered/seekable source, not a forkable live one) or a single unified
   demux. That decision belongs with the streaming consumer.
+
+- **M16 -- GPL encode bundle (x264 landed; x265/SVT-AV1/libopus pending,
+  2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
+  H.264 encoder (static, folded in like dav1d/libvpx -- no runtime
+  dependency), the libx264/aac/flac encoders and the mov/mp4/matroska/webm
+  muxers, so a SHIPPED bundle runs MediaWriter, not only a full system
+  FFmpeg. README and section 10 are rewritten for the GPL bundle (skinema
+  stays Apache; a decode-only consumer can ship its own LGPL FFmpeg). The
+  series is incremental by cross-build risk: x264 is autotools + nasm (no
+  cmake); the cmake encoders (x265, SVT-AV1) and libopus follow, each its own
+  round (and x265/SVT-AV1 add cmake to the CI image). The MediaWriter encode
+  test stops skipping once the bundle carries libx264, so the natives
+  acceptance suite exercises encode on metal.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

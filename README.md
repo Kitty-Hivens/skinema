@@ -1,11 +1,12 @@
 # skinema
 
-Video decode and playback for JVM desktop apps. FFmpeg through
-hand-written Java FFM (Panama) bindings, frames out as raw RGBA or Skia
-images, a Compose Desktop surface on top. No JNI wrapper stacks, no
-embedded player engines, and no network access -- the bundled FFmpeg is
-built with `--disable-network`, so the library physically cannot perform
-I/O beyond the file you hand it.
+Video decode, encode and playback for JVM desktop apps. FFmpeg through
+hand-written Java FFM (Panama) bindings: frames out as raw RGBA or Skia
+images with a Compose Desktop surface on top, and frames back in to a
+muxed file. No JNI wrapper stacks, no embedded player engines. The bundled
+FFmpeg is built with `--disable-network`, so skinema performs no network
+I/O of its own -- it works on the file you hand it (or the bytes a
+`MediaSource` feeds it) and nothing more.
 
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)
@@ -43,8 +44,9 @@ runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-x64")
 All five classifiers ship from 0.5.0 (linux-arm64 joined that release);
 the other four exist on earlier versions too.
 
-The natives jars carry a trimmed FFmpeg (decode-only, LGPL, 2-5 MB per
-platform) plus libwebp; on first use they unpack to a per-user cache.
+The natives jars carry a trimmed FFmpeg -- the decode set plus software
+H.264 encode (x264), which makes the build GPL -- with libwebp and libass;
+on first use they unpack to a per-user cache.
 Without a natives jar, skinema looks for matching system libraries --
 fine for development, not what you ship.
 
@@ -134,15 +136,22 @@ maintainer's discretion.
 
 ## License
 
-Apache-2.0 for skinema itself. FFmpeg is consumed as separate LGPL
-shared libraries, dynamically linked, never statically embedded; license
-texts ship inside every natives bundle. libwebp, libvpx and dav1d are
-BSD-family. libass (ISC) ships with FreeType and HarfBuzz folded in --
-portions of the bundled software are copyright The FreeType Project
-(freetype.org), licensed under the FreeType License -- while FriBidi
-stays a separate shared library precisely because it is LGPL. On
-Windows, where libtool cannot fold a static archive into a DLL,
-FreeType and HarfBuzz ship as their own DLLs instead, and the bundle
-also carries the MinGW runtime they link -- zlib and bzip2 (permissive),
-winpthread, and libiconv (LGPL, dynamically linked like FFmpeg) -- each
-with its license text.
+skinema itself (core, skiko, compose) is Apache-2.0. The natives bundle is
+GPL: the FFmpeg build is configured `--enable-gpl` to include the x264
+H.264 encoder, so the shipped FFmpeg libraries are GPL. They ride in
+separate per-platform classifier jars, dynamically linked, never statically
+embedded into the Apache code; every bundle ships its license texts. An
+application that distributes the natives takes on FFmpeg's GPL obligations,
+as anyone distributing FFmpeg does -- skinema's own Apache code is
+unaffected, and a decode-only consumer that needs to stay LGPL can ship its
+own LGPL FFmpeg instead of the bundle.
+
+libwebp, libvpx and dav1d are BSD-family; x264 is GPL (the reason the build
+is `--enable-gpl`). libass (ISC) ships with FreeType and HarfBuzz folded in
+-- portions of the bundled software are copyright The FreeType Project
+(freetype.org), licensed under the FreeType License -- while FriBidi stays a
+separate shared library precisely because it is LGPL. On Windows, where
+libtool cannot fold a static archive into a DLL, FreeType and HarfBuzz ship
+as their own DLLs instead, and the bundle also carries the MinGW runtime
+they link -- zlib and bzip2 (permissive), winpthread, and libiconv (LGPL,
+dynamically linked) -- each with its license text.
