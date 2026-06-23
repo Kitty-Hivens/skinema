@@ -525,11 +525,12 @@ class AudioPipelineTest {
     fun `a silently dead device detaches the clock to wall time`() {
         Fixtures.assumeDecodeEnvironment()
         // A bounded buffer nobody drains models a device that accepted the
-        // line and then stopped consuming without raising -- bare ALSA on a
-        // vanished sink, a yanked USB DAC. The audio thread parks in write
-        // forever and the frame position freezes; only the watchdog can
-        // keep media time -- and the video -- moving.
-        val sink = BoundedPcmSink(capacityFrames = 4_410)
+        // line and then stopped consuming without raising -- a yanked USB
+        // DAC that does not return (reopenable = false). The frame position
+        // freezes; the watchdog detaches the clock to wall time and closes
+        // the line, and since the reopen keeps failing the clock stays on
+        // wall time, so media time -- and the video -- keep moving.
+        val sink = BoundedPcmSink(capacityFrames = 4_410, reopenable = false)
         val pipeline = AudioPipeline(
             tone("dead.flac"),
             sink,

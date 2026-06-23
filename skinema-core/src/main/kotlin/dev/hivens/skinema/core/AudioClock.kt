@@ -74,6 +74,10 @@ class AudioClock(
      * [mediaNanos] with future deltas scaled by [sampleRate]. A track
      * switch reopens the sink (position restarts at zero) and may change
      * the rate; both are only safe at an anchor, and this is that anchor.
+     * It is also the re-attach after a device-loss detach (AudioPipeline
+     * recovery): it ends the wall-time fallback so media time tracks the
+     * device again. No-op on the detach state for the track-switch caller,
+     * which is never detached.
      */
     fun rebase(mediaNanos: Long, sampleRate: Int) {
         synchronized(lock) {
@@ -81,6 +85,8 @@ class AudioClock(
             baseFrames = positionFrames()
             this.sampleRate = sampleRate
             floorNanos = Long.MIN_VALUE
+            detachedAtWall = -1L
+            detachedMedia = 0L
         }
     }
 

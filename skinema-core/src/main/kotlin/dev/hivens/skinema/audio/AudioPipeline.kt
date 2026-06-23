@@ -1,5 +1,6 @@
 package dev.hivens.skinema.audio
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
@@ -29,6 +30,7 @@ internal class AudioPipeline(
     private val loop: Boolean,
     private val initialTrack: Int? = null,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
+    private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
 ) {
 
     val clockFuture = CompletableFuture<AudioClock?>()
@@ -133,6 +135,17 @@ internal class AudioPipeline(
     private var watchdogStop = false
     private var watchdog: Thread? = null
 
+    // The watchdog sets this when the device stalls out: it closes the line
+    // to free the stuck write, and the audio thread sees the flag and runs
+    // recovery. Cleared once a fresh line is anchored (#19).
+    @Volatile
+    private var deviceLost = false
+
+    // close() sets this so recovery stops retrying and the thread exits
+    // rather than parking forever in the reopen loop on a gone device.
+    @Volatile
+    private var closing = false
+
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
         start()
@@ -158,6 +171,7 @@ internal class AudioPipeline(
     fun setVolume(volume: Float) = sink.setVolume(volume)
 
     fun close() {
+        closing = true
         commands.put(Command.Close)
         thread.join(5_000)
     }
@@ -224,6 +238,7 @@ internal class AudioPipeline(
         guardedWrite(first.pcm, 0, first.byteCount)
 
         while (true) {
+            if (deviceLost && !recover()) return
             var cmd = commands.poll()
             while (cmd != null) {
                 if (!handle(cmd)) return
@@ -307,14 +322,16 @@ internal class AudioPipeline(
     }
 
     /**
-     * Frees video when the device dies silently. A [PcmSink.write] that
-     * blocks without throwing -- a vanished ALSA sink, a yanked USB DAC --
-     * never reaches the catch in [run], so a frozen frame position would
-     * freeze the picture with it. While a write is in flight this watches
-     * the device's frame position; if it stops advancing for
-     * [writeStallNanos] the clock detaches to wall time and video keeps
-     * moving. The audio thread stays blocked (SourceDataLine.write cannot
-     * be interrupted), so the watchdog fires once and exits.
+     * Frees video when the device dies silently and drives recovery. A
+     * [PcmSink.write] that blocks without throwing -- a vanished ALSA sink,
+     * a yanked USB DAC, a popped-out jack -- never reaches the catch in
+     * [run], so a frozen frame position would freeze the picture with it.
+     * While a write is in flight this watches the device's frame position;
+     * if it stops advancing for [writeStallNanos] the clock detaches to
+     * wall time (video keeps moving) and the line is closed so the stuck
+     * write returns -- which lets the audio thread run [recover]. The
+     * watchdog stays alive across the outage to catch a second loss once
+     * the device is back.
      */
     private fun runWatchdog() {
         val pollMs = (writeStallNanos / 4_000_000L).coerceIn(20L, 250L)
@@ -327,7 +344,9 @@ internal class AudioPipeline(
                 return
             }
             val theClock = clock ?: continue
-            if (!writeInFlight) {
+            // While recovery is in flight the audio thread is reopening the
+            // line; do not read its position or fire a second time.
+            if (deviceLost || !writeInFlight) {
                 lastFrames = Long.MIN_VALUE
                 continue
             }
@@ -339,8 +358,54 @@ internal class AudioPipeline(
             }
             if (System.nanoTime() - lastProgressWall >= writeStallNanos) {
                 theClock.detachToWallTime()
-                return
+                deviceLost = true
+                runCatching { sink.close() }.onFailure { Debug.trace("audio sink close on stall", it) }
+                lastFrames = Long.MIN_VALUE
             }
+        }
+    }
+
+    /**
+     * Device-loss recovery, on the audio thread. The watchdog has detached
+     * the clock to wall time and closed the line, so video keeps moving and
+     * the stuck write has returned. Reopen the device on a fixed cadence
+     * ([recoveryIntervalMs], env SKINEMA_AUDIO_RECOVERY_MS) until it comes
+     * back -- a popped-out jack or a re-routed sink can return seconds
+     * later. On return, resync to where video advanced and rebase the clock
+     * onto the fresh line so sound rejoins in step. Returns false when
+     * close() intervenes, so the thread exits instead of parking in the
+     * loop (#19).
+     */
+    private fun recover(): Boolean {
+        while (!closing) {
+            if (tryReopen()) return true
+            try {
+                Thread.sleep(recoveryIntervalMs)
+            } catch (_: InterruptedException) {
+                return false
+            }
+        }
+        return false
+    }
+
+    private fun tryReopen(): Boolean {
+        val theClock = clock ?: return false
+        return runCatching {
+            // Resync to where video advanced on the wall clock: the outage
+            // audio is dropped, sound rejoins in step rather than lagging.
+            val resumeAt = theClock.mediaNanos()
+            decoder.seekTo(resumeAt)
+            pendingPcm = null
+            sink.open(sampleRate)
+            theClock.rebase(resumeAt, sampleRate)
+            // open() starts the device by contract; honour a pause, landing
+            // or end-of-stream that began during the outage.
+            if (paused || awaitingLanding || isEnded) sink.stop()
+            deviceLost = false
+            true
+        }.getOrElse {
+            Debug.trace("audio device reopen", it)
+            false
         }
     }
 
@@ -643,6 +708,15 @@ internal class AudioPipeline(
          * is a dead device; the watchdog detaches the clock to wall time.
          */
         const val DEFAULT_WRITE_STALL_NANOS = 3_000_000_000L
+
+        /**
+         * Cadence for retrying the device reopen after a mid-stream loss. A
+         * val, not a const: SKINEMA_AUDIO_RECOVERY_MS overrides it so the
+         * retry rate is tunable without a rebuild. Recovery keeps retrying
+         * until the device returns or the player closes.
+         */
+        val DEFAULT_RECOVERY_INTERVAL_MS: Long =
+            System.getenv("SKINEMA_AUDIO_RECOVERY_MS")?.toLongOrNull()?.coerceAtLeast(1L) ?: 400L
 
         // Same switch as VideoPlayer's landing diagnostics: the anchor
         // positions printed here are the forensics for the remaining
