@@ -760,8 +760,15 @@ README once the library is usable.
   the streaming companion needs -- ABR/HLS/DASH live in that separate library,
   not the decoder. Validated by decoding a file through a MediaSource (matching
   the path decode frame for frame) on both a seekable in-memory source and a
-  forward-only one (the live-stream shape). Follow-ups: the same seam on
-  AudioDecoder (audio-only streams) and a VideoPlayer entry point.
+  forward-only one (the live-stream shape). AudioDecoder gained the same seam
+  (`openOrNull(MediaSource)`), so audio-only streams -- a music-radio feed --
+  play through it, validated the same way (chunk grid match, plus the
+  no-audio null path still releasing the avio context). A VideoPlayer entry
+  point is the remaining piece and a deeper design: a player runs SEPARATE
+  video and audio demuxers, so one byte stream cannot feed both -- it needs a
+  `() -> MediaSource` factory (a fresh reader per decoder; fine for a
+  buffered/seekable source, not a forkable live one) or a single unified
+  demux. That decision belongs with the streaming consumer.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
