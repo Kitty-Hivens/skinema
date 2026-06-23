@@ -332,6 +332,7 @@ class SubtitlePipelineTest {
     @Test
     fun `a pgs window shows its bitmap and clears on schedule`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeBitmapSubtitles()
         val path = pgsMkv("pgs-window")
         clock.start(0)
         val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
@@ -367,6 +368,7 @@ class SubtitlePipelineTest {
     @Test
     fun `a seek lands inside a pgs window through the preroll`() {
         Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeBitmapSubtitles()
         val path = pgsMkv("pgs-seek")
         clock.start(0)
         val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)

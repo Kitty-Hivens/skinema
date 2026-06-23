@@ -3,6 +3,8 @@ package dev.hivens.skinema.libav
 import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.webp.Webp
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.lang.foreign.Arena
+import java.lang.foreign.MemorySegment
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -44,13 +46,21 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp")
+    internal val knownCaps = setOf("decode", "subs", "webp", "encode")
 
-    /** Pure load probe per capability -- no fixtures, no encoders. */
+    /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
         "decode" -> ffmpegOnPath && libavLoadable
-        "subs" -> Ass.available
+        // libass renders, but the bundle must also DECODE subtitles -- and
+        // the loader falls back to a system libass (apt's ffmpeg drags one
+        // in), so Ass.available alone reads true on a core bundle that
+        // carries no subtitle decoders of its own. The subrip decoder is
+        // the bundle's own subtitle tell.
+        "subs" -> Ass.available && libavHasDecoder("subrip")
         "webp" -> Webp.available
+        // The full tier always carries x264 (mac/win keep enc-h264 even
+        // without x265, #22), so libx264 is the encode path's load probe.
+        "encode" -> libavHasEncoder("libx264")
         else -> error("unknown capability '$cap'")
     }
 
@@ -65,17 +75,32 @@ object Fixtures {
     }
 
     /**
-     * Text-subtitle rendering needs libass, an OPTIONAL capability:
-     * absence is a legal state unless SKINEMA_REQUIRE_CAPS lists 'subs',
-     * which escalates it to a loud failure -- staged so the code can
-     * merge before the bundles carry libass.
+     * Subtitles are an OPTIONAL capability -- the core tier ships without
+     * them. Absence is a legal state unless SKINEMA_REQUIRE_CAPS lists
+     * 'subs', which escalates it to a loud failure. Gated on [capLoads] so
+     * a core bundle (libass resolvable from the system, but no subtitle
+     * decoders of its own) skips these tests rather than failing them.
      */
     fun assumeSubtitleRendering() {
         if (requires("subs")) {
-            check(Ass.available) { "SKINEMA_REQUIRE_CAPS lists 'subs' but libass did not load" }
+            check(capLoads("subs")) { "SKINEMA_REQUIRE_CAPS lists 'subs' but the bundle cannot decode and render subtitles" }
             return
         }
-        assumeTrue(Ass.available, "libass not loadable -- skipping subtitle rendering test")
+        assumeTrue(capLoads("subs"), "subtitle support absent in the bundle -- skipping subtitle test")
+    }
+
+    /**
+     * Bitmap subtitles (PGS/VobSub) decode to pixels and need no libass --
+     * only the bundle's subtitle decoder -- so they gate on the pgssub
+     * decoder, not [capLoads]'s libass-plus-text-decoder pair. Same
+     * required/optional split: a core bundle without it skips.
+     */
+    fun assumeBitmapSubtitles() {
+        if (requires("subs")) {
+            check(libavHasDecoder("pgssub")) { "SKINEMA_REQUIRE_CAPS lists 'subs' but the bundle has no PGS decoder" }
+            return
+        }
+        assumeTrue(libavHasDecoder("pgssub"), "PGS subtitle decode absent in the bundle -- skipping bitmap subtitle test")
     }
 
     /**
@@ -124,13 +149,18 @@ object Fixtures {
      */
     fun assumeLibraryEncoder(name: String) {
         assumeDecodeEnvironment()
-        val available = runCatching {
-            java.lang.foreign.Arena.ofConfined().use { a ->
-                Libav.avcodecFindEncoderByName(a.allocateFrom(name)) != java.lang.foreign.MemorySegment.NULL
-            }
-        }.getOrDefault(false)
-        assumeTrue(available, "libav has no encoder '$name' -- skipping encode test")
+        assumeTrue(libavHasEncoder(name), "libav has no encoder '$name' -- skipping encode test")
     }
+
+    /** Whether the loaded libav exposes encoder [name] (avcodec_find_encoder_by_name). */
+    private fun libavHasEncoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindEncoderByName)
+
+    /** Whether the loaded libav exposes decoder [name] (avcodec_find_decoder_by_name). */
+    private fun libavHasDecoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindDecoderByName)
+
+    private fun libavResolves(name: String, find: (MemorySegment) -> MemorySegment): Boolean = runCatching {
+        Arena.ofConfined().use { a -> find(a.allocateFrom(name)) != MemorySegment.NULL }
+    }.getOrDefault(false)
 
     /**
      * Runs `ffmpeg <args> <output>` and returns [output]. Fixture codecs
