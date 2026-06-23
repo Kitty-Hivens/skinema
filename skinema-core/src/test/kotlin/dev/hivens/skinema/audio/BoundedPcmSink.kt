@@ -8,7 +8,13 @@ package dev.hivens.skinema.audio
  * thread genuinely stuck -- pinning the loop-wrap park open, proving
  * stopped-write invariants.
  */
-class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
+class BoundedPcmSink(
+    private val capacityFrames: Long,
+    // A vanished device (a yanked DAC) cannot be reopened until it returns;
+    // false makes a reopen throw, so device-loss recovery keeps failing and
+    // the clock stays detached. The default reopens, as a track switch needs.
+    private val reopenable: Boolean = true,
+) : PcmSink {
 
     // java.lang.Object, not Any: the wait/notifyAll monitor calls below
     // are not exposed on kotlin.Any.
@@ -17,6 +23,7 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
     private var writtenFrames = 0L
     private var consumedFrames = 0L
     private var released = false
+    private var opened = false
 
     var sampleRate = 0
         private set
@@ -27,6 +34,8 @@ class BoundedPcmSink(private val capacityFrames: Long) : PcmSink {
         private set
 
     override fun open(sampleRate: Int) {
+        if (opened && !reopenable) throw IllegalStateException("device gone, cannot reopen")
+        opened = true
         this.sampleRate = sampleRate
     }
 
