@@ -28,6 +28,7 @@ WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
 X264_VERSION="${X264_VERSION:-stable}"
+X265_VERSION="${X265_VERSION:-4.1}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
@@ -132,6 +133,22 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make install
         )
         cp "x264-$X264_VERSION/COPYING" "$WORK/x264-COPYING"
+    fi
+
+    # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit (10/12-bit HDR
+    # multilib skipped -- 8-bit is the common case), PIC, folded in. x265 is
+    # C++, so on Windows the ffmpeg link folds the C++ runtime in (see FFLD
+    # at the configure below); Linux/macOS take the system C++ runtime.
+    if [ ! -f "$DEPS/lib/libx265.a" ]; then
+        fetch "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz" x265.tar.gz
+        rm -rf "x265_$X265_VERSION"
+        tar -xzf x265.tar.gz
+        cmake -G Ninja -S "x265_$X265_VERSION/source" -B "x265_$X265_VERSION/build" \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
+        ninja -C "x265_$X265_VERSION/build" install
+        cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
     fi
 fi
 
@@ -302,6 +319,15 @@ case "$(uname -s)" in
         ;;
 esac
 
+# x265 is C++; on Windows fold the MinGW C++/GCC runtime into the ffmpeg
+# libraries so avcodec needs no libstdc++-6.dll / libgcc_s alongside (the
+# libass DLLs already do this). Empty elsewhere -- the Linux/macOS C++
+# runtime is a system library.
+FFLD=()
+case "$(uname -s)" in
+    MINGW*|MSYS*) FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc) ;;
+esac
+
 # Decode whitelist (ROADMAP.md section 4). Demuxers cover the consumer's
 # container set plus standalone audio for M5; native opus/vorbis/aac/mp3/
 # flac decoders need no external libraries. The real-life audio set --
@@ -317,15 +343,16 @@ esac
     --disable-everything --disable-network \
     --disable-avdevice \
     --enable-libvpx --enable-libdav1d \
-    --enable-gpl --enable-libx264 \
+    --enable-gpl --enable-libx264 --enable-libx265 \
     --enable-protocol=file,pipe \
     --enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup \
     --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub \
     --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,opus,vorbis,flac,ac3 \
-    --enable-encoder=libx264,aac,flac \
+    --enable-encoder=libx264,libx265,aac,flac \
     --enable-muxer=mov,mp4,matroska,webm \
     --enable-filter=atempo,abuffer,abuffersink \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
+    ${FFLD[@]+"${FFLD[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
@@ -339,6 +366,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     cp "$WORK/x264-COPYING" "$PREFIX/licenses/x264-COPYING"
+    cp "$WORK/x265-COPYING" "$PREFIX/licenses/x265-COPYING"
     cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
     cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
     cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
