@@ -41,15 +41,19 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # section 4). Comma- or space-separated; default is the complete LGPL decode
 # set. Both the dependency builds above and the ffmpeg whitelist below gate
 # on these, so an absent feature ships neither its library nor its codecs.
-#   core    av1 vpx webp hwaccel                          (LGPL, no subtitles)
-#   decode  av1 vpx webp hwaccel subs                     (LGPL, full decode)
-#   full    av1 vpx webp hwaccel subs enc-h264 enc-hevc   (GPL, + encode)
-FEATURES="${FEATURES:-av1 vpx webp hwaccel subs}"
+#   core    av1 vpx webp hwaccel                                 (LGPL, no subtitles)
+#   decode  av1 vpx webp hwaccel subs formats                    (LGPL, full decode)
+#   full    av1 vpx webp hwaccel subs formats enc-h264 enc-hevc  (GPL, + encode)
+# "formats" is the broad legacy/extended decode set -- avi/mpegts/mpeg/flv/asf/
+# dv containers; mpeg2/vc1/wmv/mpeg4/h263/vvc/realvideo/prores/... video; dts/
+# truehd/wma/mp2/realaudio/adpcm/... audio. All native (no external library),
+# so it stays LGPL; it rides decode/full and is left out of the lean core tier.
+FEATURES="${FEATURES:-av1 vpx webp hwaccel subs formats}"
 FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 for _f in $FEATURES; do
     case "$_f" in
-        av1|vpx|webp|subs|hwaccel|enc-h264|enc-hevc) ;;
+        av1|vpx|webp|subs|formats|hwaccel|enc-h264|enc-hevc) ;;
         *) echo "build-natives: unknown FEATURE '$_f'" >&2; exit 1 ;;
     esac
 done
@@ -372,6 +376,14 @@ has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1";
 has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
 has webp && { DEMUX+=",webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
 has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub"; }
+# The broad legacy/extended decode set (the "formats" feature). All native
+# FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
+has formats && {
+    DEMUX+=",avi,mpeg,mpegts,mpegtsraw,flv,live_flv,asf,asf_o,dv,m4v,mpegvideo,rm,rpl,aiff,au,w64,caf,swf,flic"
+    DECODE+=",vvc,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4,wmv1,wmv2,wmv3,vc1,h263,h263i,h263p,flv,theora,vp3,vp5,vp6,vp6a,vp6f,prores,dnxhd,ffv1,huffyuv,ffvhuff,cinepak,msvideo1,msrle,qtrle,rpza,smc,svq1,svq3,rv10,rv20,rv30,rv40,indeo2,indeo3,indeo4,indeo5,dvvideo,cavs,mjpegb,jpegls,8bps,targa,tiff,bmp,pcx,sgi,qoi,flic,flashsv,flashsv2,truemotion1,truemotion2,zmbv"
+    DECODE+=",dca,truehd,mlp,mp1,mp2,wmav1,wmav2,wmapro,wmavoice,amrnb,amrwb,tta,wavpack,ape,gsm,gsm_ms,adpcm_ima_qt,adpcm_ima_wav,adpcm_ms,adpcm_swf,adpcm_yamaha,g722,g726,g726le,cook,sipr,real_144,real_288,ralf,nellymoser,qdm2,qdmc,atrac1,atrac3,atrac3plus,atrac3plusal,atrac9,dvaudio,mp3on4,aac_latm,tak,als,mpc7,mpc8,pcm_u8,pcm_s8,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f64le,pcm_mulaw,pcm_alaw"
+    PARSE+=",vvc,mpegvideo,mpeg4video,vc1,h263,dca,cavsvideo"
+}
 has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); }
 has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); }
 

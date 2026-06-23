@@ -140,11 +140,20 @@ weighs a lot and not every consumer wants it. The always-on base is the
 core playback set (H.264/HEVC, the native audio decoders, the still images,
 the containers, the atempo chain); each tier layers features on:
 
-| Tier     | Features over the base               | License |
-|----------|--------------------------------------|---------|
-| `core`   | av1 vpx webp hwaccel                 | LGPL    |
-| `decode` | + subs (the libass stack)            | LGPL    |
-| `full`   | + enc-h264 enc-hevc (x264/x265)      | GPL     |
+| Tier     | Features over the base                 | License |
+|----------|----------------------------------------|---------|
+| `core`   | av1 vpx webp hwaccel                    | LGPL    |
+| `decode` | + subs (libass) + formats              | LGPL    |
+| `full`   | + enc-h264 enc-hevc (x264/x265)        | GPL     |
+
+The `formats` feature is the broad legacy/extended decode set: the avi,
+MPEG-PS/TS, flv, asf, dv and RealMedia demuxers, and the older video (MPEG-1/2,
+MPEG-4 Part 2, VC-1/WMV, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo,
+Cinepak, Indeo, VP6, ...) and audio (DTS, TrueHD, WMA, MP1/2, AMR, WavPack,
+APE, TTA, ADPCM/G.72x, RealAudio, ATRAC, GSM, ...) decoders, plus H.266/VVC.
+All native FFmpeg components, so it adds no external library and stays LGPL;
+it rides decode/full and is left out of the lean core tier (the policy in #10
+generalized -- broad support is cheap once the lean consumer can opt out).
 
 A bundle stays LGPL until an `enc-*` feature pulls in GPL x264/x265, so
 `core` and `decode` are LGPL and only `full` is GPL -- the LGPL decode path
