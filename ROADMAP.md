@@ -747,6 +747,22 @@ README once the library is usable.
   bundle grows ~3x toward ~40 MB) and the README/section-10 licence rewrite
   that ships with it -- then M13 GPU encode on the same MediaWriter.
 
+- **M15 -- custom AVIO input (streaming primitive, 2026-06-23).** VideoDecoder
+  gains `open(MediaSource)` beside `open(Path)`: a public `MediaSource`
+  (read/seek/size) lets a consumer feed bytes -- segments, a download, memory
+  -- and the demuxer pulls them through a custom AVIOContext. read/seek are FFM
+  upcalls bound per-source (`AvioSource`), the project's second and third
+  logic-bearing upcalls after get_format; the av_malloc'd bounce buffer is
+  freed by hand after avformat_close_input (avio_context_free leaves it). The
+  open path was refactored to share its tail (`openVideo`) between the Path and
+  MediaSource entries. `--disable-network` is untouched: skinema still performs
+  no I/O of its own; every byte comes from the consumer. This is the primitive
+  the streaming companion needs -- ABR/HLS/DASH live in that separate library,
+  not the decoder. Validated by decoding a file through a MediaSource (matching
+  the path decode frame for frame) on both a seekable in-memory source and a
+  forward-only one (the live-stream shape). Follow-ups: the same seam on
+  AudioDecoder (audio-only streams) and a VideoPlayer entry point.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
