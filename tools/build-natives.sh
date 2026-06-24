@@ -270,6 +270,11 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
         tar -xJf freetype.tar.xz
         (
             cd "freetype-$FREETYPE_VERSION"
+            # CLANGARM64: the tarball's libtool cannot build a DLL for the
+            # aarch64-mingw host -- it silently falls back to a static archive,
+            # leaving no import library for harfbuzz/libass to link. Regenerate
+            # the build with the system libtool, which does support it.
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then sh autogen.sh; fi
             # No harfbuzz refinement loop (an auto-hinter nicety) and no
             # optional codecs: glyphs for libass need none of them.
             ./configure --prefix="$FT_PREFIX" $FT_KIND --with-pic \
@@ -287,6 +292,9 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
         tar -xJf fribidi.tar.xz
         (
             cd "fribidi-$FRIBIDI_VERSION"
+            # CLANGARM64 libtool builds no aarch64-mingw DLL; regenerate with the
+            # system libtool first (as for freetype above).
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then autoreconf -fi; fi
             ./configure --prefix="$PREFIX" --enable-shared --disable-static \
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
@@ -312,8 +320,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 -DCMAKE_PREFIX_PATH="$PREFIX" -DBUILD_SHARED_LIBS=ON \
                 -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
                 -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF -DHB_HAVE_FREETYPE=ON \
-                -DHB_HAVE_GLIB=OFF -DHB_HAVE_GOBJECT=OFF -DHB_HAVE_ICU=OFF \
-                -DFREETYPE_LIBRARY="$PREFIX/lib/libfreetype.dll.a"
+                -DHB_HAVE_GLIB=OFF -DHB_HAVE_GOBJECT=OFF -DHB_HAVE_ICU=OFF
             ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
             printf '%s\n' \
                 "prefix=$HB_PREFIX" 'exec_prefix=${prefix}' 'libdir=${prefix}/lib' \
@@ -373,6 +380,9 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                     ASS_LDFLAGS="$RT_LDFLAGS"
                     ;;
             esac
+            # CLANGARM64 libtool builds no aarch64-mingw DLL; regenerate with the
+            # system libtool first (as for freetype/fribidi above).
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then autoreconf -fi; fi
             PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
             LDFLAGS="$ASS_LDFLAGS ${LDFLAGS:-}" \
             ./configure --prefix="$PREFIX" --enable-shared --disable-static $ASS_FLAGS \
