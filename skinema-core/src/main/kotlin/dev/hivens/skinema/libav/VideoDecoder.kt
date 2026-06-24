@@ -231,6 +231,9 @@ class VideoDecoder private constructor(
             if (swFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(sw) returned NULL")
         }
         Libav.avFrameUnref(swFrame)
+        // A download failure is fatal by design (see HwAccel): once decoding
+        // is on the GPU there is no in-place software recovery, so it surfaces
+        // as a decode error rather than a silent fallback.
         Libav.checkAv(Libav.avHwframeTransferData(swFrame, frame), "av_hwframe_transfer_data")
         // Transfer copies pixels only; pts, colourspace, range and transfer
         // characteristics ride along so HDR detection and the YUV matrix
