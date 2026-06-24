@@ -45,8 +45,7 @@ object Ass {
     private class Bindings {
         private val linker = Linker.nativeLinker()
 
-        private fun lookup(base: String, major: Int): SymbolLookup {
-            val name = fileName(base, major)
+        private fun lookupFile(name: String): SymbolLookup {
             val overridden = Libav.resolveLibraryPath(name)
             return runCatching { SymbolLookup.libraryLookup(overridden, Arena.global()) }
                 .recoverCatching { failure ->
@@ -55,6 +54,8 @@ object Ass {
                 }
                 .getOrThrow()
         }
+
+        private fun lookup(base: String, major: Int): SymbolLookup = lookupFile(fileName(base, major))
 
         init {
             // On Windows the freetype/harfbuzz static fold is impossible
@@ -65,7 +66,12 @@ object Ass {
             // a stray system copy must NOT be pulled in) -- Windows only.
             if (Os.current() == Os.WINDOWS) {
                 runCatching { lookup("freetype", 6) }
-                runCatching { lookup("harfbuzz", 0) }
+                // libtool and meson name it libharfbuzz-0.dll; cmake -- the
+                // windows-arm64 build, which omits the subset DLL meson cannot
+                // link there -- drops the soname suffix, so fall back to the
+                // bare name. The preload must match what libass imports, or the
+                // bundle's harfbuzz is not in memory when libass resolves it.
+                runCatching { lookup("harfbuzz", 0) }.recoverCatching { lookupFile("libharfbuzz.dll") }
             }
             // libass links fribidi (shared in the bundle: it is LGPL and
             // must not be folded into the libass binary); preload it so
