@@ -105,7 +105,7 @@ class AudioClock(
                 detachedAtWall = wall
             } else {
                 val frames = positionFrames()
-                baseMediaNanos += ((frames - baseFrames) * this.tempo).toLong() * 1_000_000_000L / sampleRate
+                baseMediaNanos += framesToNanos(((frames - baseFrames) * this.tempo).toLong())
                 baseFrames = frames
             }
             this.tempo = tempo
@@ -116,7 +116,7 @@ class AudioClock(
         val raw = if (detachedAtWall >= 0) {
             detachedMedia + ((System.nanoTime() - detachedAtWall) * tempo).toLong()
         } else {
-            baseMediaNanos + ((positionFrames() - baseFrames) * tempo).toLong() * 1_000_000_000L / sampleRate
+            baseMediaNanos + framesToNanos(((positionFrames() - baseFrames) * tempo).toLong())
         }
         if (raw < floorNanos) {
             floorNanos
@@ -129,6 +129,13 @@ class AudioClock(
     private var detachedAtWall = -1L
     private var detachedMedia = 0L
 
+    // Tempo-scaled frame delta -> nanos without the scaledFrames * 1e9 overflow
+    // that would bite past ~53 h at 48 kHz on one continuous anchor (quotient
+    // plus remainder, never a 64-bit product). Seek and loop re-anchor sooner,
+    // so only an unbroken non-looping play of that length ever reached it.
+    private fun framesToNanos(scaledFrames: Long): Long =
+        (scaledFrames / sampleRate) * 1_000_000_000L + (scaledFrames % sampleRate) * 1_000_000_000L / sampleRate
+
     /**
      * Failure hatch: when the audio pipeline dies mid-stream, its frozen
      * frame position must not freeze video with it. Media time continues
@@ -137,7 +144,7 @@ class AudioClock(
      */
     fun detachToWallTime() {
         synchronized(lock) {
-            val raw = baseMediaNanos + ((positionFrames() - baseFrames) * tempo).toLong() * 1_000_000_000L / sampleRate
+            val raw = baseMediaNanos + framesToNanos(((positionFrames() - baseFrames) * tempo).toLong())
             detachedMedia = maxOf(raw, floorNanos)
             detachedAtWall = System.nanoTime()
         }
