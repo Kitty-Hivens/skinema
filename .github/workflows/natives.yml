@@ -160,10 +160,10 @@ jobs:
       - uses: actions/setup-java@v4
         if: matrix.cross == ''
         with:
-          distribution: temurin
-          # Temurin has no 25 build for windows-arm64 yet (23 is the latest
-          # there); it still clears the JDK 22 FFM floor the acceptance needs.
-          java-version: ${{ matrix.platform == 'windows-arm64' && '23' || '25' }}
+          # Azul Zulu (OpenJDK): one distribution that ships JDK 25 on every
+          # platform including windows-arm64, which Temurin does not build yet.
+          distribution: zulu
+          java-version: 25
 
       - uses: gradle/actions/setup-gradle@v4
         if: matrix.cross == ''
