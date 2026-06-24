@@ -202,6 +202,12 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xzf x264.tar.gz
         (
             cd "x264-$X264_VERSION"
+            # CLANGARM64 has no gcc; x264's configure defaults CC to gcc and
+            # bails ("no working C compiler found"). Hand it clang and the llvm
+            # binutils, as for libvpx above.
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+                export CC=clang AR=llvm-ar RANLIB=llvm-ranlib STRIP=llvm-strip
+            fi
             ./configure --prefix="$DEPS" --enable-static --enable-pic \
                 --disable-cli --disable-opencl \
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
