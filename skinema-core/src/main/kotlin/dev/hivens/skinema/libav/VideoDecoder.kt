@@ -152,10 +152,9 @@ class VideoDecoder private constructor(
         // Re-apply the container start_time the timeline was normalized
         // against before handing the target to the demuxer.
         val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
-        Libav.checkAv(
-            Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD),
-            "av_seek_frame",
-        )
+        val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
+        avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
+        Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
     }
@@ -174,6 +173,10 @@ class VideoDecoder private constructor(
         while (true) {
             val ret = Libav.avReadFrame(fmtCtx, packet)
             if (ret < 0) {
+                // The demuxer stopped: a real EOF, or our AvioSource caught a
+                // MediaSource exception and signalled EOF to get off the native
+                // stack. Resurface that here so it fails closed, not silently.
+                avioSource?.throwIfFailed()
                 draining = true
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(flush)")
                 return
@@ -435,7 +438,20 @@ class VideoDecoder private constructor(
 
         private class HwSetup(val pixFmt: Int, val deviceCtx: MemorySegment)
 
-        /** The platform's hw device types, best first (see [HwAccel]). */
+        /**
+         * The platform's hw device types, best first (see [HwAccel]).
+         *
+         * The list is forward-looking: the prebuilt natives bundle currently
+         * carries only VAAPI (Linux), D3D11VA + DXVA2 (Windows) and
+         * VideoToolbox (macOS) -- NVDEC/CUDA and QSV need extra SDKs and are a
+         * build follow-up (ROADMAP M11). CUDA stays listed so a consumer's own
+         * bundle (custom FEATURES) or a system FFmpeg that builds it works
+         * unchanged; against the stock bundle a type that was not built simply
+         * fails to open and the next one is tried, or AUTO falls to software.
+         * So on an NVIDIA-only Linux box with the stock bundle, AUTO decodes in
+         * software (hardwareActive = false) -- the contract holds, the bundle
+         * just has no driver it can use yet.
+         */
         private fun preferredHwTypes(): IntArray = when (Os.current()) {
             // VAAPI before NVDEC on Linux: Intel/AMD, no proprietary driver.
             Os.LINUX -> intArrayOf(LibavAbi.AV_HWDEVICE_TYPE_VAAPI, LibavAbi.AV_HWDEVICE_TYPE_CUDA)
@@ -594,6 +610,10 @@ class VideoDecoder private constructor(
                     setupHwAccel(arena, codecCtx, decoder, hardware)
                 }
                 hwDevice = hw.deviceCtx
+                // Tell the get_format upcall which surface this device backs, so
+                // it returns exactly that rather than the first hardware format
+                // avcodec happens to offer (#2).
+                Libav.setNegotiatedHwFormat(hw.pixFmt)
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)

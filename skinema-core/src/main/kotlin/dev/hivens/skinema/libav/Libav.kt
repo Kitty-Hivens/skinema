@@ -287,22 +287,32 @@ object Libav {
     @JvmStatic
     @Suppress("unused", "UNUSED_PARAMETER")
     private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int {
+        val target = negotiatedHwFormat.get()
         val list = formats.reinterpret(Long.MAX_VALUE)
         var i = 0L
         var last = LibavAbi.AV_PIX_FMT_NONE
         while (true) {
             val fmt = list.getAtIndex(JAVA_INT, i)
             if (fmt == LibavAbi.AV_PIX_FMT_NONE) return last
-            if (fmt in HW_PIX_FORMATS) return fmt
+            // Return the surface the opened device actually backs, not just the
+            // first hardware format on the list: with two backends offered
+            // (e.g. QSV and VAAPI on an Intel box) the wrong one yields a surface
+            // the device cannot fill and the decode fails (#2). No match falls
+            // through to the last (software) entry, the graceful no-device answer.
+            if (target != LibavAbi.AV_PIX_FMT_NONE && fmt == target) return fmt
             last = fmt
             i++
         }
     }
 
-    private val HW_PIX_FORMATS = intArrayOf(
-        LibavAbi.AV_PIX_FMT_VAAPI, LibavAbi.AV_PIX_FMT_CUDA, LibavAbi.AV_PIX_FMT_VIDEOTOOLBOX,
-        LibavAbi.AV_PIX_FMT_D3D11, LibavAbi.AV_PIX_FMT_DXVA2_VLD, LibavAbi.AV_PIX_FMT_QSV,
-    )
+    // The surface format setupHwAccel negotiated for the device it opened.
+    // ThreadLocal because the setup and this get_format upcall run on the same
+    // decode thread; AV_PIX_FMT_NONE (software, the default) leaves
+    // chooseHwFormat returning the software entry.
+    private val negotiatedHwFormat = ThreadLocal.withInitial { LibavAbi.AV_PIX_FMT_NONE }
+
+    /** Set by the video decoder before decode so [chooseHwFormat] targets the opened device's surface. */
+    fun setNegotiatedHwFormat(pixFmt: Int) = negotiatedHwFormat.set(pixFmt)
 
     private val getFormatStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().findStatic(

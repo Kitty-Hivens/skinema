@@ -4,8 +4,10 @@ package dev.hivens.skinema.subtitles
  * Paletted subtitle bitmap (dvdsub, pgs) to premultiplied RGBA at a
  * tight stride. The palette entries are 32-bit ARGB as libav stores
  * them in rect data[1]; indices walk data[0] at [linesize] per row.
- * Out-of-range indices read as transparent (a damaged stream must not
- * throw -- fail closed per rect).
+ * Out-of-range indices read as transparent, and a rect whose claimed
+ * width*height runs past the index buffer it was handed stops at the
+ * buffer's end -- a damaged or adversarial stream must not throw, it
+ * fails closed per rect.
  */
 internal fun paletteToRgba(
     indices: ByteArray,
@@ -19,7 +21,9 @@ internal fun paletteToRgba(
         val srcRow = row * linesize
         val dstRow = row * width * 4
         for (col in 0 until width) {
-            val index = indices[srcRow + col].toInt() and 0xFF
+            val srcIdx = srcRow + col
+            if (srcIdx >= indices.size) break // data shorter than w*h claims: leave the rest transparent
+            val index = indices[srcIdx].toInt() and 0xFF
             if (index >= palette.size) continue
             val argb = palette[index]
             val alpha = (argb ushr 24) and 0xFF
