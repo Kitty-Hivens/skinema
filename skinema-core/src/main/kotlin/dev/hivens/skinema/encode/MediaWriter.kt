@@ -333,6 +333,13 @@ class MediaWriter private constructor(
                     ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_RATE, audio.sampleRate)
                     ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_FMT, LibavAbi.AV_SAMPLE_FMT_FLTP)
                     Libav.avChannelLayoutDefault(ac.asSlice(LibavAbi.CodecContext.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), OUT_CHANNELS)
+                    // Pin the codec time_base to 1/sample_rate explicitly: the
+                    // audio frame's pts is its running sample count and the
+                    // packet rescale on drain assumes this base. The native AAC
+                    // encoder defaults to it, but libopus does not necessarily,
+                    // so do not trust the default.
+                    ac.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE, 1)
+                    ac.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE + 4, audio.sampleRate)
                     if (audio.bitRate > 0) ac.set(JAVA_LONG, LibavAbi.CodecContext.BIT_RATE, audio.bitRate)
                     if (globalHeader) ac.set(JAVA_INT, LibavAbi.CodecContext.FLAGS, ac.get(JAVA_INT, LibavAbi.CodecContext.FLAGS) or LibavAbi.AV_CODEC_FLAG_GLOBAL_HEADER)
                     applyOptions(arena, aCtx, audio.options)
