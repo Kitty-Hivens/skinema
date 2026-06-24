@@ -404,6 +404,14 @@ if has enc-hevc && [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = x64 ]; then
     FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc)
 fi
 
+# CLANGARM64 has no gcc, so ffmpeg's configure (which defaults cc=gcc) fails its
+# compiler test. Point it at clang and the llvm binutils. This is a native arm64
+# build on an arm64 runner, not a cross, so no --enable-cross-compile.
+FFTOOLS=()
+if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+    FFTOOLS=(--cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip)
+fi
+
 # The whitelist is assembled from FEATURES (ROADMAP.md section 4). The
 # always-on base is the core playback set: H.264/HEVC video, the native
 # audio decoders (opus/vorbis/aac/mp3/flac plus the real-life rip set --
@@ -463,6 +471,7 @@ fi
     --enable-filter=atempo,abuffer,abuffersink \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
+    ${FFTOOLS[@]+"${FFTOOLS[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
