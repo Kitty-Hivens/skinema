@@ -151,18 +151,20 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         (
             cd "libvpx-${VPX_VERSION#v}"
             # CLANGARM64 has no gcc, and libvpx will not auto-detect a win-arm64
-            # target (it falls to generic-gnu, which then invokes gcc and dies).
-            # Name the arm64 target explicitly -- which turns NEON on -- and
-            # point CC at clang, exactly as MSYS2's own libvpx package does (its
-            # makepkg sets CC=clang for the environment, so its PKGBUILD need not).
+            # target (it falls to generic-gnu, which invokes gcc and dies). Name
+            # the arm64 target explicitly (this turns NEON on) and hand it the
+            # llvm toolchain -- clang to compile AND link, llvm-ar/nm/ranlib/
+            # strip -- the way MSYS2's environment does for its own libvpx, since
+            # the -gcc target otherwise reaches for gcc/binutils that are absent.
             if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
-                export CC=clang
+                export CC=clang LD=clang AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib STRIP=llvm-strip
                 : "${VPX_TARGET:=arm64-win64-gcc}"
             fi
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
                 --enable-vp9 --disable-shared --enable-static \
-                ${VPX_TARGET:+--target=$VPX_TARGET}
+                ${VPX_TARGET:+--target=$VPX_TARGET} \
+                || { echo "=== libvpx config.log tail ==="; tail -40 config.log 2>/dev/null; exit 1; }
             make -j"$JOBS"
             make install
         )
