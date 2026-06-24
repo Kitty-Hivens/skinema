@@ -144,6 +144,10 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF \
                 -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_EXTRAS=OFF
             ninja -C "libwebp-$WEBP_VERSION/build" install
+            # cmake also emits decoder-only and mux libraries; the bindings use
+            # neither (libwebp covers decode, libwebpdemux drives animation), and
+            # the autotools build on other platforms ships neither -- drop them.
+            rm -f "$PREFIX"/bin/libwebpdecoder-*.dll "$PREFIX"/bin/libwebpmux-*.dll
         else
             (
                 cd "libwebp-$WEBP_VERSION"
