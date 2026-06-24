@@ -299,16 +299,40 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
         fetch "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz" harfbuzz.tar.xz
         rm -rf "harfbuzz-$HARFBUZZ_VERSION"
         tar -xJf harfbuzz.tar.xz
-        # RT_LDFLAGS folds the C++/GCC runtime into the Windows DLL so it
-        # needs no libstdc++-6.dll/libgcc_s alongside; empty elsewhere.
-        LDFLAGS="$RT_LDFLAGS ${LDFLAGS:-}" \
-        meson setup "harfbuzz-$HARFBUZZ_VERSION/build" "harfbuzz-$HARFBUZZ_VERSION" \
-            --prefix="$HB_PREFIX" --libdir=lib --default-library="$HB_KIND" --buildtype=release \
-            --pkg-config-path="$HB_PKG" \
-            -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
-            -Dicu=disabled -Dchafa=disabled -Dtests=disabled -Ddocs=disabled \
-            ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
-        ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
+        if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+            # meson always builds libharfbuzz-subset, which will not link as a
+            # separate DLL under clang/lld on aarch64-mingw (undefined main-lib
+            # symbols) and which skinema never uses (libass shapes, never
+            # subsets). cmake can omit it (HB_BUILD_SUBSET=OFF); point it at the
+            # freetype built above and hand-write the pkg-config file cmake does
+            # not emit, so libass's configure still finds harfbuzz.
+            mkdir -p "$HB_PREFIX/lib/pkgconfig"
+            cmake -G Ninja -S "harfbuzz-$HARFBUZZ_VERSION" -B "harfbuzz-$HARFBUZZ_VERSION/build" \
+                -DCMAKE_INSTALL_PREFIX="$HB_PREFIX" -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$PREFIX" -DBUILD_SHARED_LIBS=ON \
+                -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+                -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF -DHB_HAVE_FREETYPE=ON \
+                -DHB_HAVE_GLIB=OFF -DHB_HAVE_GOBJECT=OFF -DHB_HAVE_ICU=OFF \
+                -DFREETYPE_LIBRARY="$PREFIX/lib/libfreetype.dll.a"
+            ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
+            printf '%s\n' \
+                "prefix=$HB_PREFIX" 'exec_prefix=${prefix}' 'libdir=${prefix}/lib' \
+                'includedir=${prefix}/include' 'Name: harfbuzz' \
+                'Description: HarfBuzz text shaping library' "Version: $HARFBUZZ_VERSION" \
+                'Libs: -L${libdir} -lharfbuzz' 'Cflags: -I${includedir}/harfbuzz' \
+                > "$HB_PREFIX/lib/pkgconfig/harfbuzz.pc"
+        else
+            # RT_LDFLAGS folds the C++/GCC runtime into the Windows DLL so it
+            # needs no libstdc++-6.dll/libgcc_s alongside; empty elsewhere.
+            LDFLAGS="$RT_LDFLAGS ${LDFLAGS:-}" \
+            meson setup "harfbuzz-$HARFBUZZ_VERSION/build" "harfbuzz-$HARFBUZZ_VERSION" \
+                --prefix="$HB_PREFIX" --libdir=lib --default-library="$HB_KIND" --buildtype=release \
+                --pkg-config-path="$HB_PKG" \
+                -Dfreetype=enabled -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
+                -Dicu=disabled -Dchafa=disabled -Dtests=disabled -Ddocs=disabled \
+                ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
+            ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
+        fi
         cp "harfbuzz-$HARFBUZZ_VERSION/COPYING" "$WORK/harfbuzz-COPYING"
     fi
 
