@@ -157,12 +157,17 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             # strip -- the way MSYS2's environment does for its own libvpx, since
             # the -gcc target otherwise reaches for gcc/binutils that are absent.
             if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
-                export CC=clang LD=clang AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib STRIP=llvm-strip
+                export CC=clang CXX=clang++ LD=clang AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib STRIP=llvm-strip
                 : "${VPX_TARGET:=arm64-win64-gcc}"
             fi
+            # Decode-only: skinema reads vp8/vp9 through ffmpeg's libvpx decoders
+            # and never encodes them. Smaller, and it drops libvpx's only C++ (the
+            # encoder's ratectrl_rtc), which on CLANGARM64 would otherwise reach
+            # for a g++ that the clang toolchain does not ship.
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
-                --enable-vp9 --disable-shared --enable-static \
+                --enable-vp9 --disable-vp8-encoder --disable-vp9-encoder \
+                --disable-shared --enable-static \
                 ${VPX_TARGET:+--target=$VPX_TARGET} \
                 || { echo "=== libvpx config.log tail ==="; tail -40 config.log 2>/dev/null; exit 1; }
             make -j"$JOBS"
