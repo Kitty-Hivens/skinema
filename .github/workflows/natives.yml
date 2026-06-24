@@ -120,8 +120,14 @@ jobs:
         with:
           msystem: CLANGARM64
           update: false
+          # autoconf/automake/libtool: the libass autotools stack is
+          # regenerated with the system libtool here (the tarballs' own cannot
+          # build aarch64-mingw DLLs); base-devel does not pull them on arm64.
           install: >-
             base-devel
+            autoconf
+            automake
+            libtool
             mingw-w64-clang-aarch64-toolchain
             mingw-w64-clang-aarch64-cmake
             mingw-w64-clang-aarch64-meson
