@@ -150,6 +150,15 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xzf libvpx.tar.gz
         (
             cd "libvpx-${VPX_VERSION#v}"
+            # CLANGARM64 has no gcc, and libvpx will not auto-detect a win-arm64
+            # target (it falls to generic-gnu, which then invokes gcc and dies).
+            # Name the arm64 target explicitly -- which turns NEON on -- and
+            # point CC at clang, exactly as MSYS2's own libvpx package does (its
+            # makepkg sets CC=clang for the environment, so its PKGBUILD need not).
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+                export CC=clang
+                : "${VPX_TARGET:=arm64-win64-gcc}"
+            fi
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
                 --enable-vp9 --disable-shared --enable-static \
