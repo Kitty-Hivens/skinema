@@ -161,7 +161,9 @@ jobs:
         if: matrix.cross == ''
         with:
           distribution: temurin
-          java-version: 25
+          # Temurin has no 25 build for windows-arm64 yet (23 is the latest
+          # there); it still clears the JDK 22 FFM floor the acceptance needs.
+          java-version: ${{ matrix.platform == 'windows-arm64' && '23' || '25' }}
 
       - uses: gradle/actions/setup-gradle@v4
         if: matrix.cross == ''
