@@ -22,7 +22,7 @@ mavenPublishing {
 
 val resourceRoot = "dev/hivens/skinema/natives"
 val nativesTag = "natives-8.1.1"
-val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "macos-arm64", "macos-x64")
+val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64")
 // The modular tiers (ROADMAP.md section 4). Each (tier, platform) ships as
 // its own classifier jar "<tier>-<platform>"; a consumer puts exactly one
 // tier per platform on the runtime classpath. The unpacked layout is keyed

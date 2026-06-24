@@ -58,6 +58,25 @@ for _f in $FEATURES; do
     esac
 done
 
+# Host OS family and arch. MSYS2 ships several Windows environments -- MINGW64
+# (x86_64, GCC) and CLANGARM64 (aarch64, clang) among them -- so collapse every
+# one to "windows" here and have the per-OS branches below switch on HOST_OS
+# rather than each repeating the MSYSTEM names ("$(uname -s)" alone is not a
+# reliable discriminator across them). MSYSTEM is set by MSYS2 and names the
+# environment; off MSYS2 it is empty and uname decides. HOST_ARCH splits the
+# x86_64 Windows toolchain (GCC, static libstdc++ folded in) from the aarch64
+# one (clang, libc++/libunwind shipped as DLLs).
+case "${MSYSTEM:-$(uname -s)}" in
+    MINGW*|CLANG*|UCRT*|MSYS*) HOST_OS=windows ;;
+    Darwin)                    HOST_OS=mac ;;
+    *)                         HOST_OS=linux ;;
+esac
+case "${MSYSTEM:-}|$(uname -m)" in
+    CLANGARM64*|*aarch64*|*arm64*) HOST_ARCH=arm64 ;;
+    *)                             HOST_ARCH=x64 ;;
+esac
+[ "${MAC_CROSS_X64:-}" = "1" ] && HOST_ARCH=x64
+
 mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
@@ -198,11 +217,14 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     # each linking the C++/GCC runtime in so it stays self-contained.
     # Their licenses already travel with every bundle (FTL + harfbuzz
     # COPYING below), so shipping the DLLs adds no licensing surface.
-    case "$(uname -s)" in MINGW*|MSYS*) WINASS=1 ;; *) WINASS= ;; esac
+    if [ "$HOST_OS" = windows ]; then WINASS=1; else WINASS=; fi
     if [ -n "$WINASS" ]; then
         FT_PREFIX="$PREFIX"; FT_KIND="--enable-shared --disable-static"
         HB_PREFIX="$PREFIX"; HB_KIND="shared"; HB_PKG="$DEPS/lib/pkgconfig:$PREFIX/lib/pkgconfig"
-        RT_LDFLAGS="-static-libgcc -static-libstdc++"
+        # GCC/MinGW x64 folds its C++/GCC runtime into the DLLs; aarch64 clang
+        # ships libc++/libunwind as DLLs instead, so it adds no fold flags here.
+        RT_LDFLAGS=""
+        [ "$HOST_ARCH" = x64 ] && RT_LDFLAGS="-static-libgcc -static-libstdc++"
     else
         FT_PREFIX="$DEPS"; FT_KIND="--disable-shared --enable-static"
         HB_PREFIX="$DEPS"; HB_KIND="static"; HB_PKG="$DEPS/lib/pkgconfig"
@@ -268,8 +290,8 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             # cannot promise.
             ASS_FLAGS="--disable-libunibreak"
             ASS_LDFLAGS=""
-            case "$(uname -s)" in
-                Linux)
+            case "$HOST_OS" in
+                linux)
                     # fontconfig stays a dynamic SYSTEM library (every
                     # desktop has it); exclude-libs keeps the STATIC
                     # freetype/harfbuzz symbols private, or ELF
@@ -283,10 +305,10 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                     ASS_FLAGS="$ASS_FLAGS --enable-fontconfig"
                     ASS_LDFLAGS="-Wl,--exclude-libs,libfreetype.a:libharfbuzz.a"
                     ;;
-                Darwin)
+                mac)
                     ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # CoreText autodetects
                     ;;
-                MINGW*|MSYS*)
+                windows)
                     ASS_FLAGS="$ASS_FLAGS --disable-fontconfig" # DirectWrite autodetects
                     # freetype/harfbuzz are shared DLLs on Windows (built
                     # above), so libtool links their import libs cleanly;
@@ -304,12 +326,12 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
         cp "libass-$LIBASS_VERSION/COPYING" "$WORK/libass-COPYING"
         # The static freetype+harfbuzz fold leaves several MB of dead
         # symbol weight; the bundles ship stripped.
-        case "$(uname -s)" in
-            Darwin) strip -x "$PREFIX"/lib/libass.*.dylib "$PREFIX"/lib/libfribidi.*.dylib 2>/dev/null || true ;;
-            MINGW*|MSYS*) strip --strip-unneeded "$PREFIX"/bin/libass-*.dll "$PREFIX"/bin/libfribidi-*.dll 2>/dev/null || true ;;
+        case "$HOST_OS" in
+            mac) strip -x "$PREFIX"/lib/libass.*.dylib "$PREFIX"/lib/libfribidi.*.dylib 2>/dev/null || true ;;
+            windows) strip --strip-unneeded "$PREFIX"/bin/libass-*.dll "$PREFIX"/bin/libfribidi-*.dll 2>/dev/null || true ;;
             *) strip --strip-unneeded "$PREFIX"/lib/libass.so.9.* "$PREFIX"/lib/libfribidi.so.0.* 2>/dev/null || true ;;
         esac
-        if [ "$(uname -s)" = "Darwin" ]; then
+        if [ "$HOST_OS" = mac ]; then
             # Normalize the fribidi edge so the loader resolves it next
             # to libass regardless of the build prefix.
             FRIBIDI_REF="$(otool -L "$PREFIX/lib/libass.9.dylib" | awk '/fribidi/ {print $1}')"
@@ -340,31 +362,30 @@ read -ra EXTRA <<< "${EXTRA_FLAGS:-}" || true
 # NVDEC/NVENC/QSV/AMF need extra SDKs and stay a follow-up.
 HWACCEL=()
 if has hwaccel; then
-case "$(uname -s)" in
-    Linux)
+case "$HOST_OS" in
+    linux)
         HWACCEL=(--enable-vaapi
             --enable-hwaccel=h264_vaapi,hevc_vaapi,vp8_vaapi,vp9_vaapi,av1_vaapi)
         ;;
-    Darwin)
+    mac)
         HWACCEL=(--enable-videotoolbox
             --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox)
         ;;
-    MINGW*|MSYS*)
+    windows)
         HWACCEL=(--enable-d3d11va --enable-dxva2
             --enable-hwaccel=h264_d3d11va,hevc_d3d11va,vp9_d3d11va,av1_d3d11va,h264_dxva2,hevc_dxva2,vp9_dxva2,av1_dxva2)
         ;;
 esac
 fi
 
-# x265 is C++; on Windows fold the MinGW C++/GCC runtime into the ffmpeg
-# libraries so avcodec needs no libstdc++-6.dll / libgcc_s alongside (the
-# libass DLLs already do this). Empty elsewhere -- the Linux/macOS C++
-# runtime is a system library.
+# x265 is C++; on Windows x64 (MinGW GCC) fold the C++/GCC runtime into the
+# ffmpeg libraries so avcodec needs no libstdc++-6.dll / libgcc_s alongside
+# (the libass DLLs do the same). The aarch64 clang toolchain ships libc++ /
+# libunwind as DLLs instead (see the runtime-DLL copy below). Empty on
+# Linux/macOS -- the C++ runtime is a system library there.
 FFLD=()
-if has enc-hevc; then
-    case "$(uname -s)" in
-        MINGW*|MSYS*) FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc) ;;
-    esac
+if has enc-hevc && [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = x64 ]; then
+    FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc)
 fi
 
 # The whitelist is assembled from FEATURES (ROADMAP.md section 4). The
@@ -453,26 +474,32 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
 fi
 
-# The Windows DLLs link MinGW runtime libraries -- zlib1/libbz2-1 (the
+# The Windows DLLs link toolchain runtime libraries -- zlib1/libbz2-1 (the
 # ffmpeg demuxers), libiconv-2 (avcodec + libass), libwinpthread-1
 # (av threading) -- that live in the MSYS2 prefix, not the bundle, so a
-# clean machine that lacks them cannot load avcodec or libass. Copy them
-# in (enumerated from the shipped DLLs' import tables) with their notices
-# so the bundle is self-contained. Hard-fail on a missing name -- a typo
-# would silently ship a broken bundle that only the build host can load.
-case "$(uname -s)" in
-    MINGW*|MSYS*)
-        MINGW="${MINGW_PREFIX:-/mingw64}"
-        for dll in zlib1 libbz2-1 libiconv-2 libwinpthread-1; do
-            cp "$MINGW/bin/$dll.dll" "$PREFIX/bin/" \
-                || { echo "missing MinGW runtime $dll.dll under $MINGW/bin" >&2; exit 1; }
-        done
-        for lic in zlib bzip2 libiconv winpthreads; do
-            f="$(ls "$MINGW/share/licenses/$lic"/* 2>/dev/null | head -1)"
-            [ -n "$f" ] && cp "$f" "$PREFIX/licenses/mingw-$lic-LICENSE.txt"
-        done
-        ;;
-esac
+# clean machine that lacks them cannot load avcodec or libass. The aarch64
+# clang toolchain additionally links its C++ runtime and unwinder as DLLs
+# (libc++/libunwind), where x64 GCC folded libstdc++/libgcc in statically.
+# Copy them all in (MINGW_PREFIX is /mingw64 on MINGW64, /clangarm64 on
+# CLANGARM64) with their notices so the bundle is self-contained. Hard-fail
+# on a missing name -- a typo would silently ship a host-only bundle.
+if [ "$HOST_OS" = windows ]; then
+    MINGW="${MINGW_PREFIX:-/mingw64}"
+    runtime_dlls="zlib1 libbz2-1 libiconv-2 libwinpthread-1"
+    runtime_lics="zlib bzip2 libiconv winpthreads"
+    if [ "$HOST_ARCH" = arm64 ]; then
+        runtime_dlls="$runtime_dlls libc++ libunwind"
+        runtime_lics="$runtime_lics libc++ libunwind"
+    fi
+    for dll in $runtime_dlls; do
+        cp "$MINGW/bin/$dll.dll" "$PREFIX/bin/" \
+            || { echo "missing toolchain runtime $dll.dll under $MINGW/bin" >&2; exit 1; }
+    done
+    for lic in $runtime_lics; do
+        f="$(ls "$MINGW/share/licenses/$lic"/* 2>/dev/null | head -1)"
+        [ -n "$f" ] && cp "$f" "$PREFIX/licenses/mingw-$lic-LICENSE.txt"
+    done
+fi
 
 # Flatten into the bundle layout NativeBundle deploys: real files under
 # the soname-level names the loader asks for (jars cannot carry the
