@@ -31,6 +31,14 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
     // absolute offset without the source having to track it.
     private var position = 0L
 
+    // A throwable unwinding out of an upcall while native FFmpeg frames are on
+    // the stack terminates the VM -- and a MediaSource (the streaming seam) is
+    // exactly where a network read raises IOException as a normal failure. The
+    // upcalls catch it, stash it here and stop the demuxer; the decode thread
+    // calls [throwIfFailed] to resurface it as a clean failure (fail closed).
+    @Volatile
+    private var pendingError: Throwable? = null
+
     private val readStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().bind(
             this, "readPacket",
@@ -70,12 +78,17 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
      * stub is bound to this instance.
      */
     fun readPacket(@Suppress("UNUSED_PARAMETER") opaque: MemorySegment, buf: MemorySegment, bufSize: Int): Int {
-        val want = if (bufSize < scratch.size) bufSize else scratch.size
-        val n = source.read(scratch, 0, want)
-        if (n <= 0) return LibavAbi.AVERROR_EOF
-        MemorySegment.copy(scratch, 0, buf.reinterpret(n.toLong()), JAVA_BYTE, 0, n)
-        position += n
-        return n
+        try {
+            val want = if (bufSize < scratch.size) bufSize else scratch.size
+            val n = source.read(scratch, 0, want)
+            if (n <= 0) return LibavAbi.AVERROR_EOF
+            MemorySegment.copy(scratch, 0, buf.reinterpret(n.toLong()), JAVA_BYTE, 0, n)
+            position += n
+            return n
+        } catch (t: Throwable) {
+            pendingError = t
+            return LibavAbi.AVERROR_EOF
+        }
     }
 
     /**
@@ -84,20 +97,34 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
      * seekable (the demuxer then reads linearly).
      */
     fun seekPacket(@Suppress("UNUSED_PARAMETER") opaque: MemorySegment, offset: Long, whence: Int): Long {
-        if (whence and LibavAbi.AVSEEK_SIZE != 0) return source.size()
-        val target = when (whence and 0xFFFF) {
-            LibavAbi.SEEK_SET -> offset
-            LibavAbi.SEEK_CUR -> position + offset
-            LibavAbi.SEEK_END -> {
-                val total = source.size()
-                if (total < 0) return -1
-                total + offset
+        try {
+            if (whence and LibavAbi.AVSEEK_SIZE != 0) return source.size()
+            val target = when (whence and 0xFFFF) {
+                LibavAbi.SEEK_SET -> offset
+                LibavAbi.SEEK_CUR -> position + offset
+                LibavAbi.SEEK_END -> {
+                    val total = source.size()
+                    if (total < 0) return -1
+                    total + offset
+                }
+                else -> return -1
             }
-            else -> return -1
+            val landed = source.seek(target)
+            if (landed >= 0) position = landed
+            return landed
+        } catch (t: Throwable) {
+            pendingError = t
+            return -1
         }
-        val landed = source.seek(target)
-        if (landed >= 0) position = landed
-        return landed
+    }
+
+    /**
+     * Rethrows, once, a throwable the source raised inside an upcall. The
+     * decode thread calls this after a demuxer read so a stashed failure
+     * surfaces as a decode error (-> Failed) rather than a silent EOF.
+     */
+    fun throwIfFailed() {
+        pendingError?.let { pendingError = null; throw it }
     }
 
     /**

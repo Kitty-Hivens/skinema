@@ -89,8 +89,11 @@ the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with
 the pitch preserved (FFmpeg's atempo). HDR content (PQ/HLG over
 BT.2020) is tone-mapped to SDR on the decode path -- the transfer is
 inverted, highlights roll off against BT.2408 diffuse white, and the
-gamut maps to BT.709 -- so it no longer plays washed out. Native-HDR
-passthrough (driving an HDR display) is out of scope.
+gamut maps to BT.709 -- so it no longer plays washed out. This is a
+fixed reasonable-look mapping, not a metadata-accurate one: the stream's
+HDR metadata (MaxCLL, mastering-display luminance, HDR10+, Dolby Vision)
+is not read, so the roll-off uses an assumed peak rather than the
+content's. Native-HDR passthrough (driving an HDR display) is out of scope.
 
 Subtitles: `subtitleTracks` enumerates what the container carries
 (language, title, default/forced); `selectSubtitleTrack` turns one on

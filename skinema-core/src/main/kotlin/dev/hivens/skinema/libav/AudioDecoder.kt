@@ -90,10 +90,9 @@ class AudioDecoder private constructor(
         // Re-apply the container start_time the timeline was normalized
         // against (see formatStartTimeNanos) before seeking the demuxer.
         val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
-        Libav.checkAv(
-            Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD),
-            "av_seek_frame(audio)",
-        )
+        val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
+        avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
+        Libav.checkAv(seeked, "av_seek_frame(audio)")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
     }
@@ -103,6 +102,10 @@ class AudioDecoder private constructor(
         while (true) {
             val ret = Libav.avReadFrame(fmtCtx, packet)
             if (ret < 0) {
+                // A real EOF, or the AvioSource caught a MediaSource exception
+                // and signalled EOF to get off the native stack; resurface it
+                // so a streaming failure fails closed rather than ending quietly.
+                avioSource?.throwIfFailed()
                 draining = true
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(audio flush)")
                 return
