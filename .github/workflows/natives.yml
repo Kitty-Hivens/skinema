@@ -52,8 +52,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # FEATURES and the acceptance caps for this tier. The full tier ships
-      # HEVC encode (x265) only where cmake can configure it; macOS/Windows
-      # full carry x264 alone until that is sorted (issue #22).
+      # H.264 (x264) and HEVC (x265) encode on every platform; the x265
+      # source is patched so cmake 4.x configures it on macOS/Windows (#22).
       - name: Resolve tier
         id: tier
         shell: bash
@@ -62,9 +62,6 @@ jobs:
             core)   feat="av1 vpx webp hwaccel";                                caps="decode,webp" ;;
             decode) feat="av1 vpx webp hwaccel subs formats";                   caps="decode,webp,subs,formats" ;;
             full)   feat="av1 vpx webp hwaccel subs formats enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
-          esac
-          case "${{ runner.os }}:${{ matrix.tier }}" in
-            macOS:full|Windows:full) feat="av1 vpx webp hwaccel subs formats enc-h264" ;;
           esac
           echo "features=$feat" >> "$GITHUB_OUTPUT"
           echo "caps=$caps" >> "$GITHUB_OUTPUT"

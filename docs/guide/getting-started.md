@@ -8,12 +8,17 @@ the native runtime for every platform you ship:
 
 ```kotlin
 implementation("dev.hivens:skinema-compose:0.5.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:macos-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-x64")
 ```
+
+The natives classifier is `<tier>-<platform>`: pick one tier per platform.
+`decode` (used here) is the complete LGPL player; `core` trims to the modern
+essentials, `full` adds GPL software encode. See the README for what each
+tier carries and its license.
 
 If you are not on Compose, depend on `skinema-core` alone (the player
 and decoders) and optionally `skinema-skiko` (frames as
@@ -24,18 +29,20 @@ and decoders) and optionally `skinema-skiko` (frames as
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
 | `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
-| `skinema-natives` | trimmed FFmpeg + libwebp, one classifier jar/platform   | --                               |
+| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 
 The library is compiled to JVM 22 bytecode, because `java.lang.foreign`
 (the FFM API) went final in 22. You run on any JDK 22 or newer.
 
 ## Native runtime
 
-The `skinema-natives` classifier jars each carry a trimmed,
-decode-only FFmpeg build (LGPL, shared libraries, roughly 11-15 MB per
-platform) plus libwebp, libass and their dependencies. On first use the
-matching jar unpacks into a per-user cache keyed by a content
-fingerprint -- atomic and safe across concurrent processes.
+The `skinema-natives` classifier jars each carry a trimmed FFmpeg build
+(shared libraries) for one tier and platform: `core` is the lean modern
+decode set (LGPL), `decode` adds the libass subtitle stack and the broad
+legacy/extended format set (LGPL), and `full` adds software encode (GPL,
+x264/x265). On first use the matching jar unpacks into a per-user cache
+keyed by a content fingerprint -- atomic and safe across concurrent
+processes.
 
 Without a natives jar on the classpath, skinema falls back to the
 system's FFmpeg libraries (matched by exact soname). That is convenient
@@ -51,6 +58,16 @@ build (a locally compiled bundle, a debugging copy):
 
 Precedence is property, then environment, then the unpacked bundle,
 then the system loader.
+
+On NixOS the bundled (or override) jars work as-is -- they load by absolute
+path. Only the *system-loader* fallback needs help: skinema looks up the
+bare soname (`libavcodec.so.62`) and the nix store is not on the default
+search path. If you rely on a system FFmpeg there, either set
+`SKINEMA_LIBAV_DIR` to a directory that collects the libraries (a
+`symlinkJoin` of `ffmpeg` + `libass` + `libwebp`), or put their nix lib dirs
+on `LD_LIBRARY_PATH` (e.g. through `makeWrapper`). The soname is pinned to
+FFmpeg 8.x, so use the matching package -- `ffmpeg_7` ships `libavcodec.so.61`
+and will not resolve.
 
 ## The native-access flag
 

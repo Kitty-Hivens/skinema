@@ -167,10 +167,21 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         fetch "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz" x265.tar.gz
         rm -rf "x265_$X265_VERSION"
         tar -xzf x265.tar.gz
+        # x265 4.1 predates cmake 4.x: it sets pre-3.5 policies to OLD (which
+        # cmake 4.x refuses) and detects Apple's clang via STREQUAL "Clang"
+        # (which the CMP0025 OLD reporting relied on). Patch the source so
+        # cmake 4.x (brew on macOS, MSYS2 on Windows) configures it -- which
+        # lets full ship HEVC encode there (issue #22). Harmless on Linux's
+        # cmake 3.28 (NEW is the default, GNU never matches the clang branch).
+        sed -i.bak \
+            -e 's/cmake_policy(SET CMP0025 OLD)/cmake_policy(SET CMP0025 NEW)/' \
+            -e 's/cmake_policy(SET CMP0054 OLD)/cmake_policy(SET CMP0054 NEW)/' \
+            -e 's/cmake_minimum_required (VERSION 2.8.8)/cmake_minimum_required (VERSION 3.5)/' \
+            -e 's/${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang"/${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"/' \
+            "x265_$X265_VERSION/source/CMakeLists.txt"
         cmake -G Ninja -S "x265_$X265_VERSION/source" -B "x265_$X265_VERSION/build" \
             -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
         ninja -C "x265_$X265_VERSION/build" install
         cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
