@@ -125,22 +125,35 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         ninja -C "dav1d-$DAV1D_VERSION/build" install
     fi
 
-    # libwebp ships SHARED into the bundle prefix (the webp bindings load
-    # it at runtime; it is not linked into ffmpeg). Autotools, not cmake:
-    # libtool produces the soname naming the loader expects on every OS
-    # (libwebp.so.7 / libwebp.7.dylib / libwebp-7.dll).
+    # libwebp ships SHARED into the bundle prefix (the webp bindings load it at
+    # runtime; it is not linked into ffmpeg). Autotools elsewhere -- libtool
+    # produces the soname naming the loader expects (libwebp.so.7 /
+    # libwebp.7.dylib / libwebp-7.dll). On CLANGARM64 that libtool cannot fold
+    # the static sharpyuv convenience lib into a DLL and emits no libwebp DLL at
+    # all, so build with cmake there (as MSYS2 does); CMAKE_DLL_NAME_WITH_SOVERSION
+    # reproduces the same -<major> DLL names.
     if has webp && ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
         fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz" libwebp-dist.tar.gz
         rm -rf "libwebp-$WEBP_VERSION"
         tar -xzf libwebp-dist.tar.gz
-        (
-            cd "libwebp-$WEBP_VERSION"
-            ./configure --prefix="$PREFIX" --enable-shared --disable-static \
-                --enable-libwebpdemux --disable-libwebpmux \
-                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
-            make -j"$JOBS"
-            make install
-        )
+        if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+            cmake -G Ninja -S "libwebp-$WEBP_VERSION" -B "libwebp-$WEBP_VERSION/build" \
+                -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=ON -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+                -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF -DWEBP_BUILD_GIF2WEBP=OFF \
+                -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF \
+                -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_EXTRAS=OFF
+            ninja -C "libwebp-$WEBP_VERSION/build" install
+        else
+            (
+                cd "libwebp-$WEBP_VERSION"
+                ./configure --prefix="$PREFIX" --enable-shared --disable-static \
+                    --enable-libwebpdemux --disable-libwebpmux \
+                    ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+                make -j"$JOBS"
+                make install
+            )
+        fi
         cp "libwebp-$WEBP_VERSION/COPYING" "$WORK/libwebp-COPYING"
     fi
 
