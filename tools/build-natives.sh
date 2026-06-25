@@ -317,14 +317,16 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             # meson always builds libharfbuzz-subset, which will not link as a
             # separate DLL under clang/lld on aarch64-mingw (undefined main-lib
             # symbols) and which skinema never uses (libass shapes, never
-            # subsets). cmake can omit it (HB_BUILD_SUBSET=OFF); point it at the
-            # freetype built above and hand-write the pkg-config file cmake does
-            # not emit, so libass's configure still finds harfbuzz.
+            # subsets). cmake omits it (HB_BUILD_SUBSET=OFF). harfbuzz's cmake
+            # sets no SOVERSION, so the DLL is libharfbuzz.dll -- no -<major>
+            # suffix, unlike libwebp -- and the Ass loader preloads it by that
+            # bare name. Point cmake at the freetype built above, and replace
+            # the pkg-config file cmake emits with a minimal one whose
+            # -lharfbuzz matches the libharfbuzz.dll.a import lib libass links.
             mkdir -p "$HB_PREFIX/lib/pkgconfig"
             cmake -G Ninja -S "harfbuzz-$HARFBUZZ_VERSION" -B "harfbuzz-$HARFBUZZ_VERSION/build" \
                 -DCMAKE_INSTALL_PREFIX="$HB_PREFIX" -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_PREFIX_PATH="$PREFIX" -DBUILD_SHARED_LIBS=ON \
-                -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
                 -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF -DHB_HAVE_FREETYPE=ON \
                 -DHB_HAVE_GLIB=OFF -DHB_HAVE_GOBJECT=OFF -DHB_HAVE_ICU=OFF
             ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
