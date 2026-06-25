@@ -10,6 +10,13 @@ name: Natives
 
 on:
   workflow_dispatch:
+    inputs:
+      only_platform:
+        description: "Build only this platform (blank = all), e.g. windows-arm64"
+        default: ""
+      only_tier:
+        description: "Build only this tier: core | decode | full (blank = all)"
+        default: ""
 
 permissions:
   contents: write
@@ -18,35 +25,44 @@ env:
   FFMPEG_VERSION: "8.1.1"
 
 jobs:
+  # The tier x platform matrix is generated here so a dispatch can narrow it to
+  # one platform and/or tier -- targeted rebuilds, and cheap iteration on a new
+  # platform without rebuilding (and re-uploading) the ones that already ship.
+  # Unfiltered it is every tier on every platform; each entry carries the
+  # platform's runner os and, for the cross builds, the cross id.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        shell: bash
+        env:
+          ONLY_PLATFORM: ${{ inputs.only_platform }}
+          ONLY_TIER: ${{ inputs.only_tier }}
+        run: |
+          # core drops the multi-MB libass stack, decode adds it, full adds GPL
+          # encode. GitHub's free arm64 runners (linux-arm64, windows-arm64) are
+          # real machines and get the on-runner acceptance run; macos-x64 cross-
+          # compiles on the arm mac (Intel runners are scarce) -- community tier,
+          # no acceptance, an arm JVM cannot load x86_64 dylibs.
+          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
+          declare -A CROSS=( [macos-x64]=mac-x64 )
+          items=()
+          for t in core decode full; do
+            [ -n "$ONLY_TIER" ] && [ "$ONLY_TIER" != "$t" ] && continue
+            for p in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
+              [ -n "$ONLY_PLATFORM" ] && [ "$ONLY_PLATFORM" != "$p" ] && continue
+              items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\"}")
+            done
+          done
+          echo "matrix={\"include\":[$(IFS=,; echo "${items[*]}")]}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
-      matrix:
-        # Every tier on every platform. The tier selects the FEATURES set
-        # (resolved below into a build), the platform selects the runner.
-        # core drops the multi-MB libass stack, decode adds it, full adds
-        # GPL encode.
-        tier: [core, decode, full]
-        platform: [linux-x64, linux-arm64, windows-x64, macos-arm64, macos-x64]
-        include:
-          - platform: linux-x64
-            os: ubuntu-latest
-          # GitHub's free arm64 runners (public repos): a real machine, so
-          # unlike the mac cross-build this platform gets the full on-runner
-          # acceptance run.
-          - platform: linux-arm64
-            os: ubuntu-24.04-arm
-          - platform: windows-x64
-            os: windows-latest
-          - platform: macos-arm64
-            os: macos-14
-          # GitHub's Intel mac runners are scarce-to-dead (day-to-month
-          # queues), so x64 cross-compiles on the arm runner instead.
-          # Community tier: no on-metal acceptance run -- an arm JVM cannot
-          # load x86_64 dylibs.
-          - platform: macos-x64
-            os: macos-14
-            cross: mac-x64
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -79,8 +95,8 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install nasm cmake meson ninja pkg-config
 
-      - name: Install toolchain (Windows / MSYS2)
-        if: runner.os == 'Windows'
+      - name: Install toolchain (Windows x64 / MSYS2 MINGW64)
+        if: matrix.platform == 'windows-x64'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -96,6 +112,30 @@ jobs:
             curl
             unzip
 
+      # CLANGARM64: aarch64 clang + libc++. No nasm -- it is an x86 assembler;
+      # dav1d/x265/libvpx assemble NEON through the C compiler/gas on arm64.
+      - name: Install toolchain (Windows arm64 / MSYS2 CLANGARM64)
+        if: matrix.platform == 'windows-arm64'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          # autoconf/automake/libtool: the libass autotools stack is
+          # regenerated with the system libtool here (the tarballs' own cannot
+          # build aarch64-mingw DLLs); base-devel does not pull them on arm64.
+          install: >-
+            base-devel
+            autoconf
+            automake
+            libtool
+            mingw-w64-clang-aarch64-toolchain
+            mingw-w64-clang-aarch64-cmake
+            mingw-w64-clang-aarch64-meson
+            mingw-w64-clang-aarch64-ninja
+            mingw-w64-clang-aarch64-pkgconf
+            curl
+            unzip
+
       - name: Build trimmed FFmpeg (unix)
         if: runner.os != 'Windows'
         env:
@@ -104,27 +144,38 @@ jobs:
           if [ "${{ matrix.cross }}" = "mac-x64" ]; then export MAC_CROSS_X64=1; fi
           STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
-      - name: Build trimmed FFmpeg (Windows)
-        if: runner.os == 'Windows'
+      - name: Build trimmed FFmpeg (Windows x64)
+        if: matrix.platform == 'windows-x64'
         shell: msys2 {0}
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" VPX_TARGET=x86_64-win64-gcc tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
+      # No VPX_TARGET forced: there is no fixed arm64-win64 gcc triplet like
+      # x64's, so libvpx detects the aarch64 mingw target itself.
+      - name: Build trimmed FFmpeg (Windows arm64)
+        if: matrix.platform == 'windows-arm64'
+        shell: msys2 {0}
+        env:
+          FEATURES: ${{ steps.tier.outputs.features }}
+        run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
+
       # The acceptance gate: the suite must pass against the binaries we are
       # about to ship, on the platform that will run them. Cross-built
       # bundles skip it (no metal to run them on) -- community tier.
       - uses: actions/setup-java@v4
-        if: matrix.cross == null
+        if: matrix.cross == ''
         with:
-          distribution: temurin
+          # Azul Zulu (OpenJDK): one distribution that ships JDK 25 on every
+          # platform including windows-arm64, which Temurin does not build yet.
+          distribution: zulu
           java-version: 25
 
       - uses: gradle/actions/setup-gradle@v4
-        if: matrix.cross == null
+        if: matrix.cross == ''
 
       - name: Install ffmpeg CLI (fixtures)
-        if: matrix.cross == null
+        if: matrix.cross == ''
         shell: bash
         run: |
           case "${{ runner.os }}" in
@@ -134,7 +185,7 @@ jobs:
           esac
 
       - name: Test against the freshly built natives
-        if: matrix.cross == null
+        if: matrix.cross == ''
         shell: bash
         # Strict here catches a bundle that built but cannot load a
         # capability BEFORE it uploads -- the workflow that produced the
