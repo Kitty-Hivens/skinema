@@ -140,11 +140,15 @@ weighs a lot and not every consumer wants it. The always-on base is the
 core playback set (H.264/HEVC, the native audio decoders, the still images,
 the containers, the atempo chain); each tier layers features on:
 
-| Tier     | Features over the base                 | License |
-|----------|----------------------------------------|---------|
-| `core`   | av1 vpx webp hwaccel                    | LGPL    |
-| `decode` | + subs (libass) + formats              | LGPL    |
-| `full`   | + enc-h264 enc-hevc (x264/x265)        | GPL     |
+| Tier     | Features over the base                       | License |
+|----------|----------------------------------------------|---------|
+| `core`   | av1 vpx webp hwaccel                          | LGPL    |
+| `decode` | + subs (libass) + formats + enc-vaapi         | LGPL    |
+| `full`   | + enc-vaapi + enc-h264 enc-hevc (x264/x265)   | GPL     |
+
+`enc-vaapi` (M13) is the LGPL hardware H.264/HEVC encoder -- the codec lives
+in the GPU driver, so it adds no GPL surface and rides the `decode` tier as
+well as `full`. It is Linux/VAAPI only; a no-op on the other platforms.
 
 The `formats` feature is the broad legacy/extended decode set: the avi,
 MPEG-PS/TS, flv, asf, dv and RealMedia demuxers, and the older video (MPEG-1/2,
@@ -276,15 +280,18 @@ README once the library is usable.
 ## 10. Distribution and licensing
 
 - skinema: Apache-2.0.
-- FFmpeg: licensed per tier (the modular FEATURES, section 4). `core` and
-  `decode` carry no encoders and stay LGPL; `full` adds the x264/x265
-  software encoders, which are GPL, so `--enable-gpl` flips that tier's build
-  (decode was LGPL throughout; M10 records the encode pivot, M12 the
-  subsystem, M16 the tiers). **Dynamically linked shared libraries only**,
-  license texts shipped (the GPL text on `full`, LGPL on the rest), source of
-  the exact build referenced (BtbN tag or our CI artifact). Static linking is
-  off the table. A consumer needing LGPL takes `core` or `decode`; only one
-  shipping `full` takes on GPL.
+- FFmpeg: licensed per tier (the modular FEATURES, section 4). `core` carries
+  no encoders; `decode` adds the VAAPI hardware H.264/HEVC encoders (M13),
+  which run in the GPU driver and are LGPL, so it stays LGPL -- the
+  licence-clean route to GPU output on Linux. `full` additionally adds the
+  x264/x265 SOFTWARE encoders, which are GPL, so `--enable-gpl` flips only that
+  tier's build (M10 records the encode pivot, M12 the software subsystem, M13
+  the LGPL GPU path, M16 the GPL tier). **Dynamically linked shared libraries
+  only**, license texts shipped (the GPL text on `full`, LGPL on the rest),
+  source of the exact build referenced (BtbN tag or our CI artifact). Static
+  linking is off the table. A consumer needing LGPL takes `core` or `decode`
+  (the latter now with GPU encode on Linux); only one shipping `full` takes on
+  GPL.
 - Natives packaging: per-tier/OS/arch classifier jars `<tier>-<platform>`
   (the lwjgl/skiko pattern) carrying the trimmed runtime plus an `index.txt`;
   NativeBundle deploys them to a fingerprint-keyed per-user cache (atomic,
@@ -784,6 +791,44 @@ README once the library is usable.
   x264/x265/SVT-AV1/libopus in build-natives.sh (accepted 2026-06-22; the
   bundle grows ~3x toward ~40 MB) and the README/section-10 licence rewrite
   that ships with it -- then M13 GPU encode on the same MediaWriter.
+
+- **M13 -- GPU encode (DONE, 2026-06-30).** MediaWriter drives a hardware
+  encoder on the GPU without a new class: a named encoder ("h264_vaapi",
+  "hevc_vaapi") is recognized through avcodec_get_hw_config -- the first config
+  that takes an AVHWFramesContext gives the surface format and device type, the
+  SAME detection for VAAPI, QSV or an NVENC cuda pool, so a future backend
+  needs only its encoder enabled in the build, no code here. For a hw encoder
+  the writer opens the device (av_hwdevice_ctx_create, an optional
+  VideoEncodeConfig `device` names a VAAPI render node), builds a surface pool
+  (av_hwframe_ctx_alloc/init, sw_format NV12, a fixed initial_pool_size), sets
+  the codec's pix_fmt to the hw surface and attaches hw_frames_ctx. Each frame
+  reverse-swscales RGBA -> NV12 into a staging frame, draws a fresh surface
+  (av_hwframe_get_buffer), uploads it (av_hwframe_transfer_data) and encodes
+  that; the software path is unchanged (RGBA -> YUV420P, sent directly). Hw
+  encode is fail-closed -- a device that will not open or an upload the driver
+  refuses throws, NO silent software fallback (the codec name is the explicit
+  request); teardown unrefs the pool and device after the codec drops its own
+  refs and frees the GPU frame. New bindings: av_hwframe_ctx_alloc/init,
+  av_hwframe_get_buffer and a named-device av_hwdevice_ctx_create, reusing
+  M11's device/transfer/get_hw_config surface. ABI from a re-run of
+  tools/layout-oracle.c: AVCodecContext.hw_frames_ctx, the AVHWFramesContext
+  struct (format/sw_format/width/height/initial_pool_size), AVBufferRef.data,
+  AV_PIX_FMT_NV12 and the HW_FRAMES_CTX method bit. Licensing: the VAAPI
+  encoder lives in the GPU driver (Mesa/iHD), so it is LGPL -- build-natives.sh
+  decouples the GPL flip from "has any encoder" so only x264/x265 set it, and a
+  new `enc-vaapi` feature enables h264_vaapi/hevc_vaapi (plus the muxers and
+  native aac/flac) with NO --enable-gpl. It rides the decode and full tiers
+  (Linux only; a no-op elsewhere -- NVENC/QSV/AMF/VideoToolbox need extra SDKs
+  and stay a follow-up), giving GPU H.264/HEVC output in an LGPL bundle.
+  Validated end to end on real VAAPI (an Intel Iris Xe dev box): RGBA frames ->
+  h264_vaapi/mp4 decoded back, solid colour within tolerance (MediaWriterHwTest,
+  gated behind SKINEMA_TEST_HWENC=1 so a GPU-less CI cannot run it); a
+  fail-closed test (an unusable render node throws, no file left) runs without a
+  GPU. The trimmed enc-vaapi bundle builds LGPL-clean (CONFIG_GPL 0, the
+  h264_vaapi/hevc_vaapi encoders in libavcodec, only the LGPL licence text
+  shipped). PENDING: like M11's hwaccel, the natives.yml enc-vaapi build is
+  UNVALIDATED on a real GPU in CI (no GPU runners, issue #29); the other
+  backends are a build-flag-plus-verification round each on their hardware.
 
 - **M15 -- custom AVIO input (streaming primitive, 2026-06-23).** VideoDecoder
   gains `open(MediaSource)` beside `open(Path)`: a public `MediaSource`
