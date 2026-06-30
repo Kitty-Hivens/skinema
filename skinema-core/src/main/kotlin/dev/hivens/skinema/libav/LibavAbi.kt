@@ -146,6 +146,9 @@ object LibavAbi {
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
 
+        /** AVBufferRef* to the AVHWFramesContext the encoder pulls GPU surfaces from (M13). */
+        const val HW_FRAMES_CTX = 552L
+
         /** AVBufferRef* to the AVHWDeviceContext driving hardware decode. */
         const val HW_DEVICE_CTX = 560L
 
@@ -160,6 +163,31 @@ object LibavAbi {
         const val METHODS = 4L
         const val DEVICE_TYPE = 8L
         const val SIZEOF = 12L
+    }
+
+    /**
+     * AVBufferRef: only its [DATA] pointer is read -- av_hwframe_ctx_alloc
+     * returns one whose data is the [HwFramesContext] to configure (M13).
+     */
+    object BufferRef {
+        const val DATA = 8L
+        const val SIZEOF = 24L
+    }
+
+    /**
+     * AVHWFramesContext: the GPU surface pool the hardware encoder draws
+     * from. Reached through an AVBufferRef's [BufferRef.DATA]; [FORMAT] is
+     * the hw-surface format (e.g. AV_PIX_FMT_VAAPI), [SW_FORMAT] the layout
+     * uploaded into it (NV12), and [INITIAL_POOL_SIZE] pre-allocates
+     * surfaces (VAAPI wants a fixed pool).
+     */
+    object HwFramesContext {
+        const val INITIAL_POOL_SIZE = 56L
+        const val FORMAT = 60L
+        const val SW_FORMAT = 64L
+        const val WIDTH = 68L
+        const val HEIGHT = 72L
+        const val SIZEOF = 80L
     }
 
     /** Out-parameter of avcodec_decode_subtitle2; caller-allocated. */
@@ -258,6 +286,9 @@ object LibavAbi {
     const val AV_PIX_FMT_VIDEOTOOLBOX = 157
     const val AV_PIX_FMT_D3D11 = 171
 
+    /** NV12: the software layout uploaded into a hw surface for GPU encode (M13). */
+    const val AV_PIX_FMT_NV12 = 23
+
     /** AVHWDeviceType selectors for av_hwdevice_ctx_create, per platform. */
     const val AV_HWDEVICE_TYPE_CUDA = 2
     const val AV_HWDEVICE_TYPE_VAAPI = 3
@@ -268,6 +299,9 @@ object LibavAbi {
 
     /** AVCodecHWConfig.methods bit: the decoder accepts an AVHWDeviceContext. */
     const val AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX = 1
+
+    /** AVCodecHWConfig.methods bit: the encoder takes frames from an AVHWFramesContext (M13). */
+    const val AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX = 2
 
     // -- M12 encode + mux --
     const val AV_PIX_FMT_YUV420P = 0
