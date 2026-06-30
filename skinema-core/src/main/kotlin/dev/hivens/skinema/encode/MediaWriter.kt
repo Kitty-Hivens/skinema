@@ -16,6 +16,15 @@ import java.nio.file.Path
  * ("libx264", "libx265", "libsvtav1", "libvpx-vp9", ...); [options] are
  * its private options ("crf", "preset", ...). The container muxer is
  * inferred from the output file's extension.
+ *
+ * A hardware encoder ("h264_vaapi", "hevc_vaapi", ...) is detected from
+ * its codec descriptor and driven on the GPU: [MediaWriter] opens a
+ * hardware device, builds a surface pool, and uploads each frame before
+ * encoding. [device] names the device to open (a VAAPI render node such as
+ * "/dev/dri/renderD128"); null lets the driver pick its default. It is
+ * ignored for a software encoder. Hardware encode is fail-closed -- if the
+ * device or an upload is refused the writer throws, it does not silently
+ * fall back to software.
  */
 class VideoEncodeConfig(
     val codecName: String,
@@ -26,6 +35,8 @@ class VideoEncodeConfig(
     /** Target bitrate in bits/s; 0 leaves the encoder on its own quality default (crf). */
     val bitRate: Long = 0,
     val options: Map<String, String> = emptyMap(),
+    /** Hardware device to open for a GPU encoder (e.g. a VAAPI render node); null = driver default. */
+    val device: String? = null,
 )
 
 /**
@@ -47,14 +58,16 @@ class AudioEncodeConfig(
  * Encodes pushed RGBA8888 frames (and optional S16LE stereo PCM) to a
  * muxed file -- the inverse of the decode pipeline, the same FFM
  * discipline (one confined [Arena] owned by the calling thread). Video is
- * reverse-swscaled RGBA -> YUV420P; audio is reverse-swresampled S16 ->
- * the encoder's planar format and chunked to the encoder's frame size. The
- * muxer interleaves both streams by dts; [finish] drains the encoders and
- * writes the trailer. Fail-closed: any libav refusal throws
- * [LibavException], and [close] still releases everything.
+ * reverse-swscaled RGBA -> the encoder's input format; audio is
+ * reverse-swresampled S16 -> the encoder's planar format and chunked to
+ * the encoder's frame size. The muxer interleaves both streams by dts;
+ * [finish] drains the encoders and writes the trailer. Fail-closed: any
+ * libav refusal throws [LibavException], and [close] still releases
+ * everything.
  *
- * Software encode (M12); hardware encoders are a later milestone. Frames
- * and samples are pushed from the one thread that called [open].
+ * Software encode (M12, RGBA -> YUV420P) and hardware encode (M13, RGBA ->
+ * NV12 uploaded to a GPU surface pool, e.g. VAAPI). Frames and samples are
+ * pushed from the one thread that called [open].
  */
 class MediaWriter private constructor(
     private val arena: Arena,
@@ -158,7 +171,14 @@ class MediaWriter private constructor(
         arena.close()
     }
 
-    /** One video stream: RGBA -> YUV420P -> the encoder. */
+    /**
+     * One video stream: RGBA -> [dstFormat] -> the encoder. Software encode
+     * sends the reverse-swscaled frame straight in ([dstFormat] YUV420P).
+     * Hardware encode reverse-swscales to NV12, then uploads each frame to a
+     * fresh surface from [hwFramesCtx] (the GPU pool) before encoding; the
+     * encoder's input pixel format is the surface format, not [dstFormat].
+     * [hwFramesCtx]/[hwFrame]/[hwDeviceRef] are NULL for software encode.
+     */
     private class VideoTrack(
         private val arena: Arena,
         val codecCtx: MemorySegment,
@@ -168,6 +188,10 @@ class MediaWriter private constructor(
         val streamTbDen: Int,
         private val width: Int,
         private val height: Int,
+        private val dstFormat: Int,
+        private val hwFramesCtx: MemorySegment,
+        private val hwFrame: MemorySegment,
+        private val hwDeviceRef: MemorySegment,
     ) {
         private var swsCtx = MemorySegment.NULL
         private var srcData = MemorySegment.NULL
@@ -179,9 +203,9 @@ class MediaWriter private constructor(
             if (swsCtx == MemorySegment.NULL) {
                 swsCtx = Libav.swsGetContext(
                     width, height, LibavAbi.AV_PIX_FMT_RGBA,
-                    width, height, LibavAbi.AV_PIX_FMT_YUV420P, LibavAbi.SWS_BILINEAR,
+                    width, height, dstFormat, LibavAbi.SWS_BILINEAR,
                 )
-                if (swsCtx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->YUV420P) refused ${width}x$height")
+                if (swsCtx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
                 srcNative = arena.allocate(width.toLong() * height * 4)
                 srcData = arena.allocate(ADDRESS, 8).also { it.setAtIndex(ADDRESS, 0, srcNative) }
                 srcStride = arena.allocate(JAVA_INT, 8).also { it.setAtIndex(JAVA_INT, 0, width * 4) }
@@ -189,16 +213,42 @@ class MediaWriter private constructor(
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(video)")
             MemorySegment.copy(rgba, 0, srcNative, JAVA_BYTE, 0, rgba.size)
             Libav.swsScale(swsCtx, srcData, srcStride, 0, height, frame.asSlice(LibavAbi.Frame.DATA), frame.asSlice(LibavAbi.Frame.LINESIZE))
-            frame.set(JAVA_LONG, LibavAbi.Frame.PTS, ptsNanos / MICROS_DEN_L)
-            Libav.checkAv(Libav.avcodecSendFrame(codecCtx, frame), "avcodec_send_frame(video)")
+            val pts = ptsNanos / MICROS_DEN_L
+            if (hwFramesCtx == MemorySegment.NULL) {
+                frame.set(JAVA_LONG, LibavAbi.Frame.PTS, pts)
+                Libav.checkAv(Libav.avcodecSendFrame(codecCtx, frame), "avcodec_send_frame(video)")
+            } else {
+                // Draw a fresh GPU surface from the pool, upload the staging
+                // NV12 frame into it, and encode that. The unref returns the
+                // previous surface to the pool; the transfer is synchronous,
+                // so the staging frame is free to overwrite next call.
+                Libav.avFrameUnref(hwFrame)
+                Libav.checkAv(Libav.avHwframeGetBuffer(hwFramesCtx, hwFrame), "av_hwframe_get_buffer(encode)")
+                Libav.checkAv(Libav.avHwframeTransferData(hwFrame, frame), "av_hwframe_transfer_data(upload)")
+                hwFrame.set(JAVA_LONG, LibavAbi.Frame.PTS, pts)
+                Libav.checkAv(Libav.avcodecSendFrame(codecCtx, hwFrame), "avcodec_send_frame(video hw)")
+            }
         }
 
         fun free(ptrPtr: MemorySegment) {
             if (swsCtx != MemorySegment.NULL) Libav.swsFreeContext(swsCtx)
             ptrPtr.set(ADDRESS, 0, frame)
             Libav.avFrameFree(ptrPtr)
+            if (hwFrame != MemorySegment.NULL) {
+                ptrPtr.set(ADDRESS, 0, hwFrame)
+                Libav.avFrameFree(ptrPtr)
+            }
             ptrPtr.set(ADDRESS, 0, codecCtx)
             Libav.avcodecFreeContext(ptrPtr)
+            // Our refs on the frames pool and device, after the codec dropped its own.
+            if (hwFramesCtx != MemorySegment.NULL) {
+                ptrPtr.set(ADDRESS, 0, hwFramesCtx)
+                Libav.avBufferUnref(ptrPtr)
+            }
+            if (hwDeviceRef != MemorySegment.NULL) {
+                ptrPtr.set(ADDRESS, 0, hwDeviceRef)
+                Libav.avBufferUnref(ptrPtr)
+            }
         }
     }
 
@@ -270,6 +320,13 @@ class MediaWriter private constructor(
         private const val DEFAULT_AUDIO_FRAME_SIZE = 1024
 
         /**
+         * Surfaces pre-allocated for a hardware encoder's fixed input pool --
+         * enough for the reorder/async depth at default settings. The VAAPI
+         * pool does not grow, so undersizing it stalls av_hwframe_get_buffer.
+         */
+        private const val HW_FRAME_POOL_SIZE = 20
+
+        /**
          * Opens [path] for [video] (and optional [audio]): infers the muxer
          * from the extension, sets up the named encoder(s), and writes the
          * container header. The writer then accepts frames/samples until
@@ -289,6 +346,11 @@ class MediaWriter private constructor(
             var swr = MemorySegment.NULL
             var packet = MemorySegment.NULL
             var openedIo = false
+            // Hardware encode: the opened device, our ref on the surface pool
+            // (the codec holds its own), and the reusable GPU upload frame.
+            var hwDeviceRef = MemorySegment.NULL
+            var hwFramesRef = MemorySegment.NULL
+            var hwFrame = MemorySegment.NULL
             try {
                 val ctxOut = arena.allocate(ADDRESS)
                 Libav.checkAv(
@@ -308,7 +370,32 @@ class MediaWriter private constructor(
                 val vc = vCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.WIDTH, video.width)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.HEIGHT, video.height)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, LibavAbi.AV_PIX_FMT_YUV420P)
+
+                // Software encode takes YUV420P directly; a hardware encoder
+                // takes its surface format (e.g. VAAPI) and is fed NV12
+                // uploads through a GPU frames pool built here.
+                val hw = detectHwEncode(vEncoder)
+                val swFrameFormat = if (hw == null) LibavAbi.AV_PIX_FMT_YUV420P else LibavAbi.AV_PIX_FMT_NV12
+                if (hw == null) {
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, LibavAbi.AV_PIX_FMT_YUV420P)
+                } else {
+                    val deviceOut = arena.allocate(ADDRESS)
+                    val deviceArg = video.device?.let { arena.allocateFrom(it) } ?: MemorySegment.NULL
+                    Libav.checkAv(Libav.avHwdeviceCtxCreate(deviceOut, hw.deviceType, deviceArg), "av_hwdevice_ctx_create(${video.codecName})")
+                    hwDeviceRef = deviceOut.get(ADDRESS, 0)
+                    hwFramesRef = Libav.avHwframeCtxAlloc(hwDeviceRef)
+                    if (hwFramesRef == MemorySegment.NULL) throw LibavException("av_hwframe_ctx_alloc returned NULL")
+                    val fctx = hwFramesRef.reinterpret(LibavAbi.BufferRef.SIZEOF)
+                        .get(ADDRESS, LibavAbi.BufferRef.DATA).reinterpret(LibavAbi.HwFramesContext.SIZEOF)
+                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.FORMAT, hw.pixFmt)
+                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.SW_FORMAT, swFrameFormat)
+                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.WIDTH, video.width)
+                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.HEIGHT, video.height)
+                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.INITIAL_POOL_SIZE, HW_FRAME_POOL_SIZE)
+                    Libav.checkAv(Libav.avHwframeCtxInit(hwFramesRef), "av_hwframe_ctx_init(${video.codecName})")
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, hw.pixFmt)
+                    vc.set(ADDRESS, LibavAbi.CodecContext.HW_FRAMES_CTX, Libav.avBufferRef(hwFramesRef))
+                }
                 vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE, 1)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE + 4, MICROS_DEN)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE, video.fps)
@@ -383,15 +470,20 @@ class MediaWriter private constructor(
                 vFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                 packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
                 if (vFrame == MemorySegment.NULL || packet == MemorySegment.NULL) throw LibavException("av_frame_alloc/av_packet_alloc returned NULL")
-                vFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, LibavAbi.AV_PIX_FMT_YUV420P)
+                vFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, swFrameFormat)
                 vFrame.set(JAVA_INT, LibavAbi.Frame.WIDTH, video.width)
                 vFrame.set(JAVA_INT, LibavAbi.Frame.HEIGHT, video.height)
                 Libav.checkAv(Libav.avFrameGetBuffer(vFrame, 0), "av_frame_get_buffer(video)")
+                if (hw != null) {
+                    hwFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                    if (hwFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(hw surface) returned NULL")
+                }
 
                 val videoTrack = VideoTrack(
                     arena, vCtx, vFrame, vStreamIndex,
                     vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE), vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4),
                     video.width, video.height,
+                    swFrameFormat, hwFramesRef, hwFrame, hwDeviceRef,
                 )
                 val audioTrack = if (audio == null) null else AudioTrack(
                     arena, aCtx, aFrame, swr, aStream.get(JAVA_INT, LibavAbi.Stream.INDEX),
@@ -404,8 +496,12 @@ class MediaWriter private constructor(
                 for (ctx in listOf(vCtx, aCtx)) if (ctx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, ctx); Libav.avcodecFreeContext(ptrPtr)
                 }
-                for (f in listOf(vFrame, aFrame)) if (f != MemorySegment.NULL) {
+                for (f in listOf(vFrame, aFrame, hwFrame)) if (f != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, f); Libav.avFrameFree(ptrPtr)
+                }
+                // After the codec dropped its frames ref above, release ours and the device.
+                for (buf in listOf(hwFramesRef, hwDeviceRef)) if (buf != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, buf); Libav.avBufferUnref(ptrPtr)
                 }
                 if (swr != MemorySegment.NULL) { ptrPtr.set(ADDRESS, 0, swr); Libav.swrFree(ptrPtr) }
                 if (packet != MemorySegment.NULL) { ptrPtr.set(ADDRESS, 0, packet); Libav.avPacketFree(ptrPtr) }
@@ -440,6 +536,33 @@ class MediaWriter private constructor(
                     Libav.avOptSet(codecCtx, arena.allocateFrom(k), arena.allocateFrom(v), LibavAbi.AV_OPT_SEARCH_CHILDREN),
                     "av_opt_set($k=$v)",
                 )
+            }
+        }
+
+        /** A hardware encoder's surface format and the device type to open for it. */
+        private class HwEncode(val pixFmt: Int, val deviceType: Int)
+
+        /**
+         * The hw-surface config a hardware encoder draws its frames from, or
+         * null for a software encoder. Walks the encoder's hw configs for the
+         * first that accepts an AVHWFramesContext -- the same detection for
+         * VAAPI, QSV or an NVENC cuda pool, so a new backend needs no code
+         * here, only its encoder enabled in the natives build.
+         */
+        private fun detectHwEncode(encoder: MemorySegment): HwEncode? {
+            var i = 0
+            while (true) {
+                val cfg = Libav.avcodecGetHwConfig(encoder, i)
+                if (cfg == MemorySegment.NULL) return null
+                val sized = cfg.reinterpret(LibavAbi.CodecHWConfig.SIZEOF)
+                val methods = sized.get(JAVA_INT, LibavAbi.CodecHWConfig.METHODS)
+                if (methods and LibavAbi.AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX != 0) {
+                    return HwEncode(
+                        sized.get(JAVA_INT, LibavAbi.CodecHWConfig.PIX_FMT),
+                        sized.get(JAVA_INT, LibavAbi.CodecHWConfig.DEVICE_TYPE),
+                    )
+                }
+                i++
             }
         }
     }
