@@ -19,6 +19,7 @@
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/buffer.h>
 
 #define P(expr) printf("%-44s = %lld\n", #expr, (long long)(expr))
 
@@ -206,6 +207,17 @@ int main(void) {
     P(AV_PIX_FMT_QSV);
     P(AV_PIX_FMT_NV12);
     P(AV_PIX_FMT_P010LE);
+
+    /* -- M13 hardware encode: a hw frames pool fed to the encoder -- */
+    P(offsetof(AVBufferRef, data));
+    P(sizeof(AVBufferRef));
+    P(offsetof(AVHWFramesContext, format));
+    P(offsetof(AVHWFramesContext, sw_format));
+    P(offsetof(AVHWFramesContext, width));
+    P(offsetof(AVHWFramesContext, height));
+    P(offsetof(AVHWFramesContext, initial_pool_size));
+    P(sizeof(AVHWFramesContext));
+    P(AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX);
 
     /* -- M12 encode + mux: AVCodecContext write fields, output muxer, packet -- */
     P(offsetof(AVCodecContext, codec_type));
