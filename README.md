@@ -33,12 +33,12 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.5.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.5.0:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.6.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.6.0:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.0:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.0:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.0:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.0:decode-macos-x64")
 ```
 
 The natives classifier is `<tier>-<platform>`: pick one tier for the
