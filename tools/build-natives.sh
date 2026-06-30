@@ -41,9 +41,11 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # section 4). Comma- or space-separated; default is the complete LGPL decode
 # set. Both the dependency builds above and the ffmpeg whitelist below gate
 # on these, so an absent feature ships neither its library nor its codecs.
-#   core    av1 vpx webp hwaccel                                 (LGPL, no subtitles)
-#   decode  av1 vpx webp hwaccel subs formats                    (LGPL, full decode)
-#   full    av1 vpx webp hwaccel subs formats enc-h264 enc-hevc  (GPL, + encode)
+#   core    av1 vpx webp hwaccel                                          (LGPL, no subtitles)
+#   decode  av1 vpx webp hwaccel subs formats enc-vaapi                   (LGPL, decode + GPU encode on Linux)
+#   full    av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc (GPL, + software encode)
+# enc-vaapi (M13) enables the LGPL hardware H.264/HEVC encoders on Linux; it
+# adds no GPL surface, so it rides the decode tier as well as full.
 # "formats" is the broad legacy/extended decode set -- avi/mpegts/mpeg/flv/asf/
 # dv containers; mpeg2/vc1/wmv/mpeg4/h263/vvc/realvideo/prores/... video; dts/
 # truehd/wma/mp2/realaudio/adpcm/... audio. All native (no external library),
@@ -53,7 +55,7 @@ FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 for _f in $FEATURES; do
     case "$_f" in
-        av1|vpx|webp|subs|formats|hwaccel|enc-h264|enc-hevc) ;;
+        av1|vpx|webp|subs|formats|hwaccel|enc-h264|enc-hevc|enc-vaapi) ;;
         *) echo "build-natives: unknown FEATURE '$_f'" >&2; exit 1 ;;
     esac
 done
@@ -479,14 +481,16 @@ fi
 # playback-rate filter chain (atempo plus its abuffer/abuffersink ends).
 # Each optional feature adds its decoders/demuxers and, for av1/vpx, links
 # its external library; vp8/vp9 ride the vpx feature because the bundle
-# uses libvpx (the native decoders drop the webm alpha channel). The
-# encoders pull in the output muxers and the native aac/flac encoders and
-# flip --enable-gpl, since x264/x265 are GPL.
+# uses libvpx (the native decoders drop the webm alpha channel). Any
+# encoder (software x264/x265 or hardware VAAPI) pulls in the output muxers
+# and the native aac/flac encoders; only the software x264/x265 flip
+# --enable-gpl -- the VAAPI encoder lives in the driver and stays LGPL.
 DEMUX="mov,matroska,gif,apng,image2,png_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3"
 DECODE="h264,hevc,mjpeg,png,apng,gif,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le"
 PARSE="h264,hevc,mjpeg,png,gif,aac,mpegaudio,opus,vorbis,flac,ac3"
 LIBS=()
 ENC=()
+GPL=()
 has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1"; }
 has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
 has webp && { DEMUX+=",webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
@@ -499,14 +503,26 @@ has formats && {
     DECODE+=",dca,truehd,mlp,mp1,mp2,wmav1,wmav2,wmapro,wmavoice,amrnb,amrwb,tta,wavpack,ape,gsm,gsm_ms,adpcm_ima_qt,adpcm_ima_wav,adpcm_ms,adpcm_swf,adpcm_yamaha,adpcm_g722,adpcm_g726,adpcm_g726le,cook,sipr,ra_144,ra_288,ralf,nellymoser,qdm2,qdmc,atrac1,atrac3,atrac3p,atrac3pal,atrac9,dvaudio,mp3on4,aac_latm,tak,als,mpc7,mpc8,pcm_u8,pcm_s8,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f64le,pcm_mulaw,pcm_alaw"
     PARSE+=",vvc,mpegvideo,mpeg4video,vc1,h263,dca,cavsvideo"
 }
-has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); }
-has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); }
+# Software H.264/HEVC encoders (x264/x265) -- GPL, so they flip --enable-gpl.
+has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); GPL=(--enable-gpl); }
+has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); GPL=(--enable-gpl); }
 
-GPL=()
+# Hardware H.264/HEVC encoders (M13). The codec runs in the GPU driver
+# (Mesa/iHD for VAAPI), so these are LGPL -- they do NOT flip --enable-gpl,
+# the licence-clean route to GPU output. VAAPI is Linux-only; a silent
+# no-op elsewhere (NVENC/QSV/AMF/VideoToolbox stay a follow-up). --enable-vaapi
+# is already on when the hwaccel decode feature is present; add it otherwise.
+VAENC=()
+if has enc-vaapi && [ "$HOST_OS" = linux ]; then
+    ENC+=(h264_vaapi hevc_vaapi)
+    has hwaccel || VAENC=(--enable-vaapi)
+fi
+
 ENCFLAG=()
 MUXFLAG=()
 if [ ${#ENC[@]} -gt 0 ]; then
-    GPL=(--enable-gpl)
+    # Any encoder (software or hardware) needs the output muxers and the
+    # native LGPL audio encoders; the GPL flip above is x264/x265 only.
     ENC+=(aac flac)
     ENCFLAG=(--enable-encoder="$(IFS=,; echo "${ENC[*]}")")
     MUXFLAG=(--enable-muxer=mov,mp4,matroska,webm)
@@ -529,6 +545,7 @@ fi
     ${MUXFLAG[@]+"${MUXFLAG[@]}"} \
     --enable-filter=atempo,abuffer,abuffersink \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
+    ${VAENC[@]+"${VAENC[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
     ${FFTOOLS[@]+"${FFTOOLS[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}

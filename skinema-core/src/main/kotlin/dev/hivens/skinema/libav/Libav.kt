@@ -100,6 +100,9 @@ object Libav {
     private val hAvBufferRef = fn(LibavLibrary.AVUTIL, "av_buffer_ref", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvBufferUnref = fn(LibavLibrary.AVUTIL, "av_buffer_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvFrameCopyProps = fn(LibavLibrary.AVUTIL, "av_frame_copy_props", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvHwframeCtxAlloc = fn(LibavLibrary.AVUTIL, "av_hwframe_ctx_alloc", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvHwframeCtxInit = fn(LibavLibrary.AVUTIL, "av_hwframe_ctx_init", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+    private val hAvHwframeGetBuffer = fn(LibavLibrary.AVUTIL, "av_hwframe_get_buffer", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
 
     // -- swresample --------------------------------------------------------------
 
@@ -260,13 +263,27 @@ object Libav {
     fun avFrameUnref(frame: MemorySegment) { hAvFrameUnref.invoke(frame) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
 
-    // -- hwaccel (M11): device setup, GPU->CPU frame transfer, get_format --------
+    // -- hwaccel (M11 decode, M13 encode): device setup, frame transfer, get_format --
 
     fun avHwdeviceCtxCreate(deviceCtxOut: MemorySegment, type: Int): Int =
         hAvHwdeviceCtxCreate.invoke(deviceCtxOut, type, MemorySegment.NULL, MemorySegment.NULL, 0) as Int
 
+    /** Named-device variant: [device] is a NUL-terminated path (a VAAPI render node) or NULL for the driver default. */
+    fun avHwdeviceCtxCreate(deviceCtxOut: MemorySegment, type: Int, device: MemorySegment): Int =
+        hAvHwdeviceCtxCreate.invoke(deviceCtxOut, type, device, MemorySegment.NULL, 0) as Int
+
     fun avHwframeTransferData(dst: MemorySegment, src: MemorySegment): Int =
         hAvHwframeTransferData.invoke(dst, src, 0) as Int
+
+    /** Allocates an AVHWFramesContext bound to [deviceCtx]; configure its fields then [avHwframeCtxInit]. NULL on OOM. */
+    fun avHwframeCtxAlloc(deviceCtx: MemorySegment): MemorySegment = hAvHwframeCtxAlloc.invoke(deviceCtx) as MemorySegment
+
+    /** Finalizes a configured frames context, allocating its GPU surface pool. */
+    fun avHwframeCtxInit(framesCtx: MemorySegment): Int = hAvHwframeCtxInit.invoke(framesCtx) as Int
+
+    /** Pulls a blank GPU surface from [framesCtx] into [frame] -- the upload target for [avHwframeTransferData]. */
+    fun avHwframeGetBuffer(framesCtx: MemorySegment, frame: MemorySegment): Int =
+        hAvHwframeGetBuffer.invoke(framesCtx, frame, 0) as Int
 
     fun avBufferRef(buf: MemorySegment): MemorySegment = hAvBufferRef.invoke(buf) as MemorySegment
     fun avBufferUnref(bufPtrPtr: MemorySegment) { hAvBufferUnref.invoke(bufPtrPtr) }
