@@ -60,6 +60,14 @@ class MediaWriterTest {
             val decoded = generateSequence { decoder.nextFrame() }.toList()
             // ultrafast x264 may merge the static tail; tolerate +-1 frame.
             assertTrue(decoded.size in (frames - 1)..(frames + 1), "expected ~$frames frames, got ${decoded.size}")
+            // Timing must survive the round-trip: a nanos/micros units slip in
+            // the pts conversion compresses the whole clip ~1000x (10s -> 10ms).
+            val interval = 1_000_000_000L / fps
+            val expectedLast = (frames - 1) * interval
+            assertTrue(
+                decoded.last().ptsNanos in (expectedLast - 2 * interval)..(expectedLast + interval),
+                "clip duration must round-trip: expected last pts ~$expectedLast ns, got ${decoded.last().ptsNanos}",
+            )
             val first = decoded.first()
             assertEquals(w, first.width)
             assertEquals(h, first.height)
