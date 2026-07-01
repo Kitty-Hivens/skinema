@@ -213,7 +213,8 @@ class MediaWriter private constructor(
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(video)")
             MemorySegment.copy(rgba, 0, srcNative, JAVA_BYTE, 0, rgba.size)
             Libav.swsScale(swsCtx, srcData, srcStride, 0, height, frame.asSlice(LibavAbi.Frame.DATA), frame.asSlice(LibavAbi.Frame.LINESIZE))
-            val pts = ptsNanos / MICROS_DEN_L
+            // Frame stamps are nanoseconds; the codec time_base is microseconds.
+            val pts = ptsNanos / NANOS_PER_MICRO
             if (hwFramesCtx == MemorySegment.NULL) {
                 frame.set(JAVA_LONG, LibavAbi.Frame.PTS, pts)
                 Libav.checkAv(Libav.avcodecSendFrame(codecCtx, frame), "avcodec_send_frame(video)")
@@ -310,7 +311,7 @@ class MediaWriter private constructor(
 
         // The video codec time_base: 1/1_000_000, microseconds (VFR-friendly).
         private const val MICROS_DEN = 1_000_000
-        private const val MICROS_DEN_L = 1_000_000L
+        private const val NANOS_PER_MICRO = 1_000L
 
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         private const val BYTES_PER_AUDIO_FRAME = 4
