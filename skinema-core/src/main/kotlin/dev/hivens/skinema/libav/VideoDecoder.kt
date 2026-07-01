@@ -272,7 +272,12 @@ class VideoDecoder private constructor(
         swsRange = Int.MIN_VALUE
 
         val bytes = width.toLong() * height * 4
-        rgbaNative = arena.allocate(bytes)
+        // swscale's packed-output writer emits whole SIMD blocks, rounding the
+        // row width up to the block, so it spills past the last row for a width
+        // that is not block-aligned (e.g. 1080). Pad the native destination so
+        // the spill lands in slack, not the next heap allocation -- an unpadded
+        // buffer corrupts the heap, surfacing as an abort far from here.
+        rgbaNative = arena.allocate(bytes + SWS_WRITE_PADDING)
         rgbaHeap = ByteArray(bytes.toInt())
         // sws_scale takes plane arrays; RGBA is single-plane, slots 1..7 NULL/0.
         dstData = arena.allocate(ADDRESS, 8)
@@ -348,7 +353,7 @@ class VideoDecoder private constructor(
         hdrColorspace = colorspace
         hdrRange = range
         val pixels = width.toLong() * height
-        hdrNative = arena.allocate(pixels * 8) // RGBA64 -- 4 channels x 2 bytes
+        hdrNative = arena.allocate(pixels * 8 + SWS_WRITE_PADDING) // RGBA64 (4ch x 2B) + swscale block spill
         hdrShorts = ShortArray((pixels * 4).toInt())
         hdrOutHeap = ByteArray((pixels * 4).toInt())
         hdrDstData = arena.allocate(ADDRESS, 8)
@@ -415,6 +420,14 @@ class VideoDecoder private constructor(
     companion object {
 
         private val NO_PIXELS = ByteArray(0)
+
+        /**
+         * Slack after a swscale destination. Its packed writer can spill up to
+         * one 16-pixel SIMD block past a non-block-aligned width; sized for the
+         * widest output (RGBA64, 8 B/px -> 128 B), so both the RGBA and RGBA64
+         * targets are covered.
+         */
+        private const val SWS_WRITE_PADDING = 128L
 
         /** 1.0 in swscale's 16.16 fixed point (brightness/contrast/saturation). */
         private const val SWS_UNIT = 1 shl 16

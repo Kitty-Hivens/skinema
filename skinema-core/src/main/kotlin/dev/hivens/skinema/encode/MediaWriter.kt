@@ -206,14 +206,18 @@ class MediaWriter private constructor(
                     width, height, dstFormat, LibavAbi.SWS_BILINEAR,
                 )
                 if (swsCtx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
-                srcNative = arena.allocate(width.toLong() * height * 4)
+                // Padded: swscale reads whole SIMD blocks, so it can read past
+                // the last row for a width that is not block-aligned; the slack
+                // keeps that read inside the allocation.
+                srcNative = arena.allocate(width.toLong() * height * 4 + SWS_READ_PADDING)
                 srcData = arena.allocate(ADDRESS, 8).also { it.setAtIndex(ADDRESS, 0, srcNative) }
                 srcStride = arena.allocate(JAVA_INT, 8).also { it.setAtIndex(JAVA_INT, 0, width * 4) }
             }
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(video)")
             MemorySegment.copy(rgba, 0, srcNative, JAVA_BYTE, 0, rgba.size)
             Libav.swsScale(swsCtx, srcData, srcStride, 0, height, frame.asSlice(LibavAbi.Frame.DATA), frame.asSlice(LibavAbi.Frame.LINESIZE))
-            val pts = ptsNanos / MICROS_DEN_L
+            // Frame stamps are nanoseconds; the codec time_base is microseconds.
+            val pts = ptsNanos / NANOS_PER_MICRO
             if (hwFramesCtx == MemorySegment.NULL) {
                 frame.set(JAVA_LONG, LibavAbi.Frame.PTS, pts)
                 Libav.checkAv(Libav.avcodecSendFrame(codecCtx, frame), "avcodec_send_frame(video)")
@@ -310,7 +314,11 @@ class MediaWriter private constructor(
 
         // The video codec time_base: 1/1_000_000, microseconds (VFR-friendly).
         private const val MICROS_DEN = 1_000_000
-        private const val MICROS_DEN_L = 1_000_000L
+        private const val NANOS_PER_MICRO = 1_000L
+
+        // Slack after the swscale RGBA source: its reader takes whole 16-pixel
+        // SIMD blocks, so it can read one block past a non-block-aligned width.
+        private const val SWS_READ_PADDING = 128L
 
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         private const val BYTES_PER_AUDIO_FRAME = 4
