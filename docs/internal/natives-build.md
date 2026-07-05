@@ -74,12 +74,13 @@ MinGW libtool refuses to fold a static archive into a DLL, so the
 static freetype/harfbuzz fold that works on Linux/macOS leaves the
 Windows libass DLL unbuildable. On Windows, freetype and harfbuzz are
 built **shared** (their own DLLs, which the loader preloads), and the
-four MinGW runtime DLLs the bundle links -- `zlib1`, `libbz2-1`,
-`libiconv-2`, `libwinpthread-1` -- are copied into the bundle and
-preloaded by name. Those four had been a latent gap since M3: a clean
-machine without them on PATH could fail to load avcodec; the runner's
-PATH had masked it. The script hard-fails if any of the four is
-missing, so a broken bundle never ships.
+MinGW runtime DLLs the bundle links -- `zlib1`, `libbz2-1`,
+`libiconv-2`, `liblzma-5`, `libwinpthread-1` -- are copied into the
+bundle and preloaded by name. These had been a latent gap since M3
+(`liblzma-5`, avcodec's lzma path, surfaced later): a clean machine
+without them on PATH could fail to load avcodec; the runner's PATH had
+masked it. The script hard-fails if any is missing, so a broken bundle
+never ships.
 
 ## Bundle layout
 

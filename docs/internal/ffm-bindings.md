@@ -176,9 +176,9 @@ itself. skinema preloads the dependency first so the bundled copy wins
 by name or soname:
 
 - **Windows MinGW runtime.** The pinned av* DLLs import `zlib1`,
-  `libbz2-1`, `libiconv-2`, `libwinpthread-1`. These ride in the bundle
-  but are not themselves pinned; `Libav` preloads them before the av*
-  set so a clean machine without them on PATH still loads.
+  `libbz2-1`, `libiconv-2`, `liblzma-5`, `libwinpthread-1`. These ride
+  in the bundle but are not themselves pinned; `Libav` preloads them
+  before the av* set so a clean machine without them on PATH still loads.
 - **libass.** Preloads fribidi (shared, LGPL -- it must not fold into
   libass), and on Windows also the freetype and harfbuzz DLLs, before
   libass itself.

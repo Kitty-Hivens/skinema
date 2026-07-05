@@ -172,5 +172,5 @@ HarfBuzz folded in
 separate shared library precisely because it is LGPL. On Windows, where
 libtool cannot fold a static archive into a DLL, FreeType and HarfBuzz ship
 as their own DLLs instead, and the bundle also carries the MinGW runtime
-they link -- zlib and bzip2 (permissive), winpthread, and libiconv (LGPL,
-dynamically linked) -- each with its license text.
+they link -- zlib, bzip2, and lzma (permissive), winpthread, and libiconv
+(LGPL, dynamically linked) -- each with its license text.

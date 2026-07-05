@@ -576,9 +576,11 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
 fi
 
 # The Windows DLLs link toolchain runtime libraries -- zlib1/libbz2-1 (the
-# ffmpeg demuxers), libiconv-2 (avcodec + libass), libwinpthread-1
-# (av threading) -- that live in the MSYS2 prefix, not the bundle, so a
-# clean machine that lacks them cannot load avcodec or libass. The aarch64
+# ffmpeg demuxers), libiconv-2 (avcodec + libass), liblzma-5 (avcodec's
+# xz/lzma path), libwinpthread-1 (av threading) -- that live in the MSYS2
+# prefix, not the bundle, so a clean machine that lacks them cannot load
+# avcodec or libass. Every one an av* DLL hard-imports must ride here, or
+# LoadLibrary of the importer fails on a clean Windows. The aarch64
 # clang toolchain additionally links its C++ runtime and unwinder as DLLs
 # (libc++/libunwind), where x64 GCC folded libstdc++/libgcc in statically.
 # Copy them all in (MINGW_PREFIX is /mingw64 on MINGW64, /clangarm64 on
@@ -586,8 +588,8 @@ fi
 # on a missing name -- a typo would silently ship a host-only bundle.
 if [ "$HOST_OS" = windows ]; then
     MINGW="${MINGW_PREFIX:-/mingw64}"
-    runtime_dlls="zlib1 libbz2-1 libiconv-2 libwinpthread-1"
-    runtime_lics="zlib bzip2 libiconv winpthreads"
+    runtime_dlls="zlib1 libbz2-1 libiconv-2 liblzma-5 libwinpthread-1"
+    runtime_lics="zlib bzip2 libiconv xz winpthreads"
     if [ "$HOST_ARCH" = arm64 ]; then
         runtime_dlls="$runtime_dlls libc++ libunwind"
         runtime_lics="$runtime_lics libc++ libunwind"
