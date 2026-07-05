@@ -7,12 +7,12 @@ integration module (it brings `-core` and `-skiko` transitively) plus
 the native runtime for every platform you ship:
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.6.1")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.6.1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.6.2")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-macos-x64")
 ```
 
 The natives classifier is `<tier>-<platform>`: pick one tier per platform.
