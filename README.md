@@ -72,6 +72,28 @@ On JDK 24+ launch with `--enable-native-access=ALL-UNNAMED` (or grant
 your named module): skinema's FFM calls -- and Skiko's, if you use
 Compose -- are restricted methods that otherwise warn on every run.
 
+## Platforms
+
+Every tier ships for six platforms -- x64 and arm64 on all three desktop
+operating systems:
+
+| Platform        | Bundle built                 | Acceptance suite |
+|-----------------|------------------------------|------------------|
+| `linux-x64`     | on metal                     | on metal         |
+| `linux-arm64`   | on metal                     | on metal         |
+| `windows-x64`   | on metal (MSYS2 MINGW64)     | on metal         |
+| `windows-arm64` | on metal (MSYS2 CLANGARM64)  | on metal         |
+| `macos-arm64`   | on metal                     | on metal         |
+| `macos-x64`     | cross-compiled on an arm mac | none             |
+
+arm64 is first-class here, not an afterthought: `linux-arm64` and
+`windows-arm64` are built on real arm machines and must pass the same
+acceptance suite as their x64 siblings before a bundle uploads. `macos-x64`
+is the one exception, and it runs the other way -- Intel mac runners are
+scarce, so it cross-compiles on an arm mac and ships without an on-metal
+run, because an arm JVM cannot load x86_64 dylibs. That is what
+community-tier support means here.
+
 ## What it plays
 
 |                 |                                                                                               |

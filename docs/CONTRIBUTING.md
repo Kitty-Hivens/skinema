@@ -72,7 +72,7 @@ that matter most here:
   for a real issue the commit resolves.
 - A PR that changes the native surface must follow the push-sequencing
   rule in [internal/natives-build.md](internal/natives-build.md):
-  natives first, wait for all five rolling-release assets, then the
+  natives first, wait for every affected rolling-release asset, then the
   consuming code. Push the code first and CI goes red on every
   platform.
 - A PR that bumps the FFmpeg pin re-runs the layout oracle, updates the

@@ -142,14 +142,17 @@ moment it passes its on-runner acceptance suite. A queued or broken
 platform delays only itself, never a release and never the other
 platforms, and a rebuild replaces just its own asset.
 
-- **natives.yml** (manual `workflow_dispatch`) builds all five
-  platforms with `fail-fast: false`. Linux x64/arm64 and Windows
-  (MSYS2) and macOS-arm64 build, run the acceptance suite on metal, and
-  upload. macos-x64 is cross-compiled on the arm runner (GitHub's Intel
-  macs queue for days to months) and ships **without** an on-metal test
-  -- an arm JVM cannot load x86_64 dylibs. That is exactly what
-  community-tier support means. linux-arm64 is first-class: GitHub's
-  free arm64 runners are real machines.
+- **natives.yml** (manual `workflow_dispatch`) builds the six platforms
+  across the three tiers -- 18 bundles -- with `fail-fast: false`. Linux
+  x64/arm64, Windows x64 (MSYS2 MINGW64) and arm64 (MSYS2 CLANGARM64), and
+  macOS-arm64 all build, run the acceptance suite on metal, and upload.
+  macos-x64 is cross-compiled on the arm runner (GitHub's Intel macs queue
+  for days to months) and ships **without** an on-metal test -- an arm JVM
+  cannot load x86_64 dylibs. That is exactly what community-tier support
+  means, and it is the only platform in that boat: both arm64 targets are
+  first-class, because GitHub's free `ubuntu-24.04-arm` and `windows-11-arm`
+  runners are real machines. The matrix is generated in a prepare job, so a
+  dispatch can narrow to one platform or tier (`only_platform`/`only_tier`).
 - **build.yml** (push and PR) runs the test matrix on four platforms,
   downloads OUR release bundles (not BtbN or brew), points
   `SKINEMA_LIBAV_DIR` at them, and runs `./gradlew build`. On Windows it
@@ -167,8 +170,9 @@ example libavfilter, added for the rate filter) or enable a new decoder
 that changes the bundle, the order is mandatory:
 
 1. Push the `build-natives.sh` change.
-2. Dispatch `natives.yml` and wait for **all five** assets on the
-   rolling release to be replaced (check each asset's `updated_at`).
+2. Dispatch `natives.yml` and wait for **every** affected asset on the
+   rolling release to be replaced -- all 18 for a change that touches every
+   tier and platform (check each asset's `updated_at`).
 3. Only then push the consuming code.
 
 Push the code first and `build.yml` downloads the old bundles, which

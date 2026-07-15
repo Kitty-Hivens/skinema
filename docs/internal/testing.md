@@ -55,8 +55,12 @@ skipping for an unrelated reason (a missing encoder on brew FFmpeg, say)
 and never exercising the library at all.
 
 Both `build.yml` and `natives.yml` set the caps per row, so a broken
-bundle fails *before it uploads*, in the workflow that built it. All
-five platforms now require `decode,subs,webp`.
+bundle fails *before it uploads*, in the workflow that built it.
+`natives.yml` requires what the tier is supposed to carry -- `core`
+`decode,webp`, `decode` adds `subs,formats`, `full` adds `encode` -- so a
+tier that quietly lost a capability cannot upload. `build.yml` dogfoods the
+`full` tier and holds all of `decode,subs,webp,encode,formats` mandatory on
+each of its four rows.
 
 ## Test doubles
 
