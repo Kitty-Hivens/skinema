@@ -93,20 +93,40 @@ non-negotiable.
 
 ## Releasing
 
-The maintainer cuts releases. The flow (vanniktech maven-publish,
-auto-release to Maven Central, GPG-signed):
+The maintainer cuts releases. Libraries and natives release separately --
+they are on separate version lines (ROADMAP M17), and a library release must
+never re-upload the ~159 MiB of platform bundles.
 
-1. Make sure the natives for the release are on the rolling
-   `natives-<ffmpeg version>` release (the push-sequencing rule).
+A library release (vanniktech maven-publish, auto-release to Maven Central,
+GPG-signed):
+
+1. Make sure the natives the release needs are already published (see below)
+   and on the rolling `natives-<ffmpeg version>` release (the
+   push-sequencing rule).
 2. Tag `vX.Y.Z` on the release commit.
-3. `./gradlew publishToMavenCentral -PappVersion=X.Y.Z --no-configuration-cache`
-   -- signs and uploads every module plus the five natives
-   classifiers; the deployment auto-releases.
-4. Create the GitHub release with consumer-facing notes.
+3. `./gradlew publishLibraries -PappVersion=X.Y.Z --no-configuration-cache`
+   -- signs and uploads core/skiko/compose; the deployment auto-releases.
+   Do not use the bare `publishToMavenCentral`: it sweeps in the natives.
+4. Create the GitHub release with consumer-facing notes, naming the natives
+   version consumers should pair with it.
 
-`skinema-core`/`-skiko`/`-compose` publish as libraries;
-`skinema-natives` publishes an empty main jar with the five platform
-bundles attached as classifiers.
+A natives release, only when the bundles actually change (a new FFmpeg pin,
+a repack that fixes what a bundle carries):
+
+1. Bump `nativesVersion` in `gradle.properties`: the FFmpeg version of the
+   build, plus a revision that increments for repacks of that same build
+   (`8.1.1-1` -> `8.1.1-2`; a new pin resets it, `8.2.0-1`). Central versions
+   are immutable, so changed bytes always need a new number -- reusing one is
+   rejected.
+2. Make sure every platform's asset on the rolling release is the build you
+   mean to ship (check each asset's `updated_at`).
+3. `./gradlew :skinema-natives:publishToMavenCentral --no-configuration-cache`
+   -- packs all 18 tier/platform bundles straight from the rolling release
+   and uploads them under the new version.
+
+`skinema-core`/`-skiko`/`-compose` publish as libraries; `skinema-natives`
+publishes an empty main jar with the 18 tier/platform bundles attached as
+classifiers.
 
 ## License
 

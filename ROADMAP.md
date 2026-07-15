@@ -296,6 +296,11 @@ README once the library is usable.
   (the lwjgl/skiko pattern) carrying the trimmed runtime plus an `index.txt`;
   NativeBundle deploys them to a fingerprint-keyed per-user cache (atomic,
   race-safe), keyed by platform so the loader stays tier-agnostic.
+- Natives versioning: `skinema-natives` is versioned as the FFmpeg build it
+  carries plus a repack revision (`<ffmpeg>-<revision>`), NOT as the library
+  (M17). A library release republishes none of the ~159 MiB of bundles; they
+  move only when their bytes do. Consumers pair the natives version the
+  release notes name with any library version that names it.
 - Natives delivery is asynchronous by design: every platform build
   uploads independently to the rolling `natives-<ffmpeg version>` release
   the moment it passes its on-runner acceptance suite. A queued or broken
@@ -865,6 +870,37 @@ README once the library is usable.
   round (and x265/SVT-AV1 add cmake to the CI image). The MediaWriter encode
   test stops skipping once the bundle carries libx264, so the natives
   acceptance suite exercises encode on metal.
+
+- **M17 -- natives on their own version line (2026-07-15).** `skinema-natives`
+  stops riding the library's version and publishes as `<ffmpeg>-<revision>`
+  (`nativesVersion` in gradle.properties, first cut `8.1.1-1`); a library
+  release runs `publishLibraries` and ships core/skiko/compose only -- the bare
+  `publishToMavenCentral` swept the bundles in with them. Forced by Maven
+  Central's publishing limits: free publishing is capped per organization at
+  ~78 MB of release size a month (plus ~1167 files and 7 releases -- the 90th
+  percentile of all publishers), hard-enforced from 2026-08-11. dev.hivens ran
+  287.9 MiB in June and 317.8 MiB in the first six days of July: 369% and 407%
+  of the size cap, June also over on files (1990). The overage is one artifact.
+  The 18 tier/platform bundles are ~159 MiB per release; everything else in the
+  namespace -- core, skiko, compose, libtray, libnotify, libvault -- is ~0.4 MiB
+  together. Nearly all of it bought nothing: versioning the bundles with the
+  library republished all 18 even when the bytes were identical. 0.6.0 -> 0.6.1
+  changed 0 of 18 (a swscale fix that lives in Kotlin; 158 MiB re-uploaded for
+  nothing) and 0.6.1 -> 0.6.2 changed 6 of 18 (the Windows liblzma repack -- the
+  12 linux/macos jars were byte-identical), both checkable against the `.sha1`
+  files on repo1. Decoupled, a release that leaves the bundles alone costs
+  ~0.4 MiB. What this does NOT fix: a release that does change them still costs
+  ~159 MiB that month, ~2x the free cap, because the matrix is real -- 6
+  platforms x 3 licence tiers, and trimming it means dropping platforms or the
+  LGPL-only tiers, which is what those tiers exist for. That residue is the
+  exemption request to central-support, and it is the whole ask: ~0 most months,
+  ~159 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
+  per-platform artifactIds (`skinema-natives-linux-x64` and friends, each on its
+  own version) would have made the Windows-only repack cost 66 MiB and slipped
+  under the cap, but it splits the namespace into six artifacts whose versions
+  drift apart in the consumer's build file, and a new FFmpeg pin -- the ordinary
+  reason bundles change -- touches every platform and costs the same 159 MiB
+  either way.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

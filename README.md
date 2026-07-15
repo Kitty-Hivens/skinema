@@ -33,13 +33,20 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.6.2")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:0.6.2:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
 ```
+
+The two versions are independent, and that is deliberate. `skinema-natives`
+is versioned as the FFmpeg build it carries plus a repack revision
+(`<ffmpeg>-<revision>`), so it moves only when the bundles themselves change
+-- most library releases leave it untouched. Take the natives version the
+release notes name and pair it with any library version that names it.
 
 The natives classifier is `<tier>-<platform>`: pick one tier for the
 platforms you target. The tier sets what the bundle carries -- and its

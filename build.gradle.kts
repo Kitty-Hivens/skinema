@@ -8,11 +8,18 @@ plugins {
     alias(libs.plugins.maven.publish) apply false
 }
 
+// Releases pass -PappVersion=<tag> (tag first, then publish -- the
+// libtray flow); anything else is a dev build.
+val appVersion = providers.gradleProperty("appVersion").getOrElse("0.1.0-SNAPSHOT")
+
+// The natives track the FFmpeg build they carry, not the library API, so a
+// library release republishes none of their ~159 MiB of platform bundles
+// (ROADMAP M17). Set in gradle.properties; -PnativesVersion overrides.
+val nativesVersion = providers.gradleProperty("nativesVersion").get()
+
 allprojects {
     group = "dev.hivens"
-    // Releases pass -PappVersion=<tag> (tag first, then publish -- the
-    // libtray flow); anything else is a dev build.
-    version = providers.gradleProperty("appVersion").getOrElse("0.1.0-SNAPSHOT")
+    version = if (name == "skinema-natives") nativesVersion else appVersion
 }
 
 // CI logs carry only the console; without the message a failed assertion
@@ -73,4 +80,19 @@ subprojects {
             useGpgCmd()
         }
     }
+}
+
+// A library release must not re-upload the natives. They sit on their own
+// version line, and republishing all 18 unchanged platform bundles with every
+// release is what put the namespace over Maven Central's monthly size limit
+// (ROADMAP M17); the natives publish on their own, only when their bundles
+// change: `:skinema-natives:publishToMavenCentral -PnativesVersion=<v>`.
+tasks.register("publishLibraries") {
+    group = "publishing"
+    description = "Publish core/skiko/compose to Central Portal: -PappVersion=X.Y.Z"
+    dependsOn(
+        ":skinema-core:publishToMavenCentral",
+        ":skinema-skiko:publishToMavenCentral",
+        ":skinema-compose:publishToMavenCentral",
+    )
 }
