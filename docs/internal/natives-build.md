@@ -104,16 +104,35 @@ fingerprint keys the per-user unpack cache (see
 
 ## The classifier jars
 
-`skinema-natives` packs each platform bundle into a classifier jar
-(`linux-x64`, `linux-arm64`, `windows-x64`, `macos-arm64`,
-`macos-x64`), resources under `dev/hivens/skinema/natives/<platform>/`.
-The main jar is empty; the bundles attach as classifiers. CI downloads
-the bundles from the rolling release; for local work, `jarLocal` packs
-a bundle you built:
+`skinema-natives` packs each bundle into a classifier jar named
+`<tier>-<platform>` -- three tiers (`core`, `decode`, `full`) across six
+platforms (`linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`,
+`macos-arm64`, `macos-x64`), 18 in all -- resources under
+`dev/hivens/skinema/natives/<platform>/`. The layout is keyed by platform
+alone, so `NativeBundle` stays tier-agnostic: it loads whichever bundle the
+platform carries. The main jar is empty; the bundles attach as classifiers.
+CI downloads the bundles from the rolling release; for local work, `jarLocal`
+packs a bundle you built:
 
 ```
 ./gradlew :skinema-natives:jarLocal -Pplatform=linux-x64 -PbundleDir=<dir>
 ```
+
+### Versioning
+
+The module publishes on its own version line, `<ffmpeg>-<revision>` from
+`nativesVersion` in `gradle.properties` (`8.1.1-1`): the FFmpeg build the
+bundles carry, plus a revision for repacks of that same build. `nativesTag`
+derives from its FFmpeg half, so the version and the rolling release it packs
+from cannot drift.
+
+The rule is one line: **the bundles change, the version bumps.** Central
+versions are immutable, so a repack that ships different bytes under a version
+already published is simply rejected -- and the library's own version cannot
+carry the natives, because 18 bundles at ~159 MiB republished per library
+release is what put the namespace over Maven Central's monthly size limit
+(ROADMAP M17). A release that does not touch the bundles publishes none of
+them.
 
 ## Delivery: two workflows
 

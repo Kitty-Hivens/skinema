@@ -21,7 +21,11 @@ mavenPublishing {
 }
 
 val resourceRoot = "dev/hivens/skinema/natives"
-val nativesTag = "natives-8.1.1"
+
+// The rolling release the bundles come from. The module's version is
+// <ffmpeg>-<revision> (gradle.properties), so the tag is its FFmpeg half and
+// the two cannot drift apart.
+val nativesTag = "natives-" + version.toString().substringBefore('-')
 val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64")
 // The modular tiers (ROADMAP.md section 4). Each (tier, platform) ships as
 // its own classifier jar "<tier>-<platform>"; a consumer puts exactly one
