@@ -97,17 +97,22 @@ The maintainer cuts releases. Libraries and natives release separately --
 they are on separate version lines (ROADMAP M17), and a library release must
 never re-upload the ~159 MiB of platform bundles.
 
-A library release (vanniktech maven-publish, auto-release to Maven Central,
-GPG-signed):
+Both go out through the `Publish` workflow (vanniktech maven-publish,
+auto-release to Maven Central, GPG-signed). It runs in the `maven-central`
+environment, so the credentials sit behind that environment's approval.
+
+A library release:
 
 1. Make sure the natives the release needs are already published (see below)
    and on the rolling `natives-<ffmpeg version>` release (the
-   push-sequencing rule).
-2. Tag `vX.Y.Z` on the release commit.
-3. `./gradlew publishLibraries -PappVersion=X.Y.Z --no-configuration-cache`
-   -- signs and uploads core/skiko/compose; the deployment auto-releases.
-   Do not use the bare `publishToMavenCentral`: it sweeps in the natives.
-4. Create the GitHub release with consumer-facing notes, naming the natives
+   push-sequencing rule). The workflow checks the published half itself and
+   refuses a release whose natives are not up.
+2. Tag `vX.Y.Z` on the release commit and push the tag -- that is the
+   trigger. The workflow reads the version from the tag, refuses one that
+   already exists on Central (versions are immutable), and runs
+   `publishLibraries`, which ships core/skiko/compose only. The bare
+   `publishToMavenCentral` sweeps in the natives; nothing calls it.
+3. Create the GitHub release with consumer-facing notes, naming the natives
    version consumers should pair with it.
 
 A natives release, only when the bundles actually change (a new FFmpeg pin,
@@ -118,11 +123,23 @@ a repack that fixes what a bundle carries):
    (`8.1.1-1` -> `8.1.1-2`; a new pin resets it, `8.2.0-1`). Central versions
    are immutable, so changed bytes always need a new number -- reusing one is
    rejected.
-2. Make sure every platform's asset on the rolling release is the build you
-   mean to ship (check each asset's `updated_at`).
-3. `./gradlew :skinema-natives:publishToMavenCentral --no-configuration-cache`
-   -- packs all 18 tier/platform bundles straight from the rolling release
-   and uploads them under the new version.
+2. Dispatch `Publish` with target `natives`. It refuses a version already on
+   Central, fails on any of the 18 tier/platform assets missing from the
+   rolling release, and logs each asset's `updated_at` -- read them and
+   confirm they are the build you mean to ship before approving the
+   environment.
+
+Publishing from a workstation stays available for when the workflow is not
+an option -- same tasks, `-PappVersion=X.Y.Z` for the libraries, and
+`--no-configuration-cache` on both. Signing then goes through the gpg agent
+against the key in the local keyring (`signing.gnupg.keyName`) instead of
+the CI path.
+
+The workflow needs four repository secrets: `MAVEN_CENTRAL_USERNAME` and
+`MAVEN_CENTRAL_PASSWORD` (a Central Portal user token, not the account
+login), plus `SIGNING_KEY` (the ASCII-armored secret key) and
+`SIGNING_KEY_PASSWORD`. The root build applies the in-memory key when it is
+present and falls back to the keyring when it is not.
 
 `skinema-core`/`-skiko`/`-compose` publish as libraries; `skinema-natives`
 publishes an empty main jar with the 18 tier/platform bundles attached as

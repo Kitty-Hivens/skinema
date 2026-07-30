@@ -17,6 +17,10 @@ val appVersion = providers.gradleProperty("appVersion").getOrElse("0.1.0-SNAPSHO
 // (ROADMAP M17). Set in gradle.properties; -PnativesVersion overrides.
 val nativesVersion = providers.gradleProperty("nativesVersion").get()
 
+// Present only where the key cannot come from a keyring -- see the signing
+// block below.
+val inMemoryKey = providers.gradleProperty("signingInMemoryKey")
+
 allprojects {
     group = "dev.hivens"
     version = if (name == "skinema-natives") nativesVersion else appVersion
@@ -76,8 +80,14 @@ subprojects {
         }
     }
     plugins.withId("signing") {
-        configure<SigningExtension> {
-            useGpgCmd()
+        // CI hands the key over as signingInMemoryKey and the publish plugin
+        // wires that up itself; a machine with the key in its keyring has no
+        // such property and signs through the gpg agent. Setting both would
+        // leave whichever ran last in charge.
+        if (!inMemoryKey.isPresent) {
+            configure<SigningExtension> {
+                useGpgCmd()
+            }
         }
     }
 }
