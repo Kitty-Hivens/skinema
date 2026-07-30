@@ -1,0 +1,151 @@
+name: Publish
+
+# Publishing is deliberate, never a side effect of a push. Libraries go out
+# when a vX.Y.Z tag lands; the natives only on an explicit dispatch, and only
+# when their bundles actually changed -- republishing the ~159 MiB of unchanged
+# platform jars with every release is what put dev.hivens over Maven Central's
+# size cap (ROADMAP M17). Both jobs run in the maven-central environment, so
+# the credentials stay behind whatever approval that environment requires.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to publish"
+        type: choice
+        options: [libraries, natives]
+        default: libraries
+      version:
+        description: "Library version for a dispatched libraries run (a tag run reads its own tag)"
+        default: ""
+
+jobs:
+  libraries:
+    if: github.event_name == 'push' || inputs.target == 'libraries'
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve the version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="${{ inputs.version }}"
+          fi
+          # A dispatched run is where "v0.7.0" gets pasted in by hand; the tag
+          # path already stripped the v. Either way the version starts with a
+          # digit, and a leading v would publish coordinates nobody can consume.
+          case "$v" in
+            "") echo "::error::no version -- a dispatched run must pass one"; exit 1 ;;
+            [0-9]*) ;;
+            *) echo "::error::version '$v' does not start with a digit"; exit 1 ;;
+          esac
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+
+      # Central versions are immutable and the natives publish on their own
+      # line, so both halves of the push-sequencing rule are checkable before
+      # anything is signed: this version must be free, and the natives the
+      # release pairs with must already be up.
+      - name: Guard the release coordinates
+        shell: bash
+        run: |
+          base=https://repo1.maven.org/maven2/dev/hivens
+          v='${{ steps.version.outputs.v }}'
+          nv=$(sed -n 's/^nativesVersion=//p' gradle.properties)
+
+          if curl -fsI -o /dev/null "$base/skinema-core/$v/skinema-core-$v.pom"; then
+            echo "::error::dev.hivens:skinema-core:$v is already on Central -- versions are immutable"
+            exit 1
+          fi
+          if ! curl -fsI -o /dev/null "$base/skinema-natives/$nv/skinema-natives-$nv.pom"; then
+            echo "::error::skinema-natives $nv is not on Central yet -- publish the natives first"
+            exit 1
+          fi
+          echo "publishing $v against natives $nv"
+
+      - name: Publish core, skiko and compose
+        shell: bash
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          # publishLibraries, never the bare publishToMavenCentral: that one
+          # sweeps the natives in with the libraries.
+          ./gradlew publishLibraries \
+            -PappVersion='${{ steps.version.outputs.v }}' \
+            --no-configuration-cache
+
+  natives:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'natives'
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The publication packs its 18 jars straight from the rolling release, so
+      # a missing asset would ship a short release under a version that can
+      # never be reissued. Every asset's upload time goes into the log with it:
+      # that is the record of which build these bytes actually are.
+      - name: Guard the bundles on the rolling release
+        id: bundles
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          nv=$(sed -n 's/^nativesVersion=//p' gradle.properties)
+          tag="natives-${nv%%-*}"
+          echo "nv=$nv" >> "$GITHUB_OUTPUT"
+
+          if curl -fsI -o /dev/null \
+            "https://repo1.maven.org/maven2/dev/hivens/skinema-natives/$nv/skinema-natives-$nv.pom"; then
+            echo "::error::skinema-natives $nv is already on Central -- bump the revision in gradle.properties"
+            exit 1
+          fi
+
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+            --jq '.assets[] | "\(.name) \(.updated_at)"')
+          missing=0
+          for tier in core decode full; do
+            for platform in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
+              line=$(printf '%s\n' "$assets" | grep "^skinema-natives-$tier-$platform\.tar\.gz " || true)
+              if [ -z "$line" ]; then
+                echo "::error::$tag is missing skinema-natives-$tier-$platform.tar.gz"
+                missing=1
+              else
+                echo "$line"
+              fi
+            done
+          done
+          [ "$missing" = 0 ]
+
+      - name: Publish the natives
+        shell: bash
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          echo "publishing skinema-natives ${{ steps.bundles.outputs.nv }} (~159 MiB against the monthly cap)"
+          ./gradlew :skinema-natives:publishToMavenCentral --no-configuration-cache
