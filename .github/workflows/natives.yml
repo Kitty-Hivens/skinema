@@ -65,7 +65,7 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # FEATURES and the acceptance caps for this tier. The full tier ships
       # H.264 (x264) and HEVC (x265) software encode on every platform; the
@@ -202,7 +202,7 @@ jobs:
       # The acceptance gate: the suite must pass against the binaries we are
       # about to ship, on the platform that will run them. Cross-built
       # bundles skip it (no metal to run them on) -- community tier.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         if: matrix.cross == ''
         with:
           # Azul Zulu (OpenJDK): one distribution that ships JDK 25 on every
@@ -210,7 +210,7 @@ jobs:
           distribution: zulu
           java-version: 25
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         if: matrix.cross == ''
 
       - name: Install ffmpeg CLI (fixtures)
@@ -261,7 +261,7 @@ jobs:
               || true
           gh release upload "$tag" "skinema-natives-${{ matrix.tier }}-${{ matrix.platform }}.tar.gz" --clobber
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skinema-natives-${{ matrix.tier }}-${{ matrix.platform }}
           path: natives/${{ matrix.platform }}
