@@ -7,9 +7,13 @@ enum class Os {
     companion object {
         fun current(): Os {
             val name = System.getProperty("os.name", "").lowercase()
+            // Mac is tested first because "darwin" contains "win". OpenJDK
+            // reports "Mac OS X", so the old order held -- but a JVM that
+            // answers "Darwin" would be read as Windows and every library
+            // name would resolve to a .dll.
             return when {
+                name.contains("mac") || name.contains("darwin") -> MAC
                 name.contains("win") -> WINDOWS
-                name.contains("mac") -> MAC
                 else -> LINUX
             }
         }
