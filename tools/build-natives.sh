@@ -15,6 +15,8 @@
 #                   SHARED libraries for the bundle (the animated-WebP path
 #                   binds them directly; FFmpeg cannot decode animations)
 #   WEBP_VERSION    libwebp release for STATIC_DEPS (default 1.5.0)
+#   ZLIB_VERSION    zlib release for STATIC_DEPS (default 1.3.1)
+#   BZIP2_VERSION   bzip2 release for STATIC_DEPS (default 1.0.8)
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
 #   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
@@ -35,13 +37,15 @@ FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
 LIBASS_VERSION="${LIBASS_VERSION:-0.17.4}"
+ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
+BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 
 # Which optional capabilities this bundle carries (modular tiers, ROADMAP
 # section 4). Comma- or space-separated; default is the complete LGPL decode
 # set. Both the dependency builds above and the ffmpeg whitelist below gate
 # on these, so an absent feature ships neither its library nor its codecs.
-#   core    av1 vpx webp hwaccel                                          (LGPL, no subtitles)
+#   core    av1 vpx webp                                                  (LGPL, no subtitles, no hwaccel)
 #   decode  av1 vpx webp hwaccel subs formats enc-vaapi                   (LGPL, decode + GPU encode on Linux)
 #   full    av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc (GPL, + software encode)
 # enc-vaapi (M13) enables the LGPL hardware H.264/HEVC encoders on Linux; it
@@ -50,7 +54,14 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # dv containers; mpeg2/vc1/wmv/mpeg4/h263/vvc/realvideo/prores/... video; dts/
 # truehd/wma/mp2/realaudio/adpcm/... audio. All native (no external library),
 # so it stays LGPL; it rides decode/full and is left out of the lean core tier.
-FEATURES="${FEATURES:-av1 vpx webp hwaccel subs formats}"
+# hwaccel is out of core deliberately: vaapi is what puts libva, libva-drm and
+# libdrm on the consumer's machine, and core exists to be the tier that needs
+# nothing but libc and libm -- the one that loads in a container and on a
+# store-based distribution. The desktop tiers keep it.
+# ${FEATURES-...}, not ${FEATURES:-...}: an explicitly EMPTY set is a
+# legitimate request (the leanest tier), and the colon form silently
+# replaced it with the full default.
+FEATURES="${FEATURES-av1 vpx webp hwaccel subs formats}"
 FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 for _f in $FEATURES; do
@@ -116,6 +127,42 @@ fetch() { # url, dest-file
 if [ "${STATIC_DEPS:-}" = "1" ]; then
     DEPS="$WORK/deps"
     export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:$DEPS/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+
+    # zlib and bzip2 are the two host libraries ffmpeg picks up by autodetect,
+    # and they are why the shipped Linux bundle needs a host it cannot name:
+    # avcodec pulls libz (the png/apng decoders need it, so --disable-zlib is
+    # not an option) and avformat pulls libbz2. On a store-based distribution
+    # neither sits where the loader looks, and the whole bundle fails to open.
+    # Built static here like dav1d and libvpx, they fold in and stop being the
+    # consumer's problem. zlib ships a .pc; bzip2 does not, hence the explicit
+    # -I/-L below.
+    if [ ! -f "$DEPS/lib/libz.a" ]; then
+        fetch "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" zlib.tar.gz
+        rm -rf "zlib-$ZLIB_VERSION"
+        tar -xzf zlib.tar.gz
+        (
+            cd "zlib-$ZLIB_VERSION"
+            CFLAGS="-fPIC ${CFLAGS:-}" ./configure --prefix="$DEPS" --static
+            make -j"$JOBS"
+            make install
+        )
+        cp "zlib-$ZLIB_VERSION/LICENSE" "$WORK/zlib-LICENSE"
+    fi
+
+    if [ ! -f "$DEPS/lib/libbz2.a" ]; then
+        fetch "https://sourceware.org/pub/bzip2/bzip2-$BZIP2_VERSION.tar.gz" bzip2.tar.gz
+        rm -rf "bzip2-$BZIP2_VERSION"
+        tar -xzf bzip2.tar.gz
+        (
+            cd "bzip2-$BZIP2_VERSION"
+            # No configure; the makefile takes CC/CFLAGS and PREFIX directly.
+            make -j"$JOBS" libbz2.a CC="${CC:-cc}" CFLAGS="-fPIC -O2 -D_FILE_OFFSET_BITS=64"
+            mkdir -p "$DEPS/lib" "$DEPS/include"
+            cp libbz2.a "$DEPS/lib/"
+            cp bzlib.h "$DEPS/include/"
+        )
+        cp "bzip2-$BZIP2_VERSION/LICENSE" "$WORK/bzip2-LICENSE"
+    fi
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
         fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz" dav1d.tar.gz
@@ -530,6 +577,15 @@ if [ ${#ENC[@]} -gt 0 ]; then
     MUXFLAG=(--enable-muxer=mov,mp4,matroska,webm)
 fi
 
+# STATIC_DEPS needs the dep prefix on the search paths: zlib ships a .pc that
+# pkg-config finds, bzip2 does not. ($ORIGIN is NOT set here -- see the patchelf
+# pass at bundle assembly; through configure the $$ reaches a shell rather than
+# make and lands in the binary as a pid.)
+FFPATHS=()
+if [ "${STATIC_DEPS:-}" = "1" ]; then
+    FFPATHS+=(--extra-cflags="-I$DEPS/include" --extra-ldflags="-L$DEPS/lib")
+fi
+
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared --disable-static \
@@ -550,6 +606,7 @@ fi
     ${VAENC[@]+"${VAENC[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
     ${FFTOOLS[@]+"${FFTOOLS[@]}"} \
+    ${FFPATHS[@]+"${FFPATHS[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
 make -j"$JOBS"
@@ -567,6 +624,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # Every text is read from $WORK, stashed there when its dependency was
     # built: the source trees are only unpacked when the library is missing,
     # so a warm $WORK has the archives and none of the trees to copy from.
+    cp "$WORK/zlib-LICENSE" "$PREFIX/licenses/zlib-LICENSE"
+    cp "$WORK/bzip2-LICENSE" "$PREFIX/licenses/bzip2-LICENSE"
     has av1      && cp "$WORK/dav1d-COPYING" "$PREFIX/licenses/dav1d-COPYING"
     has vpx      && cp "$WORK/libvpx-LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     has webp     && cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
@@ -641,6 +700,58 @@ for f in "$PREFIX"/bin/*.dll; do
     cp "$f" "$BUNDLE/"
 done
 shopt -u nullglob
+
+# ELF: make every bundled library find its siblings next to itself. Without
+# this a bundle resolves nothing on its own -- dlopen of an absolute
+# libavcodec fails on the libswresample lying beside it, and only Libav's
+# declaration-order preload papers over that, which is why the bundle loads
+# zero of six libraries on a store-based distribution (#23). It also wipes the
+# build-time RUNPATH libtool bakes into libass, a CI path that is dead on
+# every user machine. The Mach-O equivalent is the install_name_tool pass
+# above; Windows has no such mechanism, hence the loader's preload list.
+if [ "$HOST_OS" = linux ]; then
+    command -v patchelf >/dev/null 2>&1 || { echo "build-natives: patchelf is required to set the bundle RUNPATH" >&2; exit 1; }
+    for f in "$BUNDLE"/*.so.*; do
+        patchelf --set-rpath '$ORIGIN' "$f"
+    done
+    # Prove it, and separate the two failure kinds. A sibling that is IN the
+    # bundle yet unresolved means the RUNPATH did not take -- that is a build
+    # bug and fails here. Anything unresolved that is NOT in the bundle is a
+    # host library the consumer must supply; that is the portability surface
+    # (#54), so it gets named rather than silently accepted.
+    bundled="$(ls "$BUNDLE"/*.so.* 2>/dev/null | xargs -n1 basename | sort -u)"
+    rpath_broken=0
+    for f in "$BUNDLE"/*.so.*; do
+        for miss in $(env -u LD_LIBRARY_PATH ldd "$f" 2>/dev/null | awk '/not found/ {print $1}'); do
+            printf '%s\n' "$bundled" | grep -qx "$miss" || continue
+            echo "RUNPATH did not take: $(basename "$f") cannot see $miss beside it" >&2
+            rpath_broken=$((rpath_broken + 1))
+        done
+    done
+    # The portability surface, computed from the ELF rather than from what this
+    # build host happens to have installed: every NEEDED entry the bundle does
+    # not itself carry is a library the CONSUMER must supply, and each one is a
+    # distribution where skinema may not load (#23, #54).
+    host_deps="$(
+        for f in "$BUNDLE"/*.so.*; do
+            readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
+        done | sort -u | while read -r n; do
+            printf '%s\n' "$bundled" | grep -qx "$n" || printf '%s ' "$n"
+        done
+    )"
+    [ "$rpath_broken" = 0 ] || exit 1
+    echo "bundle RUNPATH set to \$ORIGIN; siblings resolve without a search path"
+    [ -z "$host_deps" ] || echo "host libraries this bundle still needs:$host_deps"
+    # The glibc floor is set by whatever the BUILD host runs, and it silently
+    # becomes the oldest distribution a consumer may use. Report it, so a
+    # runner-image bump that raises it is visible in the log rather than in a
+    # user's UnsatisfiedLinkError.
+    floor="$(
+        for f in "$BUNDLE"/*.so.*; do readelf -V "$f" 2>/dev/null; done \
+        | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1
+    )"
+    [ -z "$floor" ] || echo "glibc floor: $floor (a consumer needs at least this)"
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
 (

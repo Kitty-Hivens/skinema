@@ -78,7 +78,7 @@ jobs:
         shell: bash
         run: |
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp hwaccel";                                          caps="decode,webp" ;;
+            core)   feat="av1 vpx webp";                                                  caps="decode,webp" ;;
             decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats" ;;
             full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
           esac
@@ -92,7 +92,7 @@ jobs:
         # it). libva-dev: the VAAPI hwaccel builds against libva and links it
         # dynamically, the same pattern -- pulled in for the build and for
         # the on-runner acceptance test (libva-dev depends on libva2).
-        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config libfontconfig-dev libva-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config patchelf libfontconfig-dev libva-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
