@@ -92,7 +92,7 @@ six sonames and `AV_CODEC_ID_VP9`, both re-captured with the oracle.
 
 Rules:
 
-- Load by exact soname (`libavformat.so.62`), never the bare name -- majors
+- Load by exact soname (`libavformat.so.63`), never the bare name -- majors
   coexist on real systems and the unversioned symlink belongs to -dev
   packages. The table lives in `LibavLibrary` with a matching test.
 - `avformat_version()` (and siblings) are checked right after load; a major

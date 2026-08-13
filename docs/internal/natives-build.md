@@ -17,12 +17,12 @@ disable-everything plus an explicit whitelist;
 --disable-programs --disable-doc --disable-avdevice
 --enable-libvpx --enable-libdav1d
 --enable-protocol=file,pipe
---enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,
+--enable-demuxer=mov,matroska,gif,apng,image2,image_png_pipe,image_webp_pipe,image_jpeg_pipe,
                  ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup
 --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,
                  png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,
                  pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,
-                 ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub
+                 ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub
 --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,
                 opus,vorbis,flac,ac3
 --enable-filter=atempo,abuffer,abuffersink
