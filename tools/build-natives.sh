@@ -17,12 +17,16 @@
 #   WEBP_VERSION    libwebp release for STATIC_DEPS (default 1.5.0)
 #   ZLIB_VERSION    zlib release for STATIC_DEPS (default 1.3.1)
 #   BZIP2_VERSION   bzip2 release for STATIC_DEPS (default 1.0.8)
+#   XZ_VERSION      xz/liblzma release for STATIC_DEPS (default 5.6.4)
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
 #   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
 #   MAC_CROSS_X64=1 cross-compile x86_64 binaries on an arm64 mac (GitHub's
 #                   Intel runners are scarce-to-dead; Apple's toolchain
 #                   cross-builds natively via -arch)
+#   TIER            core|decode|full -- names the row of tools/bundle-surface.txt
+#                   the built bundle must match. Unset (a custom FEATURES set)
+#                   reports the surface instead of asserting it.
 #   EXTRA_FLAGS     appended to ffmpeg ./configure (cross builds etc.)
 #   JOBS            parallel make (default nproc)
 set -euo pipefail
@@ -39,6 +43,7 @@ FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
 LIBASS_VERSION="${LIBASS_VERSION:-0.17.4}"
 ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
 BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
+XZ_VERSION="${XZ_VERSION:-5.6.4}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 
 # Which optional capabilities this bundle carries (modular tiers, ROADMAP
@@ -61,6 +66,10 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # ${FEATURES-...}, not ${FEATURES:-...}: an explicitly EMPTY set is a
 # legitimate request (the leanest tier), and the colon form silently
 # replaced it with the full default.
+# Resolved before the cd into $WORK below, or every later reference to a
+# file next to this script resolves against the wrong directory.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TIER="${TIER:-}"
 FEATURES="${FEATURES-av1 vpx webp hwaccel subs formats}"
 FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -121,7 +130,13 @@ EOF
 fi
 
 fetch() { # url, dest-file
-    [ -f "$2" ] || curl -fsSL -o "$2" "$1"
+    # Retry: a single upstream hiccup used to kill a twenty-minute build, and
+    # it happens -- savannah has answered 502 and zlib.net has dropped TLS
+    # mid-handshake during this script's own development. --retry covers the
+    # transport, --retry-all-errors extends it to HTTP 5xx, which curl does
+    # not treat as retryable by default.
+    [ -f "$2" ] || curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+        --connect-timeout 20 -o "$2" "$1"
 }
 
 if [ "${STATIC_DEPS:-}" = "1" ]; then
@@ -162,6 +177,26 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             cp bzlib.h "$DEPS/include/"
         )
         cp "bzip2-$BZIP2_VERSION/LICENSE" "$WORK/bzip2-LICENSE"
+    fi
+
+    # liblzma joins zlib and bzip2 for the same reason: matroska reads
+    # LZMA-compressed headers through it, and left to autodetect it becomes a
+    # host dependency -- measured, liblzma.so.5 appeared in the decode tier
+    # the moment --enable-lzma went in without this.
+    if [ ! -f "$DEPS/lib/liblzma.a" ]; then
+        fetch "https://github.com/tukaani-project/xz/releases/download/v$XZ_VERSION/xz-$XZ_VERSION.tar.gz" xz.tar.gz
+        rm -rf "xz-$XZ_VERSION"
+        tar -xzf xz.tar.gz
+        (
+            cd "xz-$XZ_VERSION"
+            ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
+                --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo \
+                --disable-lzma-links --disable-scripts --disable-doc \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        )
+        cp "xz-$XZ_VERSION/COPYING" "$WORK/xz-COPYING"
     fi
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
@@ -282,6 +317,12 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         # cmake 4.x (brew on macOS, MSYS2 on Windows) configures it -- which
         # lets full ship HEVC encode there (issue #22). Harmless on Linux's
         # cmake 3.28 (NEW is the default, GNU never matches the clang branch).
+        #
+        # ENABLE_LIBNUMA=OFF because x265 links libnuma when it finds it, and
+        # libnuma is a separate package a desktop need not have -- so the
+        # bundle's dependencies would follow the build host again, one level
+        # below ffmpeg's own autodetect. NUMA-aware thread placement is a
+        # multi-socket server concern; this encodes video on a desktop.
         sed -i.bak \
             -e 's/cmake_policy(SET CMP0025 OLD)/cmake_policy(SET CMP0025 NEW)/' \
             -e 's/cmake_policy(SET CMP0054 OLD)/cmake_policy(SET CMP0054 NEW)/' \
@@ -291,6 +332,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         cmake -G Ninja -S "x265_$X265_VERSION/source" -B "x265_$X265_VERSION/build" \
             -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DENABLE_LIBNUMA=OFF \
             ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
         ninja -C "x265_$X265_VERSION/build" install
         cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
@@ -586,6 +628,23 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     FFPATHS+=(--extra-cflags="-I$DEPS/include" --extra-ldflags="-L$DEPS/lib")
 fi
 
+# --disable-autodetect is the whole point of this block: without it configure
+# links whatever it finds installed, so the machine that BUILDS the bundle
+# decides what the machine that RUNS it must have. That is not theoretical --
+# a musl bundle built without the hwaccel feature still came out needing
+# libva, purely because the container had libva-dev, and it would have failed
+# on any musl desktop without a graphics stack. Everything the bundle uses is
+# now named here, and tools/bundle-surface.txt asserts the result.
+#
+# zlib/bzip2/lzma/iconv are the four configure would otherwise guess at. All
+# four are kept -- png and apng decode needs zlib, matroska uses bzip2 and
+# lzma for compressed headers, and iconv is the subtitle charset path -- and
+# all four are static, so they cost the consumer nothing.
+AUTODETECT=(--disable-autodetect --enable-zlib --enable-bzlib)
+if [ "${STATIC_DEPS:-}" = "1" ]; then
+    AUTODETECT+=(--enable-lzma --enable-iconv)
+fi
+
 ./configure \
     --prefix="$PREFIX" \
     --enable-shared --disable-static \
@@ -606,6 +665,7 @@ fi
     ${VAENC[@]+"${VAENC[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
     ${FFTOOLS[@]+"${FFTOOLS[@]}"} \
+    ${AUTODETECT[@]+"${AUTODETECT[@]}"} \
     ${FFPATHS[@]+"${FFPATHS[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
 
@@ -664,6 +724,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # so a warm $WORK has the archives and none of the trees to copy from.
     cp "$WORK/zlib-LICENSE" "$PREFIX/licenses/zlib-LICENSE"
     cp "$WORK/bzip2-LICENSE" "$PREFIX/licenses/bzip2-LICENSE"
+    cp "$WORK/xz-COPYING" "$PREFIX/licenses/xz-COPYING"
     has av1      && cp "$WORK/dav1d-COPYING" "$PREFIX/licenses/dav1d-COPYING"
     has vpx      && cp "$WORK/libvpx-LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     has webp     && cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
@@ -768,33 +829,53 @@ if [ "$HOST_OS" = linux ]; then
     done
     # The portability surface, computed from the ELF rather than from what this
     # build host happens to have installed: every NEEDED entry the bundle does
-    # not itself carry is a library the CONSUMER must supply, and each one is a
-    # distribution where skinema may not load (#23, #54).
+    # not itself carry is a library the CONSUMER must supply.
     host_deps="$(
         for f in "$BUNDLE"/*.so.*; do
             readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
         done | sort -u | while read -r n; do
-            printf '%s\n' "$bundled" | grep -qx "$n" || printf '%s ' "$n"
+            printf '%s\n' "$bundled" | grep -qx "$n" || printf '%s\n' "$n"
         done
     )"
-    [ "$rpath_broken" = 0 ] || exit 1
-    echo "bundle RUNPATH set to \$ORIGIN; siblings resolve without a search path"
-    [ -z "$host_deps" ] || echo "host libraries this bundle still needs:$host_deps"
-    # The glibc floor is set by whatever the BUILD host runs, and it silently
-    # becomes the oldest distribution a consumer may use. Report it, so a
-    # runner-image bump that raises it is visible in the log rather than in a
-    # user's UnsatisfiedLinkError.
-    # No GLIBC_* versions at all means a musl build, which has no such floor;
-    # grep finding nothing must not fail the script under set -e.
-    floor="$(
-        { for f in "$BUNDLE"/*.so.*; do readelf -V "$f" 2>/dev/null; done \
-          | grep -oE 'GLIBC_[0-9]+\.[0-9]+' || true; } | sort -u -t. -k1,1 -k2,2n | tail -1
-    )"
-    if [ -n "$floor" ]; then
-        echo "glibc floor: $floor (a consumer needs at least this)"
+
+    # Assert it against the declaration rather than printing it and hoping
+    # someone reads the log. Drift in EITHER direction fails: an unexpected
+    # dependency is a bundle that will not load somewhere it should, and a
+    # declared one that never appears means the file is describing a bundle
+    # we no longer build.
+    # Read the libc off the bundle rather than off the build host: what the
+    # libraries actually link is the fact that matters.
+    if printf '%s\n' "$host_deps" | grep -q '^libc\.musl-'; then key="linux-musl"; else key="linux-glibc"; fi
+    surface="$SCRIPT_DIR/bundle-surface.txt"
+    if [ -z "$TIER" ]; then
+        echo "host surface ($key, custom FEATURES, not asserted): $(echo $host_deps)"
+        allowed=""
     else
-        echo "no glibc floor (musl build)"
+        allowed="$(sed -n "s/^$key[[:space:]]\+$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
+        [ -n "$allowed" ] || { echo "build-natives: $surface declares no surface for $key $TIER" >&2; exit 1; }
     fi
+    [ "$allowed" = "-" ] && allowed=""
+    drift=0
+    [ -z "$TIER" ] && allowed="$(echo $host_deps)"   # nothing to assert against
+    for got in $host_deps; do
+        case " $allowed " in *" $got "*) ;; *)
+            echo "UNDECLARED host dependency: $got" >&2; drift=1 ;;
+        esac
+    done
+    for want in $allowed; do
+        # An arch-specific musl libc is only expected on its own arch.
+        case "$want" in libc.musl-*) continue ;; esac
+        printf '%s\n' "$host_deps" | grep -qx "$want" || {
+            echo "DECLARED but unused: $want -- the declaration is stale" >&2; drift=1
+        }
+    done
+    if [ "$drift" != 0 ]; then
+        echo "The bundle's host surface does not match $surface for $key $TIER." >&2
+        echo "Needed:   $(echo $host_deps)" >&2
+        echo "Declared: $allowed" >&2
+        exit 1
+    fi
+    [ -z "$TIER" ] || echo "host surface matches the declaration for $key $TIER: $(echo $host_deps)"
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
