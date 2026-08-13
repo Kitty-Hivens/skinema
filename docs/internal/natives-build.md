@@ -121,7 +121,7 @@ packs a bundle you built:
 ### Versioning
 
 The module publishes on its own version line, `<ffmpeg>-<revision>` from
-`nativesVersion` in `gradle.properties` (`8.1.1-1`): the FFmpeg build the
+`nativesVersion` in `gradle.properties` (`9.0.1-1`): the FFmpeg build the
 bundles carry, plus a revision for repacks of that same build. `nativesTag`
 derives from its FFmpeg half, so the version and the rolling release it packs
 from cannot drift.

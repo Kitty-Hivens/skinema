@@ -55,7 +55,7 @@ unavoidable set.
 
 FFmpeg structs are opaque pointers; skinema reads a handful of their
 fields by byte offset. `LibavAbi.kt` holds those offsets as constants
-for the pinned major (n8.1):
+for the pinned major (n9.0):
 
 ```kotlin
 object Frame {
@@ -118,7 +118,7 @@ Each was paid for once; do not rediscover them.
 
 ## Soname pinning
 
-Pinned line: **FFmpeg n8.1.x, LGPL, shared.** `LibavLibrary` is the
+Pinned line: **FFmpeg n9.0.x, LGPL, shared.** `LibavLibrary` is the
 single source of the soname majors:
 
 | Library    | soname major |

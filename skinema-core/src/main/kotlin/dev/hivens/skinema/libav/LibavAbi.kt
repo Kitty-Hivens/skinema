@@ -1,10 +1,15 @@
 package dev.hivens.skinema.libav
 
 /**
- * Struct offsets and ABI constants for the pinned FFmpeg major line (n8.1,
+ * Struct offsets and ABI constants for the pinned FFmpeg major line (n9.0,
  * ROADMAP.md section 4), captured by tools/layout-oracle.c compiled against
  * that line's headers. Do not edit by hand -- re-run the oracle on a major
  * bump and transcribe its output.
+ *
+ * The n8.1 -> n9.0 bump moved no struct offset at all: every value below was
+ * re-captured against the 9.0 headers and matched. The one constant that
+ * moved was AV_CODEC_ID_VP9 -- which is exactly why the ids are transcribed
+ * rather than assumed stable.
  *
  * Offsets are stable within a soname major; [Libav] verifies the loaded
  * majors before anything here is dereferenced.
@@ -348,7 +353,9 @@ object LibavAbi {
     const val SWS_CS_BT2020 = 9
     const val AVSEEK_FLAG_BACKWARD = 1
     const val AV_CODEC_ID_VP8 = 139
-    const val AV_CODEC_ID_VP9 = 167
+
+    /** Was 167 on n8.1; the enum shifted under it in n9.0 (167 is now aic). */
+    const val AV_CODEC_ID_VP9 = 166
     const val AV_LOG_QUIET = -8
     const val AVERROR_EOF = -541478725
     const val AV_NOPTS_VALUE = Long.MIN_VALUE

@@ -120,7 +120,7 @@ a repack that fixes what a bundle carries):
 
 1. Bump `nativesVersion` in `gradle.properties`: the FFmpeg version of the
    build, plus a revision that increments for repacks of that same build
-   (`8.1.1-1` -> `8.1.1-2`; a new pin resets it, `8.2.0-1`). Central versions
+   (`9.0.1-1` -> `9.0.1-2`; a new pin resets it, `9.1.0-1`). Central versions
    are immutable, so changed bytes always need a new number -- reusing one is
    rejected.
 2. Dispatch `Publish` with target `natives`. It refuses a version already on

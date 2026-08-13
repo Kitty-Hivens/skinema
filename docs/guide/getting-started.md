@@ -8,12 +8,12 @@ the native runtime for every platform you ship:
 
 ```kotlin
 implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
 `skinema-natives` carries its own version -- the FFmpeg build in the bundles
