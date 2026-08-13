@@ -36,7 +36,7 @@ fun nativesPlatform(): String {
 
 /**
  * The libav* shared libraries skinema binds, with the soname major each one
- * carries in the pinned FFmpeg release line (n8.1 -- see ROADMAP.md).
+ * carries in the pinned FFmpeg release line (n9.0 -- see ROADMAP.md).
  *
  * Lookups must always request the exact soname, never the bare library name:
  * FFmpeg majors routinely coexist in one system (Arch ships a 4.4 compat
@@ -49,12 +49,12 @@ fun nativesPlatform(): String {
  * any of the others -- last).
  */
 enum class LibavLibrary(val baseName: String, val sonameMajor: Int) {
-    AVUTIL("avutil", 60),
-    SWRESAMPLE("swresample", 6),
-    SWSCALE("swscale", 9),
-    AVCODEC("avcodec", 62),
-    AVFORMAT("avformat", 62),
-    AVFILTER("avfilter", 11);
+    AVUTIL("avutil", 61),
+    SWRESAMPLE("swresample", 7),
+    SWSCALE("swscale", 10),
+    AVCODEC("avcodec", 63),
+    AVFORMAT("avformat", 63),
+    AVFILTER("avfilter", 12);
 
     /** The file name carrying this library's pinned major on [os]. */
     fun fileName(os: Os): String = when (os) {

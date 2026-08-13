@@ -22,7 +22,7 @@ permissions:
   contents: write
 
 env:
-  FFMPEG_VERSION: "8.1.1"
+  FFMPEG_VERSION: "9.0.1"
 
 jobs:
   # The tier x platform matrix is generated here so a dispatch can narrow it to

@@ -77,16 +77,18 @@ this.
 
 ## 4. FFmpeg pin
 
-Pinned line: **FFmpeg n8.1.x, LGPL, shared** (pinned 2026-06).
+Pinned line: **FFmpeg n9.0.x, LGPL, shared** (pinned 2026-08; n8.1.x before it).
+The n8.1 -> n9.0 move changed no struct offset the bindings read -- only the
+six sonames and `AV_CODEC_ID_VP9`, both re-captured with the oracle.
 
-| Library     | soname major (n8.1) |
+| Library     | soname major (n9.0) |
 |-------------|---------------------|
-| avutil      | 60                  |
-| swresample  | 6                   |
-| swscale     | 9                   |
-| avcodec     | 62                  |
-| avformat    | 62                  |
-| avfilter    | 11                  |
+| avutil      | 61                  |
+| swresample  | 7                   |
+| swscale     | 10                  |
+| avcodec     | 63                  |
+| avformat    | 63                  |
+| avfilter    | 12                  |
 
 Rules:
 
@@ -918,7 +920,7 @@ without breaking changes. Not before.
 | Compose    | 1.11.0         | matches the primary consumer           |
 | Skiko      | 0.144.6        | what Compose 1.11.0 ships; compileOnly |
 | Gradle     | 9.5.1 (wrapper)|                                        |
-| FFmpeg     | n8.1.x         | sonames in section 4                   |
+| FFmpeg     | n9.0.x         | sonames in section 4                   |
 
 ## 13. Open questions
 
