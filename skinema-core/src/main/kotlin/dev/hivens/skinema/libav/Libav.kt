@@ -61,9 +61,20 @@ object Libav {
     // DLL links must be mapped here first. Off-bundle or absent it falls
     // through. Ass routes its own loads through resolveLibraryPath, so
     // touching it runs this first -- libass's iconv import resolves too.
+    //
+    // The list spans both Windows toolchains, since one loader serves every
+    // bundle. libc++/libunwind are the aarch64 half: clang there ships its C++
+    // runtime as DLLs, where the x64 MinGW build folds libstdc++/libgcc into
+    // the libraries statically -- so on arm64 the x265 in a full-tier avcodec
+    // imports libc++ and nothing else does. A name absent from the bundle
+    // simply falls through, which is what the other tiers and x64 rely on.
     init {
         if (Os.current() == Os.WINDOWS) {
-            for (rt in listOf("zlib1.dll", "libbz2-1.dll", "libiconv-2.dll", "liblzma-5.dll", "libwinpthread-1.dll")) {
+            val runtimes = listOf(
+                "zlib1.dll", "libbz2-1.dll", "libiconv-2.dll", "liblzma-5.dll", "libwinpthread-1.dll",
+                "libunwind.dll", "libc++.dll",
+            )
+            for (rt in runtimes) {
                 runCatching { SymbolLookup.libraryLookup(resolveLibraryPath(rt), Arena.global()) }
             }
         }
