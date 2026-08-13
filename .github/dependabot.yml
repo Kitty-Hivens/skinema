@@ -1,0 +1,38 @@
+version: 2
+
+# Two ecosystems, both grouped so a quiet week is one PR rather than six.
+# Majors stay ungrouped: a Kotlin or Compose major is a migration, not a bump,
+# and it should arrive on its own with its own CI run.
+updates:
+  # Every version this project pins lives in gradle/libs.versions.toml -- the
+  # module build files only reference it through aliases -- so the catalog is
+  # what actually gets edited here.
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    groups:
+      gradle-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Skiko is pinned to whatever the Compose version ships (ROADMAP section
+      # on the dependency table) and is compileOnly on our side. Bumping it
+      # independently would desync the two; it moves when Compose moves.
+      - dependency-name: org.jetbrains.skiko:skiko-awt
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      actions-all:
+        patterns: ["*"]

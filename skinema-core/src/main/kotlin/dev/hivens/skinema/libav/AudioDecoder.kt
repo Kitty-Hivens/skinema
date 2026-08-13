@@ -316,6 +316,9 @@ class AudioDecoder private constructor(
 
                 val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
                 val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
+                    throw LibavException("av_packet_alloc/av_frame_alloc(audio) returned NULL")
+                }
 
                 val startTimeNanos = formatStartTimeNanos(fmtCtx)
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
