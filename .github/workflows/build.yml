@@ -27,9 +27,21 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             caps: decode,subs,webp,encode,formats
+          # windows-arm64 is here for the clean-PATH step below, which is the
+          # only proof a bundle resolves its runtime imports from itself. The
+          # natives workflow's own acceptance run cannot give it: that one
+          # executes under MSYS2 with the toolchain prefix on PATH, so it
+          # cannot tell a self-contained bundle from one leaning on the runner.
+          - os: windows-11-arm
+            platform: windows-arm64
+            caps: decode,subs,webp,encode,formats
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
+          # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
+          # arm mac and no hosted Intel runner remains to load the result. It
+          # stays community-tier until one does; treat the platform table as
+          # saying five tested of six.
     runs-on: ${{ matrix.os }}
     env:
       # The capabilities CI holds mandatory on this platform: a bundle
