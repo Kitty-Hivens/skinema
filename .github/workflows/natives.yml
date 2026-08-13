@@ -163,41 +163,17 @@ jobs:
           FEATURES: ${{ steps.tier.outputs.features }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
-      # Static proof the Windows bundle is self-contained (liblzma-5 slipped
-      # through once because nothing checked this). Walk every bundled DLL's
-      # import table and fail if a non-system import is missing from the bundle.
-      # Not a load test: the acceptance run below can be fooled by a runtime DLL
-      # leaking onto the runner PATH that a clean user machine lacks -- this
-      # cannot. A DLL is a system dep if it sits in System32 or is an
-      # api-ms-win-* apiset; everything else an av*/libass DLL imports must ride
-      # in the bundle. Catches any missing MinGW runtime, not just today's.
-      - name: Verify the Windows bundle is import-closed
+      # Static proof the Windows bundle both carries and MAPS what it imports
+      # (liblzma-5 and libc++ each slipped through once, because nothing
+      # checked the two halves). Neither is a load test: the acceptance run
+      # below can be fooled by a runtime DLL leaking onto the runner PATH that
+      # a clean user machine lacks -- reading the import tables cannot. The
+      # script lives in tools/ so it can be run against any bundle off a
+      # Windows host too.
+      - name: Verify the Windows bundle is import-closed and preload-complete
         if: startsWith(matrix.platform, 'windows')
         shell: msys2 {0}
-        run: |
-          set -uo pipefail
-          bundle="natives/${{ matrix.platform }}/bundle"
-          dumper="$(command -v llvm-objdump || command -v objdump || true)"
-          [ -n "$dumper" ] || { echo "no objdump/llvm-objdump on PATH"; exit 1; }
-          have="$(ls "$bundle"/*.dll | xargs -n1 basename | tr 'A-Z' 'a-z' | sort -u)"
-          gaps=0
-          for f in "$bundle"/*.dll; do
-            self="$(basename "$f" | tr 'A-Z' 'a-z')"
-            imps="$("$dumper" -p "$f" | sed -n 's/.*DLL Name:[[:space:]]*//p' | tr 'A-Z' 'a-z' | sort -u)"
-            for i in $imps; do
-              [ "$i" = "$self" ] && continue
-              case "$i" in api-ms-win-*) continue ;; esac
-              printf '%s\n' "$have" | grep -qx "$i" && continue
-              [ -f "/c/Windows/System32/$i" ] && continue
-              echo "MISSING: $(basename "$f") imports $i (not bundled, not in System32)"
-              gaps=$((gaps + 1))
-            done
-          done
-          if [ "$gaps" -gt 0 ]; then
-            echo "Bundle is NOT self-contained: $gaps unsatisfied import(s) -- a clean Windows box would fail to load it."
-            exit 1
-          fi
-          echo "Bundle import-closed: every non-system import is present."
+        run: tools/check-windows-bundle.sh "natives/${{ matrix.platform }}/bundle" "$PWD"
 
       # The acceptance gate: the suite must pass against the binaries we are
       # about to ship, on the platform that will run them. Cross-built

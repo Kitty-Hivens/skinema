@@ -16,7 +16,11 @@ plugins {
 
 mavenPublishing {
     pom {
-        description.set("Trimmed FFmpeg runtimes for skinema in modular tiers (core/decode/full), one classifier jar per tier and platform.")
+        description.set(
+            "Trimmed FFmpeg runtimes for skinema in modular tiers, one classifier jar per tier and platform. " +
+                "The core and decode tiers are LGPL; the full tier adds x264/x265 software encode and is GPL. " +
+                "Each bundle carries its own licence texts.",
+        )
     }
 }
 

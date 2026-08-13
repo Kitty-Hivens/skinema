@@ -30,22 +30,6 @@ tasks.test {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
-// M0 decode spike (ROADMAP.md section 11). Linux + system FFmpeg:
-//   ./gradlew :skinema-core:spike -Pinput=/path/video.mp4 -Pout=/tmp/spike [-Pframes=N]
-val spikeInput = providers.gradleProperty("input")
-val spikeOut = providers.gradleProperty("out")
-val spikeFrames = providers.gradleProperty("frames")
-tasks.register<JavaExec>("spike") {
-    group = "skinema"
-    description = "M0 decode spike: -Pinput=<video> -Pout=<dir> [-Pframes=N]"
-    classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("dev.hivens.skinema.spike.SpikeMainKt")
-    jvmArgs("--enable-native-access=ALL-UNNAMED")
-    argumentProviders.add {
-        listOfNotNull(spikeInput.orNull, spikeOut.orNull, spikeFrames.orNull)
-    }
-}
-
 mavenPublishing {
     pom {
         description.set("Video decoding for the JVM: FFmpeg and libwebp through hand-written FFM bindings, paced RGBA frames out.")

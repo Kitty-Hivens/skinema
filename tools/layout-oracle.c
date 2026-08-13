@@ -121,6 +121,7 @@ int main(void) {
 
     P(offsetof(AVDictionaryEntry, key));
     P(offsetof(AVDictionaryEntry, value));
+    P(sizeof(AVDictionaryEntry));
 
     P(AV_DISPOSITION_DEFAULT);
 
@@ -139,6 +140,9 @@ int main(void) {
     P(offsetof(AVFrame, color_trc));
     P(offsetof(AVFrame, colorspace));
     P(offsetof(AVChannelLayout, nb_channels));
+    /* Not a read offset: this is how much room av_channel_layout_default is
+       given to write into, so it must be checked on a bump like any struct. */
+    P(sizeof(AVChannelLayout));
     P(sizeof(AVFrame));
 
     P(AVCOL_SPC_BT709);

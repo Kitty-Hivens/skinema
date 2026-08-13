@@ -21,6 +21,20 @@ val nativesVersion = providers.gradleProperty("nativesVersion").get()
 // block below.
 val inMemoryKey = providers.gradleProperty("signingInMemoryKey")
 
+// The library modules are skinema's own code. skinema-natives is not: it
+// ships trimmed FFmpeg builds, LGPL for the core and decode tiers and GPL
+// for full, which links x264/x265 under --enable-gpl. A POM cannot scope a
+// licence to a classifier, so the natives module declares both and the tier
+// table in the README carries the split -- a consumer puts exactly one tier
+// on the classpath. The full texts ride inside every bundle.
+val ownCodeLicenses = listOf(
+    "Apache-2.0" to "https://www.apache.org/licenses/LICENSE-2.0.txt",
+)
+val ffmpegBundleLicenses = listOf(
+    "LGPL-2.1-or-later" to "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+    "GPL-2.0-or-later" to "https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt",
+)
+
 allprojects {
     group = "dev.hivens"
     version = if (name == "skinema-natives") nativesVersion else appVersion
@@ -61,9 +75,13 @@ subprojects {
                 name.set(project.name)
                 url.set("https://github.com/Kitty-Hivens/skinema")
                 licenses {
-                    license {
-                        name.set("Apache-2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                    val declared =
+                        if (project.name == "skinema-natives") ffmpegBundleLicenses else ownCodeLicenses
+                    for ((spdxId, licenseUrl) in declared) {
+                        license {
+                            name.set(spdxId)
+                            url.set(licenseUrl)
+                        }
                     }
                 }
                 developers {

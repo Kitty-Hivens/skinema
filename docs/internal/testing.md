@@ -100,7 +100,7 @@ spike):
 | Command                          | Purpose                                                        |
 |----------------------------------|----------------------------------------------------------------|
 | `:skinema-demo:run`              | play one file in a bare Compose window                         |
-| `:skinema-core:spike`            | headless decode spike -- dump frames, measure decode cost      |
+| `:skinema-demo:spike`            | headless decode spike -- dump frames, measure decode cost      |
 | `:skinema-demo:seekbench`        | scripted seeks, seek-to-frame latency percentiles              |
 | `:skinema-demo:soak`             | long looped run, RSS/heap once per minute (memory proof)       |
 | `:skinema-demo:harness`          | multi-player grid with optional mount/unmount churn            |

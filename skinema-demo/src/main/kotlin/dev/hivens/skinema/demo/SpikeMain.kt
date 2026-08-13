@@ -1,4 +1,4 @@
-package dev.hivens.skinema.spike
+package dev.hivens.skinema.demo
 
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.VideoDecoder
@@ -14,7 +14,7 @@ import kotlin.io.path.createDirectories
  * and report the decode+convert cost. PNG encoding is deliberately kept
  * out of the measured time -- it is spike tooling, not pipeline.
  *
- *   ./gradlew :skinema-core:spike -Pinput=<video> -Pout=<dir> [-Pframes=N]
+ *   ./gradlew :skinema-demo:spike -Pinput=<video> -Pout=<dir> [-Pframes=N]
  */
 fun main(args: Array<String>) {
     require(args.size >= 2) { "usage: spike <input-video> <out-dir> [max-frames]" }

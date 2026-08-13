@@ -125,6 +125,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
             -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
         ninja -C "dav1d-$DAV1D_VERSION/build" install
+        cp "dav1d-$DAV1D_VERSION/COPYING" "$WORK/dav1d-COPYING"
     fi
 
     # libwebp ships SHARED into the bundle prefix (the webp bindings load it at
@@ -192,6 +193,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
+        cp "libvpx-${VPX_VERSION#v}/LICENSE" "$WORK/libvpx-LICENSE"
     fi
 
     # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
@@ -562,8 +564,11 @@ mkdir -p "$PREFIX/licenses"
 cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
 [ ${#GPL[@]} -gt 0 ] && cp COPYING.GPLv2 "$PREFIX/licenses/"
 if [ "${STATIC_DEPS:-}" = "1" ]; then
-    has av1      && cp "$WORK/dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
-    has vpx      && cp "$WORK/libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
+    # Every text is read from $WORK, stashed there when its dependency was
+    # built: the source trees are only unpacked when the library is missing,
+    # so a warm $WORK has the archives and none of the trees to copy from.
+    has av1      && cp "$WORK/dav1d-COPYING" "$PREFIX/licenses/dav1d-COPYING"
+    has vpx      && cp "$WORK/libvpx-LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     has webp     && cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
     has enc-h264 && cp "$WORK/x264-COPYING" "$PREFIX/licenses/x264-COPYING"
     has enc-hevc && cp "$WORK/x265-COPYING" "$PREFIX/licenses/x265-COPYING"

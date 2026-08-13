@@ -327,7 +327,7 @@ README once the library is usable.
   inside the background budget. Verdict: Panama-FFmpeg is routine, not
   pain. Bindings call through adapting `MethodHandle.invoke`; tightening
   hot paths to `invokeExact` is an M1 option, not a need at this cost
-  profile. Run it: `./gradlew :skinema-core:spike -Pinput=<video>
+  profile. Run it: `./gradlew :skinema-demo:spike -Pinput=<video>
   -Pout=<dir> [-Pframes=N]`.
 - **M1 -- core: DONE (2026-06-10).** PlaybackClock (pausable/seekable media
   clock, fake-clock tested), TripleBuffer (tear-free latest-frame exchange,
