@@ -82,6 +82,22 @@ tasks.register<JavaExec>("harness") {
     }
 }
 
+// M0 decode spike (ROADMAP.md section 11) -- the raw VideoDecoder, no player:
+//   ./gradlew :skinema-demo:spike -Pinput=/path/video.mp4 -Pout=/tmp/spike [-Pframes=N]
+val spikeInput = providers.gradleProperty("input")
+val spikeOut = providers.gradleProperty("out")
+val spikeFrames = providers.gradleProperty("frames")
+tasks.register<JavaExec>("spike") {
+    group = "skinema"
+    description = "M0 decode spike: -Pinput=<video> -Pout=<dir> [-Pframes=N]"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("dev.hivens.skinema.demo.SpikeMainKt")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    argumentProviders.add {
+        listOfNotNull(spikeInput.orNull, spikeOut.orNull, spikeFrames.orNull)
+    }
+}
+
 // Headless seek diagnostic:
 //   SKINEMA_DEBUG_SEEK=1 ./gradlew :skinema-demo:seekbench -Pvideo=/path/file.mp4
 tasks.register<JavaExec>("seekbench") {
