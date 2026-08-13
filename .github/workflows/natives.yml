@@ -46,14 +46,21 @@ jobs:
           # real machines and get the on-runner acceptance run; macos-x64 cross-
           # compiles on the arm mac (Intel runners are scarce) -- community tier,
           # no acceptance, an arm JVM cannot load x86_64 dylibs.
-          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
+          #
+          # The musl platforms build inside an Alpine container on the ordinary
+          # glibc runner rather than on a runner of their own: GitHub has no
+          # musl image, and putting the whole job in a container breaks the
+          # JavaScript actions, whose node is glibc-linked. Only the build and
+          # its acceptance run go in; checkout and setup stay on the host.
+          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [linux-musl-x64]=ubuntu-latest [linux-musl-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
           declare -A CROSS=( [macos-x64]=mac-x64 )
+          declare -A LIBC=( [linux-musl-x64]=musl [linux-musl-arm64]=musl )
           items=()
           for t in core decode full; do
             [ -n "$ONLY_TIER" ] && [ "$ONLY_TIER" != "$t" ] && continue
-            for p in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
+            for p in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
               [ -n "$ONLY_PLATFORM" ] && [ "$ONLY_PLATFORM" != "$p" ] && continue
-              items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\"}")
+              items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\",\"libc\":\"${LIBC[$p]:-glibc}\"}")
             done
           done
           echo "matrix={\"include\":[$(IFS=,; echo "${items[*]}")]}" >> "$GITHUB_OUTPUT"
@@ -78,7 +85,7 @@ jobs:
         shell: bash
         run: |
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp hwaccel";                                          caps="decode,webp" ;;
+            core)   feat="av1 vpx webp";                                                  caps="decode,webp" ;;
             decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats" ;;
             full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
           esac
@@ -86,13 +93,13 @@ jobs:
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.libc != 'musl'
         # libfontconfig-dev: libass's Linux font provider builds against the
         # system fontconfig (and links it dynamically -- every desktop ships
         # it). libva-dev: the VAAPI hwaccel builds against libva and links it
         # dynamically, the same pattern -- pulled in for the build and for
         # the on-runner acceptance test (libva-dev depends on libva2).
-        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config libfontconfig-dev libva-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config patchelf libfontconfig-dev libva-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
@@ -139,8 +146,38 @@ jobs:
             curl
             unzip
 
+      # Alpine carries the toolchain and a musl JDK, so the build and the
+      # acceptance run both happen inside it. The bundle it produces links
+      # musl's libc and nothing else, which is the whole point -- a glibc
+      # bundle cannot load into a musl process at all.
+      - name: Build and accept (musl, in Alpine)
+        if: matrix.libc == 'musl'
+        env:
+          FEATURES: ${{ steps.tier.outputs.features }}
+          CAPS: ${{ steps.tier.outputs.caps }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e FEATURES -e CAPS -e FFMPEG_VERSION \
+            alpine:edge sh -euc '
+              # edge, not a stable tag: openjdk25 is only there, and the
+              # project builds on a 25 toolchain. ffmpeg is the fixture CLI
+              # the acceptance suite shells out to.
+              apk add --no-cache bash build-base nasm cmake meson ninja pkgconf \
+                  curl patchelf linux-headers autoconf automake libtool \
+                  fontconfig-dev libva-dev openjdk25 ffmpeg >/dev/null
+              STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" \
+                bash tools/build-natives.sh "/src/natives/${{ matrix.platform }}"
+              # Acceptance against the freshly built musl bundle, on the musl
+              # JVM that will actually load it. Gradle brings its own toolchain
+              # resolution, so JAVA_HOME is enough.
+              export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
+              SKINEMA_REQUIRE_CAPS="$CAPS" \
+              SKINEMA_LIBAV_DIR="/src/natives/${{ matrix.platform }}/lib" \
+                ./gradlew :skinema-core:test --rerun-tasks
+            '
+
       - name: Build trimmed FFmpeg (unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.libc != 'musl'
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
         run: |
@@ -179,7 +216,7 @@ jobs:
       # about to ship, on the platform that will run them. Cross-built
       # bundles skip it (no metal to run them on) -- community tier.
       - uses: actions/setup-java@v5
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         with:
           # Azul Zulu (OpenJDK): one distribution that ships JDK 25 on every
           # platform including windows-arm64, which Temurin does not build yet.
@@ -187,10 +224,10 @@ jobs:
           java-version: 25
 
       - uses: gradle/actions/setup-gradle@v6
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
 
       - name: Install ffmpeg CLI (fixtures)
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         shell: bash
         run: |
           case "${{ runner.os }}" in
@@ -200,7 +237,7 @@ jobs:
           esac
 
       - name: Test against the freshly built natives
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         shell: bash
         # Strict here catches a bundle that built but cannot load a
         # capability BEFORE it uploads -- the workflow that produced the
