@@ -20,10 +20,18 @@ enum class Os {
     }
 }
 
-/** "<os>-<arch>" tag the natives bundles use (linux-x64, macos-arm64, ...). */
+/**
+ * "<os>-<arch>" tag the natives bundles use (linux-x64, macos-arm64, ...).
+ *
+ * Linux splits further by C library: a glibc-built shared object cannot load
+ * into a musl process at all -- it wants an interpreter and a `libc.so.6`
+ * that do not exist there -- so Alpine and Void-musl take their own
+ * `linux-musl-*` bundles rather than a glibc one that resolves and then
+ * fails (#33).
+ */
 fun nativesPlatform(): String {
     val os = when (Os.current()) {
-        Os.LINUX -> "linux"
+        Os.LINUX -> if (isMuslProcess()) "linux-musl" else "linux"
         Os.MAC -> "macos"
         Os.WINDOWS -> "windows"
     }
@@ -33,6 +41,25 @@ fun nativesPlatform(): String {
     }
     return "$os-$arch"
 }
+
+/**
+ * Whether THIS process is linked against musl. Read off the running
+ * process's own mappings rather than probed on the filesystem: the question
+ * is which C library the JVM that will dlopen these libraries actually uses,
+ * and a host can carry both (Alpine's gcompat, a glibc JVM unpacked onto a
+ * musl system). A filesystem probe answers "what is installed", which is a
+ * different question and gets those hosts wrong.
+ */
+private fun isMuslProcess(): Boolean = runCatching {
+    isMuslLinked(java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/maps")))
+}.getOrDefault(false)
+
+/** The pure half of [isMuslProcess], so the parsing is testable without /proc. */
+internal fun isMuslLinked(procSelfMaps: String): Boolean =
+    procSelfMaps.lineSequence().any { line ->
+        val mapped = line.substringAfterLast(' ')
+        mapped.contains("ld-musl-") || mapped.contains("libc.musl-")
+    }
 
 /**
  * The libav* shared libraries skinema binds, with the soname major each one
