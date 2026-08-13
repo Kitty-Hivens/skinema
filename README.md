@@ -54,12 +54,16 @@ license:
 
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
-| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles | LGPL |
+| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
 | `decode` | core + subtitles + the broad legacy/extended format set           | LGPL    |
 | `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
-`core` is the lean tier -- the modern codecs only, no subtitles -- for apps
-that just play current video. `decode` (used above) is the complete LGPL
+`core` is the lean tier -- the modern codecs only, no subtitles, no GPU
+decode -- for apps that just play current video. It is also the portable one:
+it needs nothing from the host but the C library, so it loads in a bare
+container and on a distribution that keeps no libraries at the usual paths.
+The desktop tiers carry GPU decode, which means they need libva alongside
+fontconfig. `decode` (used above) is the complete LGPL
 player: it adds the libass subtitle stack and the broad `formats` set (the
 legacy and broadcast containers and codecs in "What it plays" below). `full`
 adds software encode and is GPL because it bundles x264/x265; HEVC encode
