@@ -36,6 +36,8 @@ internals -- lives in [docs/](docs/README.md).
 implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
@@ -62,12 +64,16 @@ license:
 
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
-| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles | LGPL |
+| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
 | `decode` | core + subtitles + the broad legacy/extended format set           | LGPL    |
 | `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
-`core` is the lean tier -- the modern codecs only, no subtitles -- for apps
-that just play current video. `decode` (used above) is the complete LGPL
+`core` is the lean tier -- the modern codecs only, no subtitles, no GPU
+decode -- for apps that just play current video. It is also the portable one:
+it needs nothing from the host but the C library, so it loads in a bare
+container and on a distribution that keeps no libraries at the usual paths.
+The desktop tiers carry GPU decode, which means they need libva alongside
+fontconfig. `decode` (used above) is the complete LGPL
 player: it adds the libass subtitle stack and the broad `formats` set (the
 legacy and broadcast containers and codecs in "What it plays" below). `full`
 adds software encode and is GPL because it bundles x264/x265; HEVC encode
@@ -82,17 +88,24 @@ Compose -- are restricted methods that otherwise warn on every run.
 
 ## Platforms
 
-Every tier ships for six platforms -- x64 and arm64 on all three desktop
-operating systems:
+Every tier ships for eight platforms -- x64 and arm64 on all three desktop
+operating systems, and both C libraries on Linux:
 
 | Platform        | Bundle built                 | Acceptance suite |
 |-----------------|------------------------------|------------------|
 | `linux-x64`     | on metal                     | on metal         |
 | `linux-arm64`   | on metal                     | on metal         |
+| `linux-musl-x64`| in Alpine, on metal          | on metal, musl JVM |
+| `linux-musl-arm64` | in Alpine, on metal       | on metal, musl JVM |
 | `windows-x64`   | on metal (MSYS2 MINGW64)     | on metal         |
 | `windows-arm64` | on metal (MSYS2 CLANGARM64)  | on metal         |
 | `macos-arm64`   | on metal                     | on metal         |
 | `macos-x64`     | cross-compiled on an arm mac | none             |
+
+Linux ships twice because a glibc shared object cannot load into a musl
+process at all -- Alpine and Void-musl take the `linux-musl-*` bundles, and
+`nativesPlatform()` picks between them by reading which C library the running
+JVM is itself linked against, not by looking at what the system has installed.
 
 arm64 is first-class here, not an afterthought: `linux-arm64` and
 `windows-arm64` are built on real arm machines and must pass the same
