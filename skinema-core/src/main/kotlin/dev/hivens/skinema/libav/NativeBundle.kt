@@ -1,6 +1,5 @@
 package dev.hivens.skinema.libav
 
-import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -43,20 +42,27 @@ object NativeBundle {
         val staging = Files.createTempDirectory(cacheRoot, ".deploy-")
         try {
             for (file in files) {
-                require(!file.contains("..")) { "natives index entry escapes the bundle: $file" }
-                val out = staging.resolve(file)
+                // One containment check rather than a spelling blacklist: an
+                // entry may not resolve outside the staging directory, which
+                // covers a traversing "../.." and an absolute path alike.
+                val out = staging.resolve(file).normalize()
+                require(out.startsWith(staging)) { "natives index entry escapes the bundle: $file" }
                 Files.createDirectories(out.parent)
                 val resource = loader.getResourceAsStream("$root/$file")
                     ?: error("natives index lists $file but the bundle does not carry it")
                 resource.use { Files.copy(it, out, StandardCopyOption.REPLACE_EXISTING) }
             }
             Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: FileAlreadyExistsException) {
-            // Another process deployed the same fingerprint first; use theirs.
-            staging.toFile().deleteRecursively()
         } catch (t: Throwable) {
             staging.toFile().deleteRecursively()
-            throw t
+            // Losing the rename race is not a failure: whoever won wrote the
+            // same fingerprint, so their copy is the same bytes. The exception
+            // type cannot be the signal -- Windows reports the rename onto an
+            // existing directory as FileAlreadyExistsException, while a POSIX
+            // rename onto a non-empty one raises ENOTEMPTY, which arrives as a
+            // plain FileSystemException. So the winner's directory decides,
+            // and anything that leaves no directory behind still throws.
+            if (!Files.isDirectory(target)) throw t
         }
         return target
     }
