@@ -234,8 +234,14 @@ object Libav {
         raw.forEach { (lib, v) ->
             val major = v shr 16
             if (major != lib.sonameMajor) {
+                // Name the fix, not just the numbers: this fires for a stale
+                // skinema-natives pin and for a system FFmpeg of the wrong
+                // major, and the two have different answers.
                 throw UnsatisfiedLinkError(
-                    "${lib.baseName} runtime major $major does not match the pinned ${lib.sonameMajor}",
+                    "${lib.baseName} runtime major $major does not match the pinned ${lib.sonameMajor}, " +
+                        "loaded from ${libavDir ?: "the system library path"} -- " +
+                        "pair this skinema version with the skinema-natives version its release notes name, " +
+                        "or point skinema.libav.dir at an FFmpeg build of the pinned major",
                 )
             }
         }
