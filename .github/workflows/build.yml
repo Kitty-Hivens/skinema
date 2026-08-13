@@ -63,16 +63,21 @@ jobs:
             macOS)   brew install ffmpeg libass ;;
           esac
 
-      # The rolling release clobbers assets in place, so the cache key must
-      # track the asset's upload time -- a fixed suffix kept serving stale
-      # bundles after every natives re-dispatch.
-      - name: Resolve the bundle revision
+      # The tag comes from nativesVersion, the way the publish workflow reads
+      # it: a literal here kept testing the previous bundle after a pin bump,
+      # green the whole time. The rolling release also clobbers assets in
+      # place, so the cache key must track the asset's upload time -- a fixed
+      # suffix kept serving stale bundles after every natives re-dispatch.
+      - name: Resolve the bundle tag and revision
         id: natives-rev
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          rev=$(gh api repos/${{ github.repository }}/releases/tags/natives-8.1.1 \
+          nv=$(sed -n 's/^nativesVersion=//p' gradle.properties)
+          tag="natives-${nv%%-*}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          rev=$(gh api "repos/${{ github.repository }}/releases/tags/$tag" \
             --jq '[.assets[] | select(.name == "skinema-natives-full-${{ matrix.platform }}.tar.gz")][0].updated_at' \
             2>/dev/null | tr -dc '0-9TZ:-' || true)
           echo "rev=${rev:-unknown}" >> "$GITHUB_OUTPUT"
@@ -82,15 +87,17 @@ jobs:
         uses: actions/cache@v6
         with:
           path: libav-bundle
-          key: skinema-natives-8.1.1-full-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
+          key: skinema-${{ steps.natives-rev.outputs.tag }}-full-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
 
       - name: Download the trimmed natives bundle
         if: steps.libav-cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          TAG: ${{ steps.natives-rev.outputs.tag }}
         run: |
           mkdir -p libav-bundle
           curl -fsSL -o bundle.tar.gz \
-            "https://github.com/Kitty-Hivens/skinema/releases/download/natives-8.1.1/skinema-natives-full-${{ matrix.platform }}.tar.gz"
+            "https://github.com/${{ github.repository }}/releases/download/$TAG/skinema-natives-full-${{ matrix.platform }}.tar.gz"
           tar -xzf bundle.tar.gz -C libav-bundle
 
       - name: Point skinema at the bundle under test
