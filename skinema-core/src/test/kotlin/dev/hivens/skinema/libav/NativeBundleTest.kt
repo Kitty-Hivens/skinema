@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import java.io.InputStream
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
@@ -78,6 +79,48 @@ class NativeBundleTest {
         dir.resolve("bundle-root/dev/hivens/skinema/natives/linux-x64/index.txt")
             .writeText("fp-evil\n../../escape")
         assertFailsWith<IllegalArgumentException> { NativeBundle.deploy(loader, cache, "linux-x64") }
+    }
+
+    @Test
+    fun `index entries cannot be absolute either`() {
+        val loader = bundleLoader("linux-x64", mapOf("ok" to "x"))
+        dir.resolve("bundle-root/dev/hivens/skinema/natives/linux-x64/index.txt")
+            .writeText("fp-abs\n${dir.resolve("escaped").toAbsolutePath()}")
+        assertFailsWith<IllegalArgumentException> { NativeBundle.deploy(loader, cache, "linux-x64") }
+    }
+
+    /**
+     * The rename race: another process finishes the same fingerprint while
+     * we are still extracting, so the early reuse check has already passed
+     * and the staging rename lands on a populated directory. The winner is
+     * simulated by a loader that creates it as the payload is read.
+     *
+     * A NON-EMPTY winner is the whole point -- renaming onto an empty
+     * directory succeeds, and on POSIX a non-empty one raises ENOTEMPTY,
+     * which arrives as a plain FileSystemException rather than the
+     * FileAlreadyExistsException Windows reports.
+     */
+    @Test
+    fun `a fingerprint deployed by another process mid-extraction is adopted, not an error`() {
+        val inner = bundleLoader("linux-x64", mapOf("libavutil.so.60" to "ours"))
+        val winner = cache.resolve("fp-1")
+        val racing = object : ClassLoader(inner) {
+            override fun getResourceAsStream(name: String): InputStream? {
+                if (!Files.isDirectory(winner)) {
+                    winner.createDirectories().resolve("libavutil.so.60").writeText("theirs")
+                }
+                return super.getResourceAsStream(name)
+            }
+        }
+
+        val deployed = NativeBundle.deploy(racing, cache, "linux-x64")!!
+
+        assertEquals(winner, deployed)
+        assertEquals("theirs", deployed.resolve("libavutil.so.60").readText(), "the winner's copy stands")
+        assertTrue(
+            Files.list(cache).use { entries -> entries.noneMatch { it.fileName.toString().startsWith(".deploy-") } },
+            "the losing staging directory is cleaned up",
+        )
     }
 
     @Test
