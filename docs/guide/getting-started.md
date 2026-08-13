@@ -10,6 +10,8 @@ the native runtime for every platform you ship:
 implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-musl-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-musl-arm64")
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
@@ -65,15 +67,29 @@ build (a locally compiled bundle, a debugging copy):
 Precedence is property, then environment, then the unpacked bundle,
 then the system loader.
 
-On NixOS the bundled (or override) jars work as-is -- they load by absolute
-path. Only the *system-loader* fallback needs help: skinema looks up the
-bare soname (`libavcodec.so.62`) and the nix store is not on the default
-search path. If you rely on a system FFmpeg there, either set
-`SKINEMA_LIBAV_DIR` to a directory that collects the libraries (a
-`symlinkJoin` of `ffmpeg` + `libass` + `libwebp`), or put their nix lib dirs
-on `LD_LIBRARY_PATH` (e.g. through `makeWrapper`). The soname is pinned to
-FFmpeg 8.x, so use the matching package -- `ffmpeg_7` ships `libavcodec.so.61`
-and will not resolve.
+On NixOS the bundle needs one step, because loading by absolute path places
+only the library itself -- the libraries IT needs still go through the normal
+search, and the nix store is not on it. The `core` tier asks for nothing but
+the C library and works untouched; the desktop tiers additionally want libva
+(GPU decode) and fontconfig (subtitle text), so they need those store paths
+reachable. The usual nixpkgs treatment for a prebuilt binary applies, because
+the bundle now carries a RUNPATH to extend:
+
+```nix
+# In a derivation that unpacks the natives jar:
+nativeBuildInputs = [ autoPatchelfHook ];
+buildInputs = [ libva fontconfig zlib ];   # zlib only on pre-0.8 bundles
+```
+
+`autoPatchelfHook` rewrites each library's RUNPATH to the store paths it
+needs, and everything loads. Without a derivation, the same effect comes from
+putting those lib dirs on `LD_LIBRARY_PATH` (through `makeWrapper` on the
+consuming app).
+
+If you would rather use a system FFmpeg than the bundle, point
+`SKINEMA_LIBAV_DIR` at a directory collecting the libraries (a `symlinkJoin`
+of `ffmpeg` + `libass` + `libwebp`). The soname is pinned, so the package must
+match -- `ffmpeg_7` ships `libavcodec.so.61` and will not resolve.
 
 ## The native-access flag
 

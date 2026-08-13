@@ -746,11 +746,17 @@ if [ "$HOST_OS" = linux ]; then
     # becomes the oldest distribution a consumer may use. Report it, so a
     # runner-image bump that raises it is visible in the log rather than in a
     # user's UnsatisfiedLinkError.
+    # No GLIBC_* versions at all means a musl build, which has no such floor;
+    # grep finding nothing must not fail the script under set -e.
     floor="$(
-        for f in "$BUNDLE"/*.so.*; do readelf -V "$f" 2>/dev/null; done \
-        | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1
+        { for f in "$BUNDLE"/*.so.*; do readelf -V "$f" 2>/dev/null; done \
+          | grep -oE 'GLIBC_[0-9]+\.[0-9]+' || true; } | sort -u -t. -k1,1 -k2,2n | tail -1
     )"
-    [ -z "$floor" ] || echo "glibc floor: $floor (a consumer needs at least this)"
+    if [ -n "$floor" ]; then
+        echo "glibc floor: $floor (a consumer needs at least this)"
+    else
+        echo "no glibc floor (musl build)"
+    fi
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi

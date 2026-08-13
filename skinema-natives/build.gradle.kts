@@ -30,7 +30,13 @@ val resourceRoot = "dev/hivens/skinema/natives"
 // <ffmpeg>-<revision> (gradle.properties), so the tag is its FFmpeg half and
 // the two cannot drift apart.
 val nativesTag = "natives-" + version.toString().substringBefore('-')
-val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64")
+// linux-musl-* are their own platforms, not a variant of linux-*: a glibc
+// shared object cannot load into a musl process at all, so Alpine and
+// Void-musl need bundles built against musl or nothing works (#33).
+val platforms = listOf(
+    "linux-x64", "linux-arm64", "linux-musl-x64", "linux-musl-arm64",
+    "windows-x64", "windows-arm64", "macos-arm64", "macos-x64",
+)
 // The modular tiers (ROADMAP.md section 4). Each (tier, platform) ships as
 // its own classifier jar "<tier>-<platform>"; a consumer puts exactly one
 // tier per platform on the runtime classpath. The unpacked layout is keyed
