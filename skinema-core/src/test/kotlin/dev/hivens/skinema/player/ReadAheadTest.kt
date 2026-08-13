@@ -373,10 +373,18 @@ class WrapStrandedTailTest {
             // The device reaches the audio's 0.4s end; the audio thread
             // wraps the clock to zero under the queued sub-second video tail.
             sink.positionFrames.set(44_100 * 4 / 10)
+            // Any pts PAST the device's frozen 0.4s proves the drain: at that
+            // clock such a frame is not due, so only the regression branch can
+            // publish it, and the frozen sink means no later lap can walk the
+            // clock up to it either. Demanding a specific tail LENGTH instead
+            // would race the pacer -- how far it advanced from the 0.3s pin
+            // before the audio thread wrapped decides how much tail exists,
+            // and that margin is only a few frames at 60 fps against a
+            // read-ahead of 8.
             assertTrue(
                 awaitTrue(deadlineMs = 5_000) {
                     p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen >= 500_000_000L
+                    seen > 400_000_000L
                 },
                 "the sub-second stranded tail must present at the wrap, saw ${seen}ns",
             )
