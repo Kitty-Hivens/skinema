@@ -9,7 +9,7 @@
 #   tools/build-natives.sh [prefix]
 #
 # Env:
-#   FFMPEG_VERSION  release to build (default 8.1.1; must stay in the n8.1 pin)
+#   FFMPEG_VERSION  release to build (default 9.0.1; must stay in the n9.0 pin)
 #   STATIC_DEPS=1   shipping mode: libvpx + dav1d from source statically
 #                   linked into ffmpeg, plus libwebp/libwebpdemux built as
 #                   SHARED libraries for the bundle (the animated-WebP path
@@ -25,7 +25,7 @@
 #   JOBS            parallel make (default nproc)
 set -euo pipefail
 
-FFMPEG_VERSION="${FFMPEG_VERSION:-8.1.1}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-9.0.1}"
 WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
@@ -487,7 +487,7 @@ fi
 # encoder (software x264/x265 or hardware VAAPI) pulls in the output muxers
 # and the native aac/flac encoders; only the software x264/x265 flip
 # --enable-gpl -- the VAAPI encoder lives in the driver and stays LGPL.
-DEMUX="mov,matroska,gif,apng,image2,png_pipe,jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3"
+DEMUX="mov,matroska,gif,apng,image2,image_png_pipe,image_jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3"
 DECODE="h264,hevc,mjpeg,png,apng,gif,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le"
 PARSE="h264,hevc,mjpeg,png,gif,aac,mpegaudio,opus,vorbis,flac,ac3"
 LIBS=()
@@ -495,7 +495,7 @@ ENC=()
 GPL=()
 has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1"; }
 has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
-has webp && { DEMUX+=",webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
+has webp && { DEMUX+=",image_webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
 has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub"; }
 # The broad legacy/extended decode set (the "formats" feature). All native
 # FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
@@ -551,6 +551,39 @@ fi
     ${FFLD[@]+"${FFLD[@]}"} \
     ${FFTOOLS[@]+"${FFTOOLS[@]}"} \
     ${FFMPEG_CROSS[@]+"${FFMPEG_CROSS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
+
+# configure warns about a --enable-<thing>=a,b,c list only when it matches
+# NOTHING: a name that matches nothing while its siblings match is dropped in
+# silence, and the build stays green without it. That is how three image
+# demuxers shipped missing for a whole release line (the component name is
+# image_webp_pipe, not the webp_pipe the demuxer registers under). Assert every
+# requested component actually landed, so a rename between majors fails the
+# build that dropped it rather than a user's playback.
+verify_enabled() { # kind, comma-list
+    local kind="$1" name upper
+    for name in $(printf '%s' "$2" | tr ',' ' '); do
+        upper="$(printf '%s_%s' "$name" "$kind" | tr '[:lower:]' '[:upper:]')"
+        grep -qx "#define CONFIG_$upper 1" config_components.h || WHITELIST_GAPS="$WHITELIST_GAPS $kind:$name"
+    done
+}
+WHITELIST_GAPS=""
+if [ -f config_components.h ]; then
+    verify_enabled demuxer "$DEMUX"
+    verify_enabled decoder "$DECODE"
+    verify_enabled parser "$PARSE"
+    [ ${#ENC[@]} -gt 0 ] && verify_enabled encoder "$(IFS=,; echo "${ENC[*]}")"
+    [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "mov,mp4,matroska,webm"
+    if [ -n "$WHITELIST_GAPS" ]; then
+        echo "build-natives: configure silently dropped:$WHITELIST_GAPS" >&2
+        echo "  (the whitelist names a component this FFmpeg line does not have under that name)" >&2
+        exit 1
+    fi
+    echo "whitelist verified: every requested component is enabled"
+else
+    # Not fatal: a layout change here must not break every native build at
+    # once. It does need noticing, hence the shout.
+    echo "build-natives: WARNING -- no config_components.h, whitelist NOT verified" >&2
+fi
 
 make -j"$JOBS"
 make install
