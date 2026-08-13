@@ -67,7 +67,7 @@ then the system loader.
 
 On NixOS the bundled (or override) jars work as-is -- they load by absolute
 path. Only the *system-loader* fallback needs help: skinema looks up the
-bare soname (`libavcodec.so.62`) and the nix store is not on the default
+bare soname (`libavcodec.so.63`) and the nix store is not on the default
 search path. If you rely on a system FFmpeg there, either set
 `SKINEMA_LIBAV_DIR` to a directory that collects the libraries (a
 `symlinkJoin` of `ffmpeg` + `libass` + `libwebp`), or put their nix lib dirs

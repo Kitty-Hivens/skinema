@@ -332,10 +332,11 @@ class WrapStrandedTailTest {
             assertTrue(
                 awaitTrue(deadlineMs = 5_000) {
                     p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen >= 2_550_000_000L
+                    seen > 2_500_000_000L
                 },
                 "the stranded tail must present at the wrap, saw ${seen}ns",
             )
+            assertTrue(p.positionNanos() < 2_500_000_000L, "the clock must have wrapped, reads ${p.positionNanos()}ns")
         }
     }
 
@@ -388,6 +389,10 @@ class WrapStrandedTailTest {
                 },
                 "the sub-second stranded tail must present at the wrap, saw ${seen}ns",
             )
+            // Without this the invariant above rests on an unasserted property
+            // of the fake sink (that no clock can make >400ms due); change the
+            // sink and it would start passing for the wrong reason.
+            assertTrue(p.positionNanos() < 400_000_000L, "the clock must have wrapped, reads ${p.positionNanos()}ns")
         }
     }
 }

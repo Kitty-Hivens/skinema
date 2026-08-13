@@ -48,6 +48,14 @@ is versioned as the FFmpeg build it carries plus a repack revision
 -- most library releases leave it untouched. Take the natives version the
 release notes name and pair it with any library version that names it.
 
+Independent, but not unrelated: the bindings are valid for one set of FFmpeg
+soname majors, so a library release that moves the pin needs the natives that
+carry it. Gradle consumers do not have to track that by hand -- `skinema-core`
+publishes a constraint naming the natives version it was built against, so a
+stale pin is raised to it rather than failing at runtime. Override with
+`version { strictly("...") }` to hold a specific bundle (a local build, a
+repack under test); the runtime refuses a mismatched major either way.
+
 The natives classifier is `<tier>-<platform>`: pick one tier for the
 platforms you target. The tier sets what the bundle carries -- and its
 license:

@@ -218,7 +218,7 @@ class AudioDecoderTest {
 
     @Test
     fun `the default disposition wins the best-stream pick`() {
-        // Sound on the pinned n8.1: av_find_best_stream ranks
+        // Sound on the pinned n9.0: av_find_best_stream ranks
         // AV_DISPOSITION_DEFAULT as the leading criterion since FFmpeg 5.0;
         // without it the tiebreak could pick either sine.
         Fixtures.assumeDecodeEnvironment()

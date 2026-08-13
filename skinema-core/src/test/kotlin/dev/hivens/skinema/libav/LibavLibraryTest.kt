@@ -39,16 +39,13 @@ class LibavLibraryTest {
     @Test
     fun `the OS probe reads mac before windows`() {
         // "darwin" contains "win"; a JVM answering it must not resolve every
-        // library name to a .dll.
-        val probe = { name: String ->
-            val previous = System.getProperty("os.name")
-            System.setProperty("os.name", name)
-            try { Os.current() } finally { System.setProperty("os.name", previous) }
-        }
-        assertEquals(Os.MAC, probe("Mac OS X"))
-        assertEquals(Os.MAC, probe("Darwin"))
-        assertEquals(Os.WINDOWS, probe("Windows 11"))
-        assertEquals(Os.LINUX, probe("Linux"))
+        // library name to a .dll. Against the pure mapping, never a spoofed
+        // os.name -- LibavAbi.AVERROR_EAGAIN latches off the real one once
+        // per process, and getting that wrong spins the receive loop forever.
+        assertEquals(Os.MAC, Os.of("Mac OS X"))
+        assertEquals(Os.MAC, Os.of("Darwin"))
+        assertEquals(Os.WINDOWS, Os.of("Windows 11"))
+        assertEquals(Os.LINUX, Os.of("Linux"))
     }
 
     @Test

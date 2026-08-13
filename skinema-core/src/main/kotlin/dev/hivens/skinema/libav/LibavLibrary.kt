@@ -5,12 +5,21 @@ enum class Os {
     LINUX, MAC, WINDOWS;
 
     companion object {
-        fun current(): Os {
-            val name = System.getProperty("os.name", "").lowercase()
-            // Mac is tested first because "darwin" contains "win". OpenJDK
-            // reports "Mac OS X", so the old order held -- but a JVM that
-            // answers "Darwin" would be read as Windows and every library
-            // name would resolve to a .dll.
+        fun current(): Os = of(System.getProperty("os.name", ""))
+
+        /**
+         * The pure half, so the mapping is testable without writing to a
+         * global the whole JVM reads -- [LibavAbi.AVERROR_EAGAIN] latches
+         * off [current] once per process, and a test that spoofed os.name
+         * could latch it wrong for every later test in the run.
+         *
+         * Mac is tested first because "darwin" contains "win". OpenJDK
+         * reports "Mac OS X", so the old order held -- but a JVM answering
+         * "Darwin" would be read as Windows, resolving every library name
+         * to a .dll.
+         */
+        internal fun of(osName: String): Os {
+            val name = osName.lowercase()
             return when {
                 name.contains("mac") || name.contains("darwin") -> MAC
                 name.contains("win") -> WINDOWS

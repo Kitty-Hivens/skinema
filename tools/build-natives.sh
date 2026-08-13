@@ -496,7 +496,7 @@ GPL=()
 has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1"; }
 has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
 has webp && { DEMUX+=",image_webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
-has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub"; }
+has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub"; }
 # The broad legacy/extended decode set (the "formats" feature). All native
 # FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
 has formats && {
@@ -571,6 +571,11 @@ if [ -f config_components.h ]; then
     verify_enabled demuxer "$DEMUX"
     verify_enabled decoder "$DECODE"
     verify_enabled parser "$PARSE"
+    verify_enabled protocol "file,pipe"
+    # Filters are deliberately not verified: configure derives their component
+    # names by stripping the ff_<type>_ prefix, so ff_asrc_abuffer and
+    # ff_asink_abuffer both collapse to "abuffer" and the sink has no component
+    # name of its own. --enable-filter=abuffer is what brings both in.
     [ ${#ENC[@]} -gt 0 ] && verify_enabled encoder "$(IFS=,; echo "${ENC[*]}")"
     [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "mov,mp4,matroska,webm"
     if [ -n "$WHITELIST_GAPS" ]; then
