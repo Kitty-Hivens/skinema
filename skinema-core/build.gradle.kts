@@ -40,10 +40,11 @@ tasks.withType<JavaCompile>().configureEach {
 // changing under an unedited consumer build, and it admits prereleases.
 //
 // A consumer who deliberately wants another bundle (a locally built one, a
-// repack under test) overrides with
-// `resolutionStrategy { force("dev.hivens:skinema-natives:...") }`, which wins
-// over a strict constraint. Declaring their own `strictly` does not -- two
-// disagreeing strict versions are a conflict, by design.
+// repack under test) declares their own `version { strictly("...") }`, which
+// wins: a strict version in the consuming build outranks one arriving through
+// a published module's constraint. `resolutionStrategy.force` works too. The
+// runtime still refuses a mismatched soname major either way, so overriding
+// buys a different bundle, not a different set of majors.
 val nativesVersion: String = providers.gradleProperty("nativesVersion").get()
 
 dependencies {

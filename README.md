@@ -33,7 +33,7 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
+implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
@@ -65,7 +65,7 @@ license:
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
 | `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
-| `decode` | core + subtitles + the broad legacy/extended format set           | LGPL    |
+| `decode` | core + subtitles + the broad legacy/extended format set + GPU H.264/HEVC encode, AAC/FLAC encode and the mp4/mkv/webm muxers | LGPL |
 | `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
 `core` is the lean tier -- the modern codecs only, no subtitles, no GPU
