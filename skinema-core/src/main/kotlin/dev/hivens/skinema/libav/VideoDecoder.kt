@@ -45,7 +45,15 @@ class VideoDecoder private constructor(
     private val avioSource: AvioSource?,
 ) : FrameSource {
 
-    override fun durationNanos(): Long? = duration
+    // The container's duration when it declares one, otherwise what a full
+    // decode revealed. Animated WebP declares none -- FFmpeg reports N/A --
+    // so the only honest number comes from having played it once, which a
+    // looping player pays for anyway.
+    override fun durationNanos(): Long? = duration ?: observedDuration
+
+    @Volatile
+    private var observedDuration: Long? = null
+    private var lastFrameEndNanos = 0L
     override fun tags(): Map<String, String> = tags
     override fun chapters(): List<Chapter> = chapters
     override fun coverArt(): ByteArray? = coverArt
@@ -118,15 +126,35 @@ class VideoDecoder private constructor(
     override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
-                0 -> return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
+                0 -> {
+                    noteFrameEnd()
+                    return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
+                }
                 LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
-                LibavAbi.AVERROR_EOF -> return null
+                LibavAbi.AVERROR_EOF -> {
+                    if (observedDuration == null && lastFrameEndNanos > 0) {
+                        observedDuration = lastFrameEndNanos
+                    }
+                    return null
+                }
                 else -> Libav.checkAv(ret, "avcodec_receive_frame")
             }
         }
     }
 
     override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
+
+    /**
+     * Where the frame just received stops being shown. Read off the frame
+     * rather than inferred from the gap to the next one, because the last
+     * frame of a stream has no next one -- and on a format whose frames carry
+     * unequal durations that gap is not a constant to extrapolate from.
+     */
+    private fun noteFrameEnd() {
+        val d = frame.get(JAVA_LONG, LibavAbi.Frame.DURATION)
+        val end = currentPtsNanos(frame) + if (d > 0) ptsToNanos(d, timeBaseNum, timeBaseDen) else 0L
+        if (end > lastFrameEndNanos) lastFrameEndNanos = end
+    }
 
     /**
      * The decoded frame's pts and geometry without touching its pixels.
@@ -157,6 +185,34 @@ class VideoDecoder private constructor(
         Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
+        rewindPending = ptsNanos == 0L
+    }
+
+    /**
+     * Whether a seek to the start may still need the byte-level escape below.
+     * Cleared the moment a packet arrives, so the escape is tried at most once
+     * per seek and never on a demuxer that repositioned properly.
+     */
+    private var rewindPending = false
+
+    /**
+     * Restarts the demuxer by moving the byte stream back to the beginning.
+     *
+     * Not every demuxer implements seeking: FFmpeg 9's animated-WebP demuxer
+     * accepts av_seek_frame, reports success and leaves the stream drained,
+     * which silently turns looping -- seekTo(0) is the loop primitive -- into
+     * a single play. Rewinding the bytes and flushing the demuxer's own state
+     * restarts it. Reached only after a seek to zero found nothing to read, so
+     * a demuxer that seeks properly never takes this path.
+     */
+    private fun rewindToStart(): Boolean {
+        val pb = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB)
+        if (pb == MemorySegment.NULL) return false
+        if (Libav.avioSeek(pb, 0L, 0) < 0) return false
+        Libav.avformatFlush(fmtCtx)
+        Libav.avcodecFlushBuffers(codecCtx)
+        draining = false
+        return true
     }
 
     /**
@@ -172,6 +228,10 @@ class VideoDecoder private constructor(
         }
         while (true) {
             val ret = Libav.avReadFrame(fmtCtx, packet)
+            if (ret < 0 && rewindPending) {
+                rewindPending = false
+                if (rewindToStart()) continue
+            }
             if (ret < 0) {
                 // The demuxer stopped: a real EOF, or our AvioSource caught a
                 // MediaSource exception and signalled EOF to get off the native
@@ -181,6 +241,7 @@ class VideoDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(flush)")
                 return
             }
+            rewindPending = false
             if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
                 Libav.avPacketUnref(packet)
                 continue

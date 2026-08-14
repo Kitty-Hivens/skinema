@@ -230,6 +230,8 @@ object Libav {
     private val hAvFindBestStream = fn(LibavLibrary.AVFORMAT, "av_find_best_stream", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT))
     private val hAvReadFrame = fn(LibavLibrary.AVFORMAT, "av_read_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvSeekFrame = fn(LibavLibrary.AVFORMAT, "av_seek_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT))
+    private val hAvioSeek = fn(LibavLibrary.AVFORMAT, "avio_seek", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT))
+    private val hAvformatFlush = fn(LibavLibrary.AVFORMAT, "avformat_flush", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     private val hAvformatCloseInput = fn(LibavLibrary.AVFORMAT, "avformat_close_input", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvformatAllocOutputContext2 = fn(LibavLibrary.AVFORMAT, "avformat_alloc_output_context2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
     private val hAvformatNewStream = fn(LibavLibrary.AVFORMAT, "avformat_new_stream", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS))
@@ -459,6 +461,12 @@ object Libav {
     fun avSeekFrame(ctx: MemorySegment, streamIndex: Int, timestamp: Long, flags: Int): Int =
         hAvSeekFrame.invoke(ctx, streamIndex, timestamp, flags) as Int
     fun avformatCloseInput(ctxPtrPtr: MemorySegment) { hAvformatCloseInput.invoke(ctxPtrPtr) }
+
+    /** Rewinds the byte stream itself; the escape when a demuxer cannot seek. */
+    fun avioSeek(pb: MemorySegment, offset: Long, whence: Int): Long = hAvioSeek.invoke(pb, offset, whence) as Long
+
+    /** Drops the demuxer's buffered state after the byte stream moved under it. */
+    fun avformatFlush(ctx: MemorySegment): Int = hAvformatFlush.invoke(ctx) as Int
 
     // -- encode + mux (M12) ------------------------------------------------------
 
