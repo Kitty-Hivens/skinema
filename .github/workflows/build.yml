@@ -181,3 +181,15 @@ jobs:
             export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -iEv 'mingw|msys' | paste -sd ':' -)"
           fi
           ./gradlew build
+
+      # The XML the counter reads, kept for the runs where the count itself
+      # raises a question -- which suites skipped, and why. Uploaded even on
+      # failure, since that is when it is worth having.
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.platform }}
+          path: "**/build/test-results/test/*.xml"
+          if-no-files-found: warn
+          retention-days: 14

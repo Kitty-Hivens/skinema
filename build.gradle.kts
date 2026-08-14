@@ -64,6 +64,46 @@ subprojects {
                 .withPropertyName("skinemaLibavBundle")
                 .withPathSensitivity(PathSensitivity.NAME_ONLY)
         }
+
+        // How many tests ran, printed on every run, and a ceiling on how many
+        // may skip. Without this a suite that skipped itself into silence and
+        // one that passed look identical: a missing fixture CLI, an unreadable
+        // bundle or one unparsed line of `ffmpeg -encoders` takes whole suites
+        // out and the build stays green. The counts are not observable from a
+        // CI log otherwise -- only failures are printed, and Gradle reports
+        // totals only when something fails.
+        //
+        // The ceiling is a backstop against collapse, not a per-environment
+        // expectation: the hardware suites skip wherever no GPU is wired up,
+        // and a platform with a legitimate gap of its own raises it explicitly
+        // rather than everyone loosening to the slackest case.
+        val maxSkipped = providers.gradleProperty("maxSkippedTests")
+            .orElse(providers.environmentVariable("SKINEMA_MAX_SKIPPED"))
+            .orElse("8")
+        val xmlDir = reports.junitXml.outputLocation
+        val label = path
+        doLast {
+            var total = 0
+            var skipped = 0
+            val head = Regex("<testsuite\\b[^>]*")
+            fun count(text: String, name: String): Int =
+                Regex("\\b" + name + "=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
+            for (f in xmlDir.get().asFile.listFiles().orEmpty()) {
+                if (!f.name.endsWith(".xml")) continue
+                val suite = head.find(f.readText()) ?: continue
+                total += count(suite.value, "tests")
+                skipped += count(suite.value, "skipped")
+            }
+            logger.lifecycle(label + ": " + (total - skipped) + " of " + total + " tests ran, " + skipped + " skipped")
+            val ceiling = maxSkipped.get().toInt()
+            if (skipped > ceiling) {
+                throw GradleException(
+                    label + " skipped " + skipped + " tests, more than the " + ceiling + " allowed -- " +
+                        "something the suite needs is missing rather than the suite passing. Raise it " +
+                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.",
+                )
+            }
+        }
     }
 }
 
