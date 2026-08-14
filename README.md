@@ -115,6 +115,16 @@ scarce, so it cross-compiles on an arm mac and ships without an on-metal
 run, because an arm JVM cannot load x86_64 dylibs. That is what
 community-tier support means here.
 
+**How old a system the bundles still load on.** glibc 2.39 for `linux-arm64`
+`full`, 2.38 for the other glibc bundles, 2.35 for `core-linux-x64` -- so
+Ubuntu 24.04, Debian 13 and Fedora 39 upward, and not RHEL 9 or Ubuntu 22.04.
+macOS bundles are built for 14.0, so Sonoma upward. The `linux-musl-*`
+bundles have no such floor: musl does not version its symbols. The `decode`
+and `full` Linux bundles link `libva`, `libva-drm` and `libfontconfig` from
+the host and load none of their libraries without them, which is worth
+knowing before putting them in a headless container -- `core` needs only
+libc and libm and has no such requirement.
+
 ## What it plays
 
 |                 |                                                                                               |
