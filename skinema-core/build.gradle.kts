@@ -29,19 +29,27 @@ tasks.withType<JavaCompile>().configureEach {
 // coupling in the published metadata, so bumping the library raises the natives
 // with it -- and it holds for the classifier form the natives are consumed as.
 //
-// The EXACT version, not a range. A range would resolve to whatever revision is
-// newest at build time, which is a version no release note paired with this
-// library and which changes under an unedited consumer build; it would also
-// admit prereleases. This names the one bundle the library was tested against,
-// which is exactly what the release notes promise. A consumer who wants another
-// (a locally built bundle, a repack under test) overrides with
-// `version { strictly("...") }`, which wins over a constraint.
+// `strictly`, not `require`. Both pin the version a consumer gets by default,
+// but `require` is a floor: it blocks only the downgrade half, so a consumer
+// naming a bundle from a LATER FFmpeg line silently keeps it, and that is the
+// direction the breakage actually comes from -- the library asks for the
+// soname majors of its own line and finds none of them. `strictly` turns that
+// into a resolution conflict at build time instead of a load failure at
+// runtime. A range would be worse still: it resolves to whatever revision is
+// newest at build time, a version no release note paired with this library,
+// changing under an unedited consumer build, and it admits prereleases.
+//
+// A consumer who deliberately wants another bundle (a locally built one, a
+// repack under test) overrides with
+// `resolutionStrategy { force("dev.hivens:skinema-natives:...") }`, which wins
+// over a strict constraint. Declaring their own `strictly` does not -- two
+// disagreeing strict versions are a conflict, by design.
 val nativesVersion: String = providers.gradleProperty("nativesVersion").get()
 
 dependencies {
     constraints {
         runtimeOnly("dev.hivens:skinema-natives") {
-            version { require(nativesVersion) }
+            version { strictly(nativesVersion) }
             because(
                 "this skinema version binds the soname majors that skinema-natives $nativesVersion carries; " +
                     "a bundle from another FFmpeg line cannot load",
