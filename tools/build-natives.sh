@@ -565,13 +565,17 @@ case "$HOST_OS" in
 esac
 fi
 
-# x265 is C++; on Windows x64 (MinGW GCC) fold the C++/GCC runtime into the
-# ffmpeg libraries so avcodec needs no libstdc++-6.dll / libgcc_s alongside
-# (the libass DLLs do the same). The aarch64 clang toolchain ships libc++ /
-# libunwind as DLLs instead (see the runtime-DLL copy below). Empty on
-# Linux/macOS -- the C++ runtime is a system library there.
+# On Windows x64 (MinGW GCC) fold the C++/GCC runtime into the ffmpeg
+# libraries, so nothing needs libstdc++-6.dll or libgcc_s alongside (the
+# libass DLLs do the same). Unconditional, not gated on the C++ encoder that
+# first motivated it: swscale alone pulls libgcc_s_seh-1 on this line, so the
+# lean tiers were shipping an import no bundle carried. Caught by the
+# import-closed check rather than by a user, which is what it is for. The
+# aarch64 clang toolchain ships libc++/libunwind as DLLs instead (see the
+# runtime-DLL copy below). Empty on Linux/macOS -- the C++ runtime is a
+# system library there.
 FFLD=()
-if has enc-hevc && [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = x64 ]; then
+if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = x64 ]; then
     FFLD=(--extra-ldflags=-static-libstdc++ --extra-ldflags=-static-libgcc)
 fi
 
