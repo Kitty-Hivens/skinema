@@ -12,6 +12,7 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.nio.file.Files
 import java.nio.file.Path
 
 /** The byte stream did not decode, or a libav call refused it. */
@@ -50,6 +51,26 @@ object Libav {
     /** Resolves [name] against the natives directory override, shared with the webp bindings. */
     internal fun resolveLibraryPath(name: String): String =
         if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
+
+    /**
+     * Loads an OPTIONAL library -- one a tier may legitimately not carry, like
+     * libass in `core`. Taken from the natives directory when that directory
+     * holds a copy, and from the system loader otherwise.
+     *
+     * The distinction is which of two states we are in, and they used to be
+     * conflated. "The directory has no such file" is an absent capability, and
+     * the host's copy is the right answer. "The file is there and will not
+     * open" is a broken bundle -- substituting the host's copy there reports
+     * the capability as present, so CI passes on a runner that happens to have
+     * the library installed while a user without it gets nothing. The
+     * acceptance gate installs the ffmpeg CLI for fixtures, which pulls libass
+     * in with it, so that runner always had one.
+     */
+    internal fun optionalLookup(name: String): SymbolLookup {
+        val resolved = resolveLibraryPath(name)
+        val fromDir = resolved != name && Files.exists(Path.of(resolved))
+        return SymbolLookup.libraryLookup(if (fromDir) resolved else name, Arena.global())
+    }
 
     // Windows: the pinned av* DLLs and libass import MinGW runtime
     // libraries (zlib, bzip2, iconv, lzma, winpthread) that ride in the

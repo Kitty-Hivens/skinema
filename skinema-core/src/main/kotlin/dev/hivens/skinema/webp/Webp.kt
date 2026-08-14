@@ -39,16 +39,8 @@ object Webp {
         // explicitly lets the bundle's copy win over any system one. Unlike
         // the pinned libav set, this capability is optional -- when the
         // bundle does not carry it yet, the system copy is welcome.
-        private fun lookup(base: String, major: Int): SymbolLookup {
-            val name = fileName(base, major)
-            val overridden = Libav.resolveLibraryPath(name)
-            return runCatching { SymbolLookup.libraryLookup(overridden, Arena.global()) }
-                .recoverCatching { failure ->
-                    if (overridden == name) throw failure
-                    SymbolLookup.libraryLookup(name, Arena.global())
-                }
-                .getOrThrow()
-        }
+        private fun lookup(base: String, major: Int): SymbolLookup =
+            Libav.optionalLookup(fileName(base, major))
 
         init {
             // libwebp links libsharpyuv; preload it so a bundled copy
