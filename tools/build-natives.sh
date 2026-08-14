@@ -103,7 +103,7 @@ mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
 
-mkdir -p "$WORK"
+mkdir -p "$WORK" "$PREFIX/licenses"
 cd "$WORK"
 
 MESON_CROSS=()
@@ -161,7 +161,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "zlib-$ZLIB_VERSION/LICENSE" "$WORK/zlib-LICENSE"
+        cp "zlib-$ZLIB_VERSION/LICENSE" "$PREFIX/licenses/zlib-LICENSE"
     fi
 
     if [ ! -f "$DEPS/lib/libbz2.a" ]; then
@@ -176,7 +176,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             cp libbz2.a "$DEPS/lib/"
             cp bzlib.h "$DEPS/include/"
         )
-        cp "bzip2-$BZIP2_VERSION/LICENSE" "$WORK/bzip2-LICENSE"
+        cp "bzip2-$BZIP2_VERSION/LICENSE" "$PREFIX/licenses/bzip2-LICENSE"
     fi
 
     # liblzma joins zlib and bzip2 for the same reason: matroska reads
@@ -189,14 +189,18 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xzf xz.tar.gz
         (
             cd "xz-$XZ_VERSION"
+            # --disable-nls: on native Windows xz's translation support wants
+            # UCRT and a gettext newer than MSYS2 carries, and a build of
+            # liblzma has no use for localised messages anywhere.
             ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
+                --disable-nls \
                 --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo \
                 --disable-lzma-links --disable-scripts --disable-doc \
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
         )
-        cp "xz-$XZ_VERSION/COPYING" "$WORK/xz-COPYING"
+        cp "xz-$XZ_VERSION/COPYING" "$PREFIX/licenses/xz-COPYING"
     fi
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
@@ -207,7 +211,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
             -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
         ninja -C "dav1d-$DAV1D_VERSION/build" install
-        cp "dav1d-$DAV1D_VERSION/COPYING" "$WORK/dav1d-COPYING"
+        cp "dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     fi
 
     # libwebp ships SHARED into the bundle prefix (the webp bindings load it at
@@ -243,7 +247,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 make install
             )
         fi
-        cp "libwebp-$WEBP_VERSION/COPYING" "$WORK/libwebp-COPYING"
+        cp "libwebp-$WEBP_VERSION/COPYING" "$PREFIX/licenses/libwebp-COPYING"
     fi
 
     if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
@@ -275,7 +279,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "libvpx-${VPX_VERSION#v}/LICENSE" "$WORK/libvpx-LICENSE"
+        cp "libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     fi
 
     # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
@@ -300,7 +304,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "x264-$X264_VERSION/COPYING" "$WORK/x264-COPYING"
+        cp "x264-$X264_VERSION/COPYING" "$PREFIX/licenses/x264-COPYING"
     fi
 
     # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit (10/12-bit HDR
@@ -335,7 +339,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             -DENABLE_LIBNUMA=OFF \
             ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
         ninja -C "x265_$X265_VERSION/build" install
-        cp "x265_$X265_VERSION/COPYING" "$WORK/x265-COPYING"
+        cp "x265_$X265_VERSION/COPYING" "$PREFIX/licenses/x265-COPYING"
     fi
 fi
 
@@ -382,7 +386,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         )
-        cp "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "$WORK/freetype-FTL.TXT"
+        cp "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
     fi
 
     if ! ls "$PREFIX"/lib/libfribidi.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libfribidi-*.dll >/dev/null 2>&1; then
@@ -399,7 +403,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         )
-        cp "fribidi-$FRIBIDI_VERSION/COPYING" "$WORK/fribidi-COPYING"
+        cp "fribidi-$FRIBIDI_VERSION/COPYING" "$PREFIX/licenses/fribidi-COPYING"
     fi
 
     if [ ! -f "$HB_PREFIX/lib/libharfbuzz.a" ] && ! ls "$HB_PREFIX"/bin/libharfbuzz-*.dll >/dev/null 2>&1; then
@@ -441,7 +445,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
             ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
         fi
-        cp "harfbuzz-$HARFBUZZ_VERSION/COPYING" "$WORK/harfbuzz-COPYING"
+        cp "harfbuzz-$HARFBUZZ_VERSION/COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
     fi
 
     if ! ls "$PREFIX"/lib/libass.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libass-*.dll >/dev/null 2>&1; then
@@ -491,7 +495,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         )
-        cp "libass-$LIBASS_VERSION/COPYING" "$WORK/libass-COPYING"
+        cp "libass-$LIBASS_VERSION/COPYING" "$PREFIX/licenses/libass-COPYING"
         # The static freetype+harfbuzz fold leaves several MB of dead
         # symbol weight; the bundles ship stripped.
         case "$HOST_OS" in
@@ -636,13 +640,20 @@ fi
 # on any musl desktop without a graphics stack. Everything the bundle uses is
 # now named here, and tools/bundle-surface.txt asserts the result.
 #
-# zlib/bzip2/lzma/iconv are the four configure would otherwise guess at. All
-# four are kept -- png and apng decode needs zlib, matroska uses bzip2 and
-# lzma for compressed headers, and iconv is the subtitle charset path -- and
-# all four are static, so they cost the consumer nothing.
+# zlib/bzip2/lzma are the three configure would otherwise guess at and that
+# skinema uses: png and apng decode needs zlib, matroska reads bzip2- and
+# lzma-compressed headers. All three are static, so they cost a consumer
+# nothing.
+#
+# iconv is deliberately NOT among them. It serves ffmpeg's sub_charenc, which
+# skinema never sets, and forcing it on links libiconv_* symbols that glibc
+# provides inside libc but macOS and MinGW need -liconv for -- so enabling it
+# without that flag broke every non-glibc platform. Under autodetect it was on
+# where it happened to be found and off elsewhere; off everywhere is at least
+# the same bundle on every platform.
 AUTODETECT=(--disable-autodetect --enable-zlib --enable-bzlib)
 if [ "${STATIC_DEPS:-}" = "1" ]; then
-    AUTODETECT+=(--enable-lzma --enable-iconv)
+    AUTODETECT+=(--enable-lzma)
 fi
 
 ./configure \
@@ -719,25 +730,11 @@ make install
 mkdir -p "$PREFIX/licenses"
 cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
 [ ${#GPL[@]} -gt 0 ] && cp COPYING.GPLv2 "$PREFIX/licenses/"
-if [ "${STATIC_DEPS:-}" = "1" ]; then
-    # Every text is read from $WORK, stashed there when its dependency was
-    # built: the source trees are only unpacked when the library is missing,
-    # so a warm $WORK has the archives and none of the trees to copy from.
-    cp "$WORK/zlib-LICENSE" "$PREFIX/licenses/zlib-LICENSE"
-    cp "$WORK/bzip2-LICENSE" "$PREFIX/licenses/bzip2-LICENSE"
-    cp "$WORK/xz-COPYING" "$PREFIX/licenses/xz-COPYING"
-    has av1      && cp "$WORK/dav1d-COPYING" "$PREFIX/licenses/dav1d-COPYING"
-    has vpx      && cp "$WORK/libvpx-LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
-    has webp     && cp "$WORK/libwebp-COPYING" "$PREFIX/licenses/libwebp-COPYING"
-    has enc-h264 && cp "$WORK/x264-COPYING" "$PREFIX/licenses/x264-COPYING"
-    has enc-hevc && cp "$WORK/x265-COPYING" "$PREFIX/licenses/x265-COPYING"
-    if has subs; then
-        cp "$WORK/libass-COPYING" "$PREFIX/licenses/libass-COPYING"
-        cp "$WORK/freetype-FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
-        cp "$WORK/harfbuzz-COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
-        cp "$WORK/fribidi-COPYING" "$PREFIX/licenses/fribidi-COPYING"
-    fi
-fi
+# Each dependency writes its own text into $PREFIX/licenses as it is built,
+# next to the guard that decides whether it gets built at all. Stashing them
+# in $WORK instead put the two on different lifetimes: a prefix that survived
+# a failed run skipped the rebuild, and the text it needed was gone with the
+# work tree.
 
 # The Windows DLLs link toolchain runtime libraries -- zlib1/libbz2-1 (the
 # ffmpeg demuxers), libiconv-2 (avcodec + libass), liblzma-5 (avcodec's
