@@ -15,6 +15,14 @@ object FrameSources {
     fun open(path: Path, hardware: HwAccel = HwAccel.OFF): FrameSource {
         // Animated WebP rides libwebp, which has no hardware path; the
         // hardware policy applies to the libav decoder only.
+        //
+        // Not FFmpeg 9's own webp_anim decoder, despite it being correct on
+        // frames, timestamps, variable frame durations and alpha (measured).
+        // Its demuxer does not implement seeking: av_seek_frame reports
+        // success and leaves the stream drained, and rewinding the byte
+        // stream plus avformat_flush does not restart it either. seekTo(0) is
+        // how looping works, and a looping animation is what this path is
+        // mostly for.
         if (Webp.available && isWebp(path)) return WebpAnimSource.open(path)
         return VideoDecoder.open(path, hardware)
     }

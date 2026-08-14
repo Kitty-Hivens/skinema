@@ -240,6 +240,11 @@ object LibavAbi {
         const val NB_SAMPLES = 112L
         const val FORMAT = 116L
         const val PTS = 136L
+
+        // How long this frame is shown. Animated WebP declares no container
+        // duration, so the last frame's pts plus this is the only way to
+        // learn one without decoding the file twice.
+        const val DURATION = 408L
         const val SAMPLE_RATE = 180L
         const val COLOR_RANGE = 280L
 
