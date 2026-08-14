@@ -70,6 +70,29 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # file next to this script resolves against the wrong directory.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TIER="${TIER:-}"
+# What each tier contains, kept here rather than only in the workflow that
+# builds it. TIER also selects the row of bundle-surface.txt the result is
+# asserted against, so a TIER whose FEATURES came from somewhere else checks
+# the bundle against a declaration describing a different bundle -- silently,
+# and in the direction that passes.
+tier_features() {
+    case "$1" in
+        core)   echo "av1 vpx webp" ;;
+        decode) echo "av1 vpx webp hwaccel subs formats enc-vaapi" ;;
+        full)   echo "av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc" ;;
+        *)      echo "build-natives: unknown TIER '$1' (core|decode|full)" >&2; exit 1 ;;
+    esac
+}
+if [ -n "$TIER" ]; then
+    TIER_FEATURES="$(tier_features "$TIER")"
+    if [ -n "${FEATURES+set}" ] && [ "${FEATURES//,/ }" != "$TIER_FEATURES" ]; then
+        echo "build-natives: FEATURES does not match TIER=$TIER" >&2
+        echo "  given: ${FEATURES//,/ }" >&2
+        echo "  $TIER: $TIER_FEATURES" >&2
+        exit 1
+    fi
+    FEATURES="$TIER_FEATURES"
+fi
 FEATURES="${FEATURES-av1 vpx webp hwaccel subs formats}"
 FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -103,8 +126,28 @@ mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
 
+# The licence set is per tier, so it is rebuilt from empty every run. Kept,
+# it accumulates: a core build into a prefix that last held full would carry
+# COPYING.GPLv2 and the x264/x265 texts into an LGPL bundle, claiming terms
+# that do not apply to it.
+rm -rf "$PREFIX/licenses"
 mkdir -p "$WORK" "$PREFIX/licenses"
+# Absolute from here on: the script cds into subdirectories of it, so a
+# relative WORK stops naming the same place partway through the build.
+WORK="$(cd "$WORK" && pwd)"
 cd "$WORK"
+
+# Copy a licence text into the bundle's set. Called OUTSIDE each dependency's
+# build guard on purpose: the guard keys off $WORK (warm across runs) while
+# the texts land in $PREFIX (fresh per output directory), and gating the copy
+# on a rebuild drops every text the moment those two lifetimes diverge. A warm
+# $WORK always still holds the unpacked source, so the file is there to copy;
+# if it is not, that is a broken tree and worth saying so rather than shipping
+# a binary with no licence beside it.
+license() {
+    [ -f "$1" ] || { echo "build-natives: licence text missing: $1" >&2; exit 1; }
+    cp "$1" "$PREFIX/licenses/$2"
+}
 
 MESON_CROSS=()
 FFMPEG_CROSS=()
@@ -143,9 +186,17 @@ fetch() { # dest-file, url...
     for url in "$@"; do
         if curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors \
                 --connect-timeout 20 -o "$dest" "$url"; then
-            return 0
+            # A mirror that answers 200 with an error page or a captive-portal
+            # redirect passes curl and then sits in the cache forever, because
+            # the -f check above never downloads twice. Reject anything that is
+            # not a readable archive so the next mirror gets its turn.
+            if tar -tf "$dest" >/dev/null 2>&1; then
+                return 0
+            fi
+            echo "build-natives: $url answered with something that is not an archive" >&2
+        else
+            echo "build-natives: mirror failed, trying the next: $url" >&2
         fi
-        echo "build-natives: mirror failed, trying the next: $url" >&2
         rm -f "$dest"
     done
     echo "build-natives: every mirror failed for $dest" >&2
@@ -170,12 +221,15 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         tar -xzf zlib.tar.gz
         (
             cd "zlib-$ZLIB_VERSION"
-            CFLAGS="-fPIC ${CFLAGS:-}" ./configure --prefix="$DEPS" --static
+            # -O3 explicitly: zlib's configure defaults it via ${CFLAGS--O3},
+            # which any externally set CFLAGS suppresses -- so passing -fPIC
+            # alone compiles inflate at -O0 into every shipped avcodec.
+            CFLAGS="-O3 -fPIC ${CFLAGS:-}" ./configure --prefix="$DEPS" --static
             make -j"$JOBS"
             make install
         )
-        cp "zlib-$ZLIB_VERSION/LICENSE" "$PREFIX/licenses/zlib-LICENSE"
     fi
+    license "zlib-$ZLIB_VERSION/LICENSE" "zlib-LICENSE"
 
     if [ ! -f "$DEPS/lib/libbz2.a" ]; then
         fetch bzip2.tar.gz "https://sourceware.org/pub/bzip2/bzip2-$BZIP2_VERSION.tar.gz"
@@ -189,8 +243,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             cp libbz2.a "$DEPS/lib/"
             cp bzlib.h "$DEPS/include/"
         )
-        cp "bzip2-$BZIP2_VERSION/LICENSE" "$PREFIX/licenses/bzip2-LICENSE"
     fi
+    license "bzip2-$BZIP2_VERSION/LICENSE" "bzip2-LICENSE"
 
     # liblzma joins zlib and bzip2 for the same reason: matroska reads
     # LZMA-compressed headers through it, and left to autodetect it becomes a
@@ -213,8 +267,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "xz-$XZ_VERSION/COPYING" "$PREFIX/licenses/xz-COPYING"
     fi
+    license "xz-$XZ_VERSION/COPYING" "xz-COPYING"
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
         fetch dav1d.tar.gz "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz"
@@ -224,8 +278,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
             -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
         ninja -C "dav1d-$DAV1D_VERSION/build" install
-        cp "dav1d-$DAV1D_VERSION/COPYING" "$PREFIX/licenses/dav1d-COPYING"
     fi
+    if has av1; then license "dav1d-$DAV1D_VERSION/COPYING" "dav1d-COPYING"; fi
 
     # libwebp ships SHARED into the bundle prefix (the webp bindings load it at
     # runtime; it is not linked into ffmpeg). Autotools elsewhere -- libtool
@@ -260,8 +314,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 make install
             )
         fi
-        cp "libwebp-$WEBP_VERSION/COPYING" "$PREFIX/licenses/libwebp-COPYING"
     fi
+    if has webp; then license "libwebp-$WEBP_VERSION/COPYING" "libwebp-COPYING"; fi
 
     if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
         fetch libvpx.tar.gz "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz"
@@ -292,8 +346,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "libvpx-${VPX_VERSION#v}/LICENSE" "$PREFIX/licenses/libvpx-LICENSE"
     fi
+    if has vpx; then license "libvpx-${VPX_VERSION#v}/LICENSE" "libvpx-LICENSE"; fi
 
     # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
     # into FFmpeg like dav1d/libvpx so the shipped library carries no extra
@@ -317,8 +371,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             make -j"$JOBS"
             make install
         )
-        cp "x264-$X264_VERSION/COPYING" "$PREFIX/licenses/x264-COPYING"
     fi
+    if has enc-h264; then license "x264-$X264_VERSION/COPYING" "x264-COPYING"; fi
 
     # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit (10/12-bit HDR
     # multilib skipped -- 8-bit is the common case), PIC, folded in. x265 is
@@ -352,8 +406,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             -DENABLE_LIBNUMA=OFF \
             ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
         ninja -C "x265_$X265_VERSION/build" install
-        cp "x265_$X265_VERSION/COPYING" "$PREFIX/licenses/x265-COPYING"
     fi
+    if has enc-hevc; then license "x265_$X265_VERSION/COPYING" "x265-COPYING"; fi
 fi
 
 if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
@@ -401,8 +455,8 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         )
-        cp "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "$PREFIX/licenses/freetype-FTL.TXT"
     fi
+    license "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "freetype-FTL.TXT"
 
     if ! ls "$PREFIX"/lib/libfribidi.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libfribidi-*.dll >/dev/null 2>&1; then
         fetch fribidi.tar.xz "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz"
@@ -418,8 +472,8 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         )
-        cp "fribidi-$FRIBIDI_VERSION/COPYING" "$PREFIX/licenses/fribidi-COPYING"
     fi
+    license "fribidi-$FRIBIDI_VERSION/COPYING" "fribidi-COPYING"
 
     if [ ! -f "$HB_PREFIX/lib/libharfbuzz.a" ] && ! ls "$HB_PREFIX"/bin/libharfbuzz-*.dll >/dev/null 2>&1; then
         fetch harfbuzz.tar.xz "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz"
@@ -460,8 +514,8 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
             ninja -C "harfbuzz-$HARFBUZZ_VERSION/build" install
         fi
-        cp "harfbuzz-$HARFBUZZ_VERSION/COPYING" "$PREFIX/licenses/harfbuzz-COPYING"
     fi
+    license "harfbuzz-$HARFBUZZ_VERSION/COPYING" "harfbuzz-COPYING"
 
     if ! ls "$PREFIX"/lib/libass.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libass-*.dll >/dev/null 2>&1; then
         fetch libass.tar.xz "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.xz"
@@ -667,9 +721,11 @@ fi
 # iconv is deliberately NOT among them. It serves ffmpeg's sub_charenc, which
 # skinema never sets, and forcing it on links libiconv_* symbols that glibc
 # provides inside libc but macOS and MinGW need -liconv for -- so enabling it
-# without that flag broke every non-glibc platform. Under autodetect it was on
-# where it happened to be found and off elsewhere; off everywhere is at least
-# the same bundle on every platform.
+# without that flag broke every non-glibc platform. --disable-autodetect still
+# lets FFmpeg use an iconv that lives in libc itself, so it ends up on for
+# glibc and musl and off for macOS and Windows. That asymmetry costs nothing
+# here: skinema never sets sub_charenc, which is the only thing that would
+# reach it.
 AUTODETECT=(--disable-autodetect --enable-zlib --enable-bzlib)
 if [ "${STATIC_DEPS:-}" = "1" ]; then
     AUTODETECT+=(--enable-lzma)
@@ -724,6 +780,14 @@ if [ -f config_components.h ]; then
     # naming them enabled nothing and was dropped in silence. Measured off
     # config_components.h, then confirmed against the built library, which
     # still resolves all three by name.
+    verify_enabled filter atempo
+    # A hwaccel that quietly failed to configure costs no error and no missing
+    # symbol -- decoding just falls back to software, on every machine, for
+    # good. That is the failure this whole check exists to catch, and it was
+    # the one kind not being checked.
+    if [ ${#HWACCEL[@]} -gt 0 ]; then
+        verify_enabled hwaccel "$(printf '%s\n' "${HWACCEL[@]}" | sed -n 's/^--enable-hwaccel=//p')"
+    fi
     [ ${#ENC[@]} -gt 0 ] && verify_enabled encoder "$(IFS=,; echo "${ENC[*]}")"
     [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "mov,mp4,matroska,webm"
     if [ -n "$WHITELIST_GAPS" ]; then
@@ -773,14 +837,31 @@ if [ "$HOST_OS" = windows ]; then
     if [ "$HOST_ARCH" = arm64 ]; then
         runtime_dlls="$runtime_dlls libc++ libunwind"
         runtime_lics="$runtime_lics libc++ libunwind"
+    else
+        # x64 links libstdc++ and libgcc statically, so no DLL names them --
+        # but their code is inside the shipped ones (x265 pulls in the C++
+        # runtime), and the GCC Runtime Library Exception is what allows that
+        # without the whole bundle inheriting GPLv3. arm64 needs no equivalent:
+        # it ships those runtimes as DLLs, licensed just above.
+        runtime_lics="$runtime_lics gcc-libs"
     fi
     for dll in $runtime_dlls; do
         cp "$MINGW/bin/$dll.dll" "$PREFIX/bin/" \
             || { echo "missing toolchain runtime $dll.dll under $MINGW/bin" >&2; exit 1; }
     done
+    # Fail on a missing text rather than skipping it. Shipping a binary whose
+    # licence is silently absent is a redistribution problem, and a skip is how
+    # the GCC runtime went unlicensed on x64 through several releases.
     for lic in $runtime_lics; do
-        f="$(ls "$MINGW/share/licenses/$lic"/* 2>/dev/null | head -1)"
-        [ -n "$f" ] && cp "$f" "$PREFIX/licenses/mingw-$lic-LICENSE.txt"
+        found=0
+        for dir in "$MINGW/share/licenses/$lic" "/usr/share/licenses/$lic"; do
+            for f in "$dir"/*; do
+                [ -f "$f" ] || continue
+                cp "$f" "$PREFIX/licenses/mingw-$lic-$(basename "$f")"
+                found=1
+            done
+        done
+        [ "$found" = 1 ] || { echo "no licence text for toolchain runtime $lic under $MINGW/share/licenses" >&2; exit 1; }
     done
 fi
 
@@ -823,8 +904,73 @@ shopt -u nullglob
 # declaration-order preload papers over that, which is why the bundle loads
 # zero of six libraries on a store-based distribution (#23). It also wipes the
 # build-time RUNPATH libtool bakes into libass, a CI path that is dead on
-# every user machine. The Mach-O equivalent is the install_name_tool pass
-# above; Windows has no such mechanism, hence the loader's preload list.
+# every user machine. Mach-O gets the same treatment below with
+# install_name_tool; Windows has no such mechanism, hence the loader's
+# preload list.
+if [ "$HOST_OS" = mac ]; then
+    # Mach-O records an absolute install name per library and copies it into
+    # every dependent, so a bundle straight out of the build tree asks for the
+    # build runner's own paths. That resolves today only because Libav preloads
+    # all six in dependency order by absolute path; anything else fails, and
+    # when it fails dyld falls back to $HOME/lib:/usr/local/lib:/usr/lib, where
+    # a Homebrew FFmpeg of the same soname major can bind into a binding that
+    # pins struct offsets. Rewrite to @loader_path -- the ELF $ORIGIN analogue.
+    bundled="$(ls "$BUNDLE"/*.dylib 2>/dev/null | xargs -n1 basename | sort -u)"
+    for f in "$BUNDLE"/*.dylib; do
+        install_name_tool -id "@loader_path/$(basename "$f")" "$f"
+        otool -L "$f" | awk 'NR > 1 {print $1}' | while read -r ref; do
+            base="$(basename "$ref")"
+            # Only intra-bundle edges move; /usr/lib and the system
+            # frameworks are the host's to provide, as on every platform.
+            printf '%s\n' "$bundled" | grep -qx "$base" || continue
+            [ "$ref" = "@loader_path/$base" ] || install_name_tool -change "$ref" "@loader_path/$base" "$f"
+        done
+    done
+    # Editing load commands invalidates the ad-hoc signature, and Apple
+    # Silicon refuses to map an unsigned or wrongly-signed dylib outright.
+    # install_name_tool re-signs by itself on current toolchains; doing it
+    # here as well costs nothing and does not depend on that staying true.
+    for f in "$BUNDLE"/*.dylib; do
+        codesign --force --sign - --timestamp=none "$f" >/dev/null 2>&1 || {
+            echo "build-natives: could not re-sign $(basename "$f") after rewriting its install names" >&2
+            exit 1
+        }
+    done
+    codesign --verify "$BUNDLE"/*.dylib || { echo "build-natives: bundle signatures do not verify" >&2; exit 1; }
+    echo "bundle dylibs re-signed after the install-name rewrite"
+
+    # Prove it: any surviving reference to the build tree is a path that
+    # exists on no user machine, and it must not leave this script.
+    leaked=0
+    for f in "$BUNDLE"/*.dylib; do
+        for ref in $(otool -L "$f" | awk 'NR > 1 {print $1}') $(otool -D "$f" | awk 'NR > 1 {print $1}'); do
+            case "$ref" in
+                "$PREFIX"/*|"$WORK"/*)
+                    echo "install name still points into the build tree: $(basename "$f") -> $ref" >&2
+                    leaked=$((leaked + 1)) ;;
+            esac
+        done
+    done
+    [ "$leaked" = 0 ] || exit 1
+    echo "bundle install names rewritten to @loader_path; siblings resolve beside each other"
+
+    # The Mach-O half of the portability surface. /usr/lib and the system
+    # frameworks are dropped: they ship with macOS itself and are not
+    # something a consumer can lack, which is what the declaration is about.
+    key="macos"
+    host_deps="$(
+        for f in "$BUNDLE"/*.dylib; do
+            otool -L "$f" | awk 'NR > 1 {print $1}'
+        done | sort -u | while read -r ref; do
+            case "$ref" in
+                @loader_path/*|/usr/lib/*|/System/Library/Frameworks/*) continue ;;
+            esac
+            base="$(basename "$ref")"
+            printf '%s\n' "$bundled" | grep -qx "$base" || printf '%s\n' "$ref"
+        done
+    )"
+fi
+
 if [ "$HOST_OS" = linux ]; then
     command -v patchelf >/dev/null 2>&1 || { echo "build-natives: patchelf is required to set the bundle RUNPATH" >&2; exit 1; }
     for f in "$BUNDLE"/*.so.*; do
@@ -835,10 +981,19 @@ if [ "$HOST_OS" = linux ]; then
     # bug and fails here. Anything unresolved that is NOT in the bundle is a
     # host library the consumer must supply; that is the portability surface
     # (#54), so it gets named rather than silently accepted.
+    for t in readelf ldd; do
+        command -v "$t" >/dev/null 2>&1 || { echo "build-natives: $t is required to verify the bundle" >&2; exit 1; }
+    done
     bundled="$(ls "$BUNDLE"/*.so.* 2>/dev/null | xargs -n1 basename | sort -u)"
     rpath_broken=0
     for f in "$BUNDLE"/*.so.*; do
-        for miss in $(env -u LD_LIBRARY_PATH ldd "$f" 2>/dev/null | awk '/not found/ {print $1}'); do
+        # Both ldd dialects: glibc writes "name => not found" to stdout, musl
+        # writes "Error loading shared library name: ..." to stderr. Reading
+        # only glibc's made this whole proof a no-op on exactly the two
+        # platforms where a missing RUNPATH is fatal rather than papered over.
+        for miss in $(env -u LD_LIBRARY_PATH ldd "$f" 2>&1 | sed -n \
+                -e 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*/\1/p' \
+                -e 's/^Error loading shared library \([^:]*\):.*/\1/p'); do
             printf '%s\n' "$bundled" | grep -qx "$miss" || continue
             echo "RUNPATH did not take: $(basename "$f") cannot see $miss beside it" >&2
             rpath_broken=$((rpath_broken + 1))
@@ -850,52 +1005,65 @@ if [ "$HOST_OS" = linux ]; then
     # The portability surface, computed from the ELF rather than from what this
     # build host happens to have installed: every NEEDED entry the bundle does
     # not itself carry is a library the CONSUMER must supply.
+    # The program interpreter is dropped rather than declared: it is the thing
+    # that resolves NEEDED entries, so it is mapped before any of them can be
+    # asked for, and no host can lack it. aarch64 toolchains emit it as a
+    # NEEDED entry where x86-64 ones do not, which would otherwise force this
+    # file to grow an architecture column to say something never actionable.
+    # musl's libc.musl-*.so.1 is that same file under its libc name, and it
+    # stays declared -- there it carries the libc, not just the loader.
     host_deps="$(
         for f in "$BUNDLE"/*.so.*; do
             readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
-        done | sort -u | while read -r n; do
+        done | sort -u | { grep -v '^ld-\(linux\|musl\)-' || true; } | while read -r n; do
             printf '%s\n' "$bundled" | grep -qx "$n" || printf '%s\n' "$n"
         done
     )"
 
-    # Assert it against the declaration rather than printing it and hoping
-    # someone reads the log. Drift in EITHER direction fails: an unexpected
-    # dependency is a bundle that will not load somewhere it should, and a
-    # declared one that never appears means the file is describing a bundle
-    # we no longer build.
     # Read the libc off the bundle rather than off the build host: what the
     # libraries actually link is the fact that matters.
     if printf '%s\n' "$host_deps" | grep -q '^libc\.musl-'; then key="linux-musl"; else key="linux-glibc"; fi
-    surface="$SCRIPT_DIR/bundle-surface.txt"
-    if [ -z "$TIER" ]; then
-        echo "host surface ($key, custom FEATURES, not asserted): $(echo $host_deps)"
-        allowed=""
-    else
-        allowed="$(sed -n "s/^$key[[:space:]]\+$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
-        [ -n "$allowed" ] || { echo "build-natives: $surface declares no surface for $key $TIER" >&2; exit 1; }
-    fi
-    [ "$allowed" = "-" ] && allowed=""
-    drift=0
-    [ -z "$TIER" ] && allowed="$(echo $host_deps)"   # nothing to assert against
-    for got in $host_deps; do
-        case " $allowed " in *" $got "*) ;; *)
-            echo "UNDECLARED host dependency: $got" >&2; drift=1 ;;
-        esac
-    done
-    for want in $allowed; do
-        # An arch-specific musl libc is only expected on its own arch.
-        case "$want" in libc.musl-*) continue ;; esac
-        printf '%s\n' "$host_deps" | grep -qx "$want" || {
-            echo "DECLARED but unused: $want -- the declaration is stale" >&2; drift=1
-        }
-    done
-    if [ "$drift" != 0 ]; then
-        echo "The bundle's host surface does not match $surface for $key $TIER." >&2
-        echo "Needed:   $(echo $host_deps)" >&2
-        echo "Declared: $allowed" >&2
-        exit 1
-    fi
-    [ -z "$TIER" ] || echo "host surface matches the declaration for $key $TIER: $(echo $host_deps)"
+fi
+
+# Windows sets no key: it has no equivalent of a NEEDED entry that resolves
+# by soname, so its invariant is the loader's preload list instead, checked by
+# tools/check-windows-bundle.sh.
+if [ -n "${key:-}" ]; then
+# Assert it against the declaration rather than printing it and hoping
+# someone reads the log. Drift in EITHER direction fails: an unexpected
+# dependency is a bundle that will not load somewhere it should, and a
+# declared one that never appears means the file is describing a bundle
+# we no longer build.
+surface="$SCRIPT_DIR/bundle-surface.txt"
+if [ -z "$TIER" ]; then
+    echo "host surface ($key, custom FEATURES, not asserted): $(echo $host_deps)"
+    allowed=""
+else
+    allowed="$(sed -n "s/^$key[[:space:]]\+$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
+    [ -n "$allowed" ] || { echo "build-natives: $surface declares no surface for $key $TIER" >&2; exit 1; }
+fi
+[ "$allowed" = "-" ] && allowed=""
+drift=0
+[ -z "$TIER" ] && allowed="$(echo $host_deps)"   # nothing to assert against
+for got in $host_deps; do
+    case " $allowed " in *" $got "*) ;; *)
+        echo "UNDECLARED host dependency: $got" >&2; drift=1 ;;
+    esac
+done
+for want in $allowed; do
+    # An arch-specific musl libc is only expected on its own arch.
+    case "$want" in libc.musl-*) continue ;; esac
+    printf '%s\n' "$host_deps" | grep -qx "$want" || {
+        echo "DECLARED but unused: $want -- the declaration is stale" >&2; drift=1
+    }
+done
+if [ "$drift" != 0 ]; then
+    echo "The bundle's host surface does not match $surface for $key $TIER." >&2
+    echo "Needed:   $(echo $host_deps)" >&2
+    echo "Declared: $allowed" >&2
+    exit 1
+fi
+[ -z "$TIER" ] || echo "host surface matches the declaration for $key $TIER: $(echo $host_deps)"
 fi
 
 # What the bundle PROVIDES, taken from the build rather than restated by hand.
@@ -922,7 +1090,13 @@ if [ -f "$FF_CONFIG" ]; then
             [ -n "$names" ] && echo "$lower $names"
         done
     } > "$BUNDLE/manifest.txt"
-    echo "manifest: $(grep -c ' ' "$BUNDLE/manifest.txt") component lines"
+    echo "manifest: $(grep -cE '^(demuxer|muxer|decoder|encoder|parser|protocol|filter|hwaccel|bsf) ' \
+        "$BUNDLE/manifest.txt") component lines"
+else
+    # Same reasoning as the whitelist check: not fatal, but a bundle that
+    # ships without its manifest must not do so quietly -- the manifest is
+    # what the tier and version claims are checked against.
+    echo "build-natives: WARNING -- no $FF_CONFIG, manifest NOT written" >&2
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
