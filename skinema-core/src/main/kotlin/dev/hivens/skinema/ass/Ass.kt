@@ -45,15 +45,7 @@ object Ass {
     private class Bindings {
         private val linker = Linker.nativeLinker()
 
-        private fun lookupFile(name: String): SymbolLookup {
-            val overridden = Libav.resolveLibraryPath(name)
-            return runCatching { SymbolLookup.libraryLookup(overridden, Arena.global()) }
-                .recoverCatching { failure ->
-                    if (overridden == name) throw failure
-                    SymbolLookup.libraryLookup(name, Arena.global())
-                }
-                .getOrThrow()
-        }
+        private fun lookupFile(name: String): SymbolLookup = Libav.optionalLookup(name)
 
         private fun lookup(base: String, major: Int): SymbolLookup = lookupFile(fileName(base, major))
 
