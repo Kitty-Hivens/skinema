@@ -59,11 +59,11 @@ MJPEG           = decoder:mjpeg
 # -- Animated images ---------------------------------------------------------
 GIF             = decoder:gif
 APNG            = decoder:apng
-# "animated WebP" has no entry on purpose. FFmpeg 9 does carry a native
-# webp_anim decoder, but the whitelist does not enable it -- the capability
-# comes from the bundled libwebp and libwebpdemux, which the manifest does not
-# describe. Asserting decoder:webp here would assert the still-image decoder
-# and pass with the animated path gone. Fixtures.capLoads("webp") proves it.
+# animated WebP waits for a bundle built from this branch. The claim below is
+# decoder:webp_anim, which the published bundles predate -- they still carry
+# the libwebp stack this replaced -- so it goes in with the natives that have
+# it, not before, or the check fails against the release it runs on.
+# animated WebP  = decoder:webp_anim
 
 # -- Audio -------------------------------------------------------------------
 AAC             = decoder:aac

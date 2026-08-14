@@ -43,9 +43,13 @@ for Windows:
 - **dav1d, libvpx** -- built static and folded into FFmpeg. (libvpx is
   required for the webm alpha path; the native vp8/vp9 decoders drop
   it.)
-- **libwebp** -- built shared and shipped; the bindings load it at
-  runtime on every OS. FFmpeg 9 does carry a native `webp_anim` decoder,
-  but the whitelist does not enable it -- libwebp is the animated path.
+- **animated WebP** -- FFmpeg 9's own `webp_anim` demuxer and decoder, in
+  the whitelist. The libwebp/libwebpdemux/libsharpyuv stack the bindings used
+  to load at runtime is gone: 1.4 MB compressed per bundle, a binding layer,
+  a preload chain and a routing branch that sent still WebP down the animated
+  path too. The one thing `webp_anim` cannot do is seek -- it accepts a seek,
+  reports success and stays drained -- so `VideoDecoder` restarts it by
+  replacing the demuxer, which is what keeps looping working.
 - **fribidi** -- built shared and shipped: it is LGPL and must not fold
   into the libass binary. The preload pattern resolves it.
 - **freetype, harfbuzz** -- folded static into libass on Linux and
