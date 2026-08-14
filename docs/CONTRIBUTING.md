@@ -95,7 +95,7 @@ non-negotiable.
 
 The maintainer cuts releases. Libraries and natives release separately --
 they are on separate version lines (ROADMAP M17), and a library release must
-never re-upload the ~159 MiB of platform bundles.
+never re-upload the ~211 MiB of platform bundles.
 
 Both go out through the `Publish` workflow (vanniktech maven-publish,
 auto-release to Maven Central, GPG-signed). It runs in the `maven-central`
@@ -124,7 +124,7 @@ a repack that fixes what a bundle carries):
    are immutable, so changed bytes always need a new number -- reusing one is
    rejected.
 2. Dispatch `Publish` with target `natives`. It refuses a version already on
-   Central, fails on any of the 18 tier/platform assets missing from the
+   Central, fails on any of the 24 tier/platform assets missing from the
    rolling release, and logs each asset's `updated_at` -- read them and
    confirm they are the build you mean to ship before approving the
    environment.
@@ -142,7 +142,7 @@ login), plus `SIGNING_KEY` (the ASCII-armored secret key) and
 present and falls back to the keyring when it is not.
 
 `skinema-core`/`-skiko`/`-compose` publish as libraries; `skinema-natives`
-publishes an empty main jar with the 18 tier/platform bundles attached as
+publishes an empty main jar with the 24 tier/platform bundles attached as
 classifiers.
 
 ## License

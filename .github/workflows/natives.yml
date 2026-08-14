@@ -185,6 +185,7 @@ jobs:
         if: runner.os != 'Windows' && matrix.libc != 'musl'
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: |
           if [ "${{ matrix.cross }}" = "mac-x64" ]; then export MAC_CROSS_X64=1; fi
           STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
@@ -194,6 +195,7 @@ jobs:
         shell: msys2 {0}
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" VPX_TARGET=x86_64-win64-gcc tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
       # No VPX_TARGET forced: there is no fixed arm64-win64 gcc triplet like
@@ -203,6 +205,7 @@ jobs:
         shell: msys2 {0}
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
       # Static proof the Windows bundle both carries and MAPS what it imports

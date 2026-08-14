@@ -2,7 +2,7 @@ name: Publish
 
 # Publishing is deliberate, never a side effect of a push. Libraries go out
 # when a vX.Y.Z tag lands; the natives only on an explicit dispatch, and only
-# when their bundles actually changed -- republishing the ~159 MiB of unchanged
+# when their bundles actually changed -- republishing the ~211 MiB of unchanged
 # platform jars with every release is what put dev.hivens over Maven Central's
 # size cap (ROADMAP M17). Both jobs run in the maven-central environment, so
 # the credentials stay behind whatever approval that environment requires.
@@ -114,7 +114,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      # The publication packs its 18 jars straight from the rolling release, so
+      # The publication packs its 24 jars straight from the rolling release, so
       # a missing asset would ship a short release under a version that can
       # never be reissued. Every asset's upload time goes into the log with it:
       # that is the record of which build these bytes actually are.
@@ -138,7 +138,11 @@ jobs:
             --jq '.assets[] | "\(.name) \(.updated_at)"')
           missing=0
           for tier in core decode full; do
-            for platform in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
+            # Must match skinema-natives/build.gradle.kts. A platform missing
+            # here passes the guard, passes the immutability check, and fails
+            # inside the publish -- after the environment approval, with the
+            # signing key already in the job.
+            for platform in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
               line=$(printf '%s\n' "$assets" | grep "^skinema-natives-$tier-$platform\.tar\.gz " || true)
               if [ -z "$line" ]; then
                 echo "::error::$tag is missing skinema-natives-$tier-$platform.tar.gz"
@@ -159,5 +163,5 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
           NATIVES_VERSION: ${{ steps.bundles.outputs.nv }}
         run: |
-          echo "publishing skinema-natives $NATIVES_VERSION (~159 MiB against the monthly cap)"
+          echo "publishing skinema-natives $NATIVES_VERSION (~211 MiB against the monthly cap)"
           ./gradlew :skinema-natives:publishToMavenCentral --no-configuration-cache

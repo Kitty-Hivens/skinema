@@ -129,7 +129,7 @@ from cannot drift.
 The rule is one line: **the bundles change, the version bumps.** Central
 versions are immutable, so a repack that ships different bytes under a version
 already published is simply rejected -- and the library's own version cannot
-carry the natives, because 18 bundles at ~159 MiB republished per library
+carry the natives, because 24 bundles at ~211 MiB republished per library
 release is what put the namespace over Maven Central's monthly size limit
 (ROADMAP M17). A release that does not touch the bundles publishes none of
 them.
