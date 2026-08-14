@@ -22,6 +22,12 @@ flv             = demuxer:flv
 asf/wmv         = demuxer:asf
 RealMedia       = demuxer:rm
 ogg             = demuxer:ogg
+dv              = demuxer:dv
+mp3             = demuxer:mp3
+flac            = demuxer:flac
+wav             = demuxer:wav
+gif             = demuxer:gif
+webp            = demuxer:image_webp_pipe
 apng            = demuxer:apng
 raw ac3/eac3    = demuxer:ac3 demuxer:eac3
 
@@ -29,8 +35,11 @@ raw ac3/eac3    = demuxer:ac3 demuxer:eac3
 H.264           = decoder:h264
 HEVC            = decoder:hevc
 H.266/VVC       = decoder:vvc
-VP8             = decoder:vp8
-VP9             = decoder:vp9
+# libvpx, not the native decoders: the table advertises webm alpha, and the
+# native vp8/vp9 decoders drop the alpha channel. Asserting the native ones
+# would keep passing with the capability gone.
+VP8             = decoder:libvpx_vp8
+VP9             = decoder:libvpx_vp9
 AV1             = decoder:av1 decoder:libdav1d
 MPEG-1/2        = decoder:mpeg1video decoder:mpeg2video
 MPEG-4 Part 2   = decoder:mpeg4
@@ -48,7 +57,13 @@ VP6             = decoder:vp6 decoder:vp6a decoder:vp6f
 MJPEG           = decoder:mjpeg
 
 # -- Animated images ---------------------------------------------------------
-animated WebP   = decoder:webp
+GIF             = decoder:gif
+APNG            = decoder:apng
+# "animated WebP" has no entry on purpose. The table says plainly that FFmpeg
+# cannot decode it; the capability comes from the bundled libwebp and
+# libwebpdemux, which the manifest does not describe. Asserting decoder:webp
+# here would assert the still-image decoder and pass with the animated path
+# gone. Fixtures.capLoads("webp") is what actually proves it.
 
 # -- Audio -------------------------------------------------------------------
 AAC             = decoder:aac
@@ -79,3 +94,4 @@ mov_text        = decoder:movtext
 WebVTT          = decoder:webvtt
 PGS             = decoder:pgssub
 VobSub          = decoder:dvdsub
+external .srt/.ass = demuxer:srt demuxer:ass
