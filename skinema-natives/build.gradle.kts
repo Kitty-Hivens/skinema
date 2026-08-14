@@ -14,6 +14,17 @@ plugins {
     alias(libs.plugins.maven.publish)
 }
 
+// These jars hold shared objects and no classes at all, but java-library still
+// stamps the building JDK into the module metadata as a minimum. That made
+// every one of the 24 classifier jars unresolvable for a consumer below JDK 25
+// -- with an error telling them to pick an earlier version, of which none
+// exists -- while the library itself asks only for 22, which is what the
+// README promises. Say 22 here so the natives never raise the floor.
+java {
+    sourceCompatibility = JavaVersion.VERSION_22
+    targetCompatibility = JavaVersion.VERSION_22
+}
+
 mavenPublishing {
     pom {
         description.set(
