@@ -127,6 +127,7 @@ int main(void) {
 
     P(offsetof(AVFrame, data));
     P(offsetof(AVFrame, linesize));
+    P(offsetof(AVFrame, extended_data));
     P(offsetof(AVFrame, width));
     P(offsetof(AVFrame, height));
     P(offsetof(AVFrame, format));
