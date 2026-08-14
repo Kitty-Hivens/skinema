@@ -155,9 +155,10 @@ jobs:
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
           CAPS: ${{ steps.tier.outputs.caps }}
+          TIER: ${{ matrix.tier }}
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
-            -e FEATURES -e CAPS -e FFMPEG_VERSION \
+            -e FEATURES -e CAPS -e TIER -e FFMPEG_VERSION \
             alpine:edge sh -euc '
               # edge, not a stable tag: openjdk25 is only there, and the
               # project builds on a 25 toolchain. ffmpeg is the fixture CLI
@@ -165,14 +166,14 @@ jobs:
               apk add --no-cache bash build-base nasm cmake meson ninja pkgconf \
                   curl patchelf linux-headers autoconf automake libtool \
                   fontconfig-dev libva-dev openjdk25 ffmpeg >/dev/null
-              STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" \
+              STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" TIER="$TIER" \
                 bash tools/build-natives.sh "/src/natives/${{ matrix.platform }}"
               # Acceptance against the freshly built musl bundle, on the musl
               # JVM that will actually load it. Gradle brings its own toolchain
               # resolution, so JAVA_HOME is enough.
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
               SKINEMA_REQUIRE_CAPS="$CAPS" \
-              SKINEMA_LIBAV_DIR="/src/natives/${{ matrix.platform }}/lib" \
+              SKINEMA_LIBAV_DIR="/src/natives/${{ matrix.platform }}/bundle" \
                 ./gradlew :skinema-core:test --rerun-tasks
             '
 
@@ -249,9 +250,13 @@ jobs:
         run: |
           base="$PWD"
           if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
-          libdir="lib"
-          if [ "${{ runner.os }}" = "Windows" ]; then libdir="bin"; fi
-          SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/$libdir" ./gradlew :skinema-core:test --rerun-tasks
+          # The BUNDLE, not the install tree: that is what ships, and it is
+          # the only one carrying the $ORIGIN RUNPATH. The install tree loaded
+          # on glibc by accident -- its loader satisfies a DT_NEEDED from an
+          # already-mapped object, so the loader's declaration order covered
+          # for the missing RUNPATH. musl does not, so the same acceptance
+          # failed there and found the gap.
+          SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/bundle" ./gradlew :skinema-core:test --rerun-tasks
 
       # The flat loader-named bundle/ (built by the script) is the asset:
       # no symlinks, jar-ready layout, index.txt included. gzip, not xz --
