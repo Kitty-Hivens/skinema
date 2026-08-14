@@ -105,9 +105,9 @@ fingerprint keys the per-user unpack cache (see
 ## The classifier jars
 
 `skinema-natives` packs each bundle into a classifier jar named
-`<tier>-<platform>` -- three tiers (`core`, `decode`, `full`) across six
-platforms (`linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`,
-`macos-arm64`, `macos-x64`), 18 in all -- resources under
+`<tier>-<platform>` -- three tiers (`core`, `decode`, `full`) across eight
+platforms (`linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`,
+`windows-x64`, `windows-arm64`, `macos-arm64`, `macos-x64`), 24 in all -- resources under
 `dev/hivens/skinema/natives/<platform>/`. The layout is keyed by platform
 alone, so `NativeBundle` stays tier-agnostic: it loads whichever bundle the
 platform carries. The main jar is empty; the bundles attach as classifiers.
@@ -142,8 +142,8 @@ moment it passes its on-runner acceptance suite. A queued or broken
 platform delays only itself, never a release and never the other
 platforms, and a rebuild replaces just its own asset.
 
-- **natives.yml** (manual `workflow_dispatch`) builds the six platforms
-  across the three tiers -- 18 bundles -- with `fail-fast: false`. Linux
+- **natives.yml** (manual `workflow_dispatch`) builds the eight platforms
+  across the three tiers -- 24 bundles -- with `fail-fast: false`. Linux
   x64/arm64, Windows x64 (MSYS2 MINGW64) and arm64 (MSYS2 CLANGARM64), and
   macOS-arm64 all build, run the acceptance suite on metal, and upload.
   macos-x64 is cross-compiled on the arm runner (GitHub's Intel macs queue
