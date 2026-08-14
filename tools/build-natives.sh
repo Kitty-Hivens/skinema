@@ -1043,7 +1043,7 @@ if [ "$HOST_OS" = linux ]; then
     host_deps="$(
         for f in "$BUNDLE"/*.so.*; do
             readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'
-        done | sort -u | { grep -v '^ld-\(linux\|musl\)-' || true; } | while read -r n; do
+        done | sort -u | { grep -Ev '^ld-(linux|musl)-' || true; } | while read -r n; do
             printf '%s\n' "$bundled" | grep -qx "$n" || printf '%s\n' "$n"
         done
     )"
@@ -1067,7 +1067,11 @@ if [ -z "$TIER" ]; then
     echo "host surface ($key, custom FEATURES, not asserted): $(echo $host_deps)"
     allowed=""
 else
-    allowed="$(sed -n "s/^$key[[:space:]]\+$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
+    # [[:space:]][[:space:]]* rather than [[:space:]]\+ -- \+ is a GNU basic
+    # regex extension that BSD sed reads as a literal plus, so on macOS the
+    # row never matched and the bundle stage failed claiming the file declares
+    # no surface for it. GNU sed warns about exactly this.
+    allowed="$(sed -n "s/^$key[[:space:]][[:space:]]*$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
     [ -n "$allowed" ] || { echo "build-natives: $surface declares no surface for $key $TIER" >&2; exit 1; }
 fi
 [ "$allowed" = "-" ] && allowed=""
