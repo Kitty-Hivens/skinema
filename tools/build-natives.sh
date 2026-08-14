@@ -184,7 +184,11 @@ fetch() { # dest-file, url...
     [ -f "$dest" ] && return 0
     local url
     for url in "$@"; do
-        if curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors \
+        # Patient rather than quick: a run died with five resets inside
+        # seventeen seconds, which the old budget could not outlast. Six
+        # attempts five seconds apart rides out a reset that clears in half a
+        # minute, and costs nothing when the first attempt works.
+        if curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors \
                 --connect-timeout 20 -o "$dest" "$url"; then
             # A mirror that answers 200 with an error page or a captive-portal
             # redirect passes curl and then sits in the cache forever, because
@@ -584,8 +588,17 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
 fi
 
 if [ ! -d "ffmpeg-$FFMPEG_VERSION" ]; then
-    fetch ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
-    tar -xJf ffmpeg.tar.xz
+    # Two sources. This is the one download every job in the matrix needs, and
+    # it had no alternate: ffmpeg.org resetting the connection for twenty
+    # seconds is enough to fail a build that is otherwise sound. The GitHub
+    # mirror carries the same tree under a different root name, so the
+    # extension differs and the directory is normalised after unpacking.
+    fetch ffmpeg.tar "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" \
+        "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n$FFMPEG_VERSION"
+    tar -xf ffmpeg.tar
+    if [ -d "FFmpeg-n$FFMPEG_VERSION" ]; then
+        mv "FFmpeg-n$FFMPEG_VERSION" "ffmpeg-$FFMPEG_VERSION"
+    fi
 fi
 
 cd "ffmpeg-$FFMPEG_VERSION"
