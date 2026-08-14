@@ -48,6 +48,22 @@ subprojects {
             events("failed")
             exceptionFormat = TestExceptionFormat.FULL
         }
+
+        // The native bundle under test reaches the JVM through the
+        // environment, and Gradle sees neither the variable nor the directory
+        // it names -- both live outside the project tree. Without declaring
+        // them, a test task whose sources are unchanged is served FROM-CACHE,
+        // so CI reports on a bundle it never loaded. That matters because the
+        // rolling natives release replaces bytes under a fixed path: the
+        // bundle changes while the cache key does not.
+        val libavDir = providers.environmentVariable("SKINEMA_LIBAV_DIR")
+        inputs.property("skinemaLibavDir", libavDir.orElse(""))
+        inputs.property("skinemaRequireCaps", providers.environmentVariable("SKINEMA_REQUIRE_CAPS").orElse(""))
+        libavDir.map { file(it) }.orNull?.takeIf { it.isDirectory }?.let {
+            inputs.dir(it)
+                .withPropertyName("skinemaLibavBundle")
+                .withPathSensitivity(PathSensitivity.NAME_ONLY)
+        }
     }
 }
 

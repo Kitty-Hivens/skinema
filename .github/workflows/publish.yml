@@ -20,6 +20,14 @@ on:
         description: "Library version for a dispatched libraries run (a tag run reads its own tag)"
         default: ""
 
+# Serialised on purpose. Two runs of this would each pass the guard --
+# repo1 lags the portal by tens of minutes, so the already-published
+# check cannot see the other run -- and both would upload, against a
+# monthly size cap this account is already at.
+concurrency:
+  group: publish-${{ github.event.inputs.target || 'libraries' }}
+  cancel-in-progress: false
+
 jobs:
   libraries:
     if: github.event_name == 'push' || inputs.target == 'libraries'
@@ -34,6 +42,14 @@ jobs:
           java-version: 25
 
       - uses: gradle/actions/setup-gradle@v6
+
+      # Nothing else on this path proves the code works. A tag can be pushed to
+      # a commit the Build workflow never saw, or one where it was red, and the
+      # publication is signed and auto-released -- to a coordinate that can
+      # never be reissued. Run the suite here rather than trusting that someone
+      # looked, and run it before the signing key enters the job.
+      - name: Build and test before publishing anything
+        run: ./gradlew build
 
       - name: Resolve the version
         id: version
@@ -125,8 +141,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           nv=$(sed -n 's/^nativesVersion=//p' gradle.properties)
-          tag="natives-${nv%%-*}"
+          ffver="${nv%%-*}"
+          tag="natives-$ffver"
           echo "nv=$nv" >> "$GITHUB_OUTPUT"
+
+          # The tier -> features mapping has one home, in the build script.
+          # Lifted rather than restated, because a second copy is how the two
+          # drift and this guard starts approving the wrong bundles.
+          eval "$(sed -n '/^tier_features()/,/^}/p' tools/build-natives.sh)"
 
           if curl -fsI -o /dev/null \
             "https://repo1.maven.org/maven2/dev/hivens/skinema-natives/$nv/skinema-natives-$nv.pom"; then
@@ -143,13 +165,40 @@ jobs:
             # inside the publish -- after the environment approval, with the
             # signing key already in the job.
             for platform in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
-              line=$(printf '%s\n' "$assets" | grep "^skinema-natives-$tier-$platform\.tar\.gz " || true)
+              name="skinema-natives-$tier-$platform.tar.gz"
+              line=$(printf '%s\n' "$assets" | grep "^$name " || true)
               if [ -z "$line" ]; then
-                echo "::error::$tag is missing skinema-natives-$tier-$platform.tar.gz"
+                echo "::error::$tag is missing $name"
                 missing=1
-              else
-                echo "$line"
+                continue
               fi
+              echo "$line"
+
+              # Presence is not enough. The tag rolls -- a targeted rebuild
+              # replaces one asset and leaves the rest -- so all 24 can be
+              # there while some came from a different FFmpeg line or a
+              # different feature set. Read each bundle's own manifest instead
+              # of trusting the file name, because these bytes become 24
+              # immutable jars.
+              curl -fsSL -o /tmp/b.tar.gz \
+                "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name" || {
+                  echo "::error::$name is listed on $tag but could not be downloaded"; missing=1; continue; }
+              man=$(tar -xzOf /tmp/b.tar.gz ./manifest.txt 2>/dev/null || true)
+              [ -n "$man" ] || { echo "::error::$name carries no manifest.txt"; missing=1; continue; }
+
+              got_ff=$(printf '%s\n' "$man" | sed -n 's/^ffmpeg //p')
+              got_ft=$(printf '%s\n' "$man" | sed -n 's/^features //p')
+              if [ "$got_ff" != "$ffver" ]; then
+                echo "::error::$name was built from FFmpeg $got_ff, but nativesVersion says $ffver"
+                missing=1
+              fi
+              want_ft="$(tier_features "$tier")"
+              if [ "$(printf '%s' "$got_ft" | tr -s ' ' | sed 's/ *$//')" != "$want_ft" ]; then
+                echo "::error::$name carries features '$got_ft', expected '$want_ft'"
+                missing=1
+              fi
+              echo "    ffmpeg $got_ff | $(tar -xzOf /tmp/b.tar.gz ./index.txt 2>/dev/null | head -1)"
+              rm -f /tmp/b.tar.gz
             done
           done
           [ "$missing" = 0 ]
