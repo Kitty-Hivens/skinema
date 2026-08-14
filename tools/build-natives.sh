@@ -172,6 +172,45 @@ EOF
     FFMPEG_CROSS=(--enable-cross-compile --arch=x86_64 --target-os=darwin --cc="clang -arch x86_64")
 fi
 
+# The sha256 every archive must have. Without this a mirror is a liability
+# rather than insurance: a second source that serves different bytes builds
+# something else in silence, and a half-written or truncated file sits in the
+# cache forever because the download is skipped once the file exists.
+#
+# Two values where the sources genuinely differ: ffmpeg.org publishes a .tar.xz
+# and the GitHub mirror generates a .tar.gz of the same tree. Listing both
+# keeps the check fail-closed -- if GitHub ever regenerates its archive the
+# build stops and says so, rather than accepting whatever arrives.
+#
+# x264 has no entry: X264_VERSION names a branch, so upstream moves the
+# tarball under it and there is nothing stable to pin. That also means x264
+# builds are not reproducible; pinning it to a commit is a separate decision.
+sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
+    case "$1" in
+        zlib.tar.gz)         echo 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 ;;
+        bzip2.tar.gz)        echo ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 ;;
+        xz.tar.gz)           echo 269e3f2e512cbd3314849982014dc199a7b2148cf5c91cedc6db629acdf5e09b ;;
+        dav1d.tar.gz)        echo fa635e2bdb25147b1384007c83e15de44c589582bb3b9a53fc1579cb9d74b695 ;;
+        libwebp-dist.tar.gz) echo 7d6fab70cf844bf6769077bd5d7a74893f8ffd4dfb42861745750c63c2a5c92c ;;
+        libvpx.tar.gz)       echo 26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa ;;
+        x265.tar.gz)         echo a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29 ;;
+        freetype.tar.xz)     echo 0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289 ;;
+        fribidi.tar.xz)      echo 1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c ;;
+        harfbuzz.tar.xz)     echo 6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82 ;;
+        libass.tar.xz)       echo 78f1179b838d025e9c26e8fef33f8092f65611444ffa1bfc0cfac6a33511a05a ;;
+        ffmpeg.tar)          echo cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635 \
+                                  195d54bebe1a27f84d77f4b989d193466f305b355da92292766a69f16880b18a ;;
+        *) echo "" ;;
+    esac
+}
+
+# macOS has shasum, everything else has sha256sum; neither is on both.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
 fetch() { # dest-file, url...
     # Retries AND alternates. One flaky mirror must not take down a matrix of
     # 24 builds, and it does: savannah went fully unreachable mid-run and took
@@ -194,10 +233,20 @@ fetch() { # dest-file, url...
             # redirect passes curl and then sits in the cache forever, because
             # the -f check above never downloads twice. Reject anything that is
             # not a readable archive so the next mirror gets its turn.
-            if tar -tf "$dest" >/dev/null 2>&1; then
-                return 0
+            if ! tar -tf "$dest" >/dev/null 2>&1; then
+                echo "build-natives: $url answered with something that is not an archive" >&2
+            else
+                want="$(sha_for "$(basename "$dest")")"
+                got="$(sha256_of "$dest")"
+                case " $want " in
+                    "  ") echo "build-natives: $(basename "$dest") is not hash-pinned, taking $url on trust" >&2
+                          return 0 ;;
+                    *" $got "*) return 0 ;;
+                    *) echo "build-natives: $url served unexpected bytes for $(basename "$dest")" >&2
+                       echo "  got:      $got" >&2
+                       echo "  expected: $want" >&2 ;;
+                esac
             fi
-            echo "build-natives: $url answered with something that is not an archive" >&2
         else
             echo "build-natives: mirror failed, trying the next: $url" >&2
         fi
@@ -220,7 +269,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # consumer's problem. zlib ships a .pc; bzip2 does not, hence the explicit
     # -I/-L below.
     if [ ! -f "$DEPS/lib/libz.a" ]; then
-        fetch zlib.tar.gz "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz"
+        fetch zlib.tar.gz "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" \
+            "https://zlib.net/fossils/zlib-$ZLIB_VERSION.tar.gz"
         rm -rf "zlib-$ZLIB_VERSION"
         tar -xzf zlib.tar.gz
         (
@@ -255,7 +305,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # host dependency -- measured, liblzma.so.5 appeared in the decode tier
     # the moment --enable-lzma went in without this.
     if [ ! -f "$DEPS/lib/liblzma.a" ]; then
-        fetch xz.tar.gz "https://github.com/tukaani-project/xz/releases/download/v$XZ_VERSION/xz-$XZ_VERSION.tar.gz"
+        fetch xz.tar.gz "https://github.com/tukaani-project/xz/releases/download/v$XZ_VERSION/xz-$XZ_VERSION.tar.gz" \
+            "https://tukaani.org/xz/xz-$XZ_VERSION.tar.gz"
         rm -rf "xz-$XZ_VERSION"
         tar -xzf xz.tar.gz
         (
@@ -383,7 +434,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # C++, so on Windows the ffmpeg link folds the C++ runtime in (see FFLD
     # at the configure below); Linux/macOS take the system C++ runtime.
     if has enc-hevc && [ ! -f "$DEPS/lib/libx265.a" ]; then
-        fetch x265.tar.gz "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz"
+        fetch x265.tar.gz "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz" \
+            "https://bitbucket.org/multicoreware/x265_git/downloads/x265_$X265_VERSION.tar.gz"
         rm -rf "x265_$X265_VERSION"
         tar -xzf x265.tar.gz
         # x265 4.1 predates cmake 4.x: it sets pre-3.5 policies to OLD (which
