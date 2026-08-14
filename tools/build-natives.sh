@@ -827,6 +827,9 @@ if [ "$HOST_OS" = linux ]; then
             rpath_broken=$((rpath_broken + 1))
         done
     done
+    [ "$rpath_broken" = 0 ] || exit 1
+    echo "bundle RUNPATH set to \$ORIGIN; siblings resolve without a search path"
+
     # The portability surface, computed from the ELF rather than from what this
     # build host happens to have installed: every NEEDED entry the bundle does
     # not itself carry is a library the CONSUMER must supply.
