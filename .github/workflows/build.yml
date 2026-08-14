@@ -35,9 +35,19 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
+          # Thirteen, not the default eight, and every one of them named:
+          # five hardware suites (opt-in, and no VAAPI encoder on a mac), one
+          # subtitle test that looks for a Linux font path, and SEVEN that
+          # cannot build their fixture because Homebrew's ffmpeg carries
+          # neither the libwebp nor the libaom-av1 encoder. That last group
+          # means webp and AV1 decode have never been exercised on macOS --
+          # invisible until the counter printed it. A ceiling here keeps the
+          # gap declared and catches it widening; closing it needs fixtures
+          # that do not depend on what the CLI was compiled with.
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -63,6 +73,10 @@ jobs:
       # the suites that need it -- a skip reads as green. See Fixtures and
       # CapabilitiesTest.
       SKINEMA_REQUIRE_CAPS: "${{ matrix.caps }}"
+      # How many tests may skip before the build calls it a collapse rather
+      # than a run. Platforms with a wider legitimate gap raise it in the
+      # matrix and say why there.
+      SKINEMA_MAX_SKIPPED: "${{ matrix.maxSkipped || 8 }}"
     steps:
       - uses: actions/checkout@v7
 
@@ -158,7 +172,7 @@ jobs:
         if: matrix.libc == 'musl'
         shell: bash
         run: |
-          docker run --rm -v "$PWD:/src" -w /src -e SKINEMA_REQUIRE_CAPS \
+          docker run --rm -v "$PWD:/src" -w /src -e SKINEMA_REQUIRE_CAPS -e SKINEMA_MAX_SKIPPED \
             alpine:edge sh -euc '
               apk add --no-cache bash openjdk25 ffmpeg font-dejavu fontconfig libva libstdc++ >/dev/null
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
