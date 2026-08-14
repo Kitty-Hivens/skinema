@@ -107,12 +107,18 @@ A library release:
    and on the rolling `natives-<ffmpeg version>` release (the
    push-sequencing rule). The workflow checks the published half itself and
    refuses a release whose natives are not up.
-2. Tag `vX.Y.Z` on the release commit and push the tag -- that is the
+2. Update the library version in the `README.md` dependency block and in
+   `docs/guide/getting-started.md`. Both snippets pin a library version next
+   to a natives version, and nothing checks that the pair is coherent: a
+   natives bump left the documented pair naming a library built for the
+   previous FFmpeg line, which resolves cleanly and then cannot load a single
+   bundle.
+3. Tag `vX.Y.Z` on the release commit and push the tag -- that is the
    trigger. The workflow reads the version from the tag, refuses one that
    already exists on Central (versions are immutable), and runs
    `publishLibraries`, which ships core/skiko/compose only. The bare
    `publishToMavenCentral` sweeps in the natives; nothing calls it.
-3. Create the GitHub release with consumer-facing notes, naming the natives
+4. Create the GitHub release with consumer-facing notes, naming the natives
    version consumers should pair with it.
 
 A natives release, only when the bundles actually change (a new FFmpeg pin,
