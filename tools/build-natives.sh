@@ -662,7 +662,6 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             make -j"$JOBS"
             make install
         ) || exit 1
-        cp "libass-$LIBASS_VERSION/COPYING" "$PREFIX/licenses/libass-COPYING"
         # The static freetype+harfbuzz fold leaves several MB of dead
         # symbol weight; the bundles ship stripped.
         case "$HOST_OS" in
@@ -679,6 +678,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
             fi
         fi
     fi
+    license "libass-$LIBASS_VERSION/COPYING" "libass-COPYING"
 fi
 
 if [ ! -d "ffmpeg-$FFMPEG_VERSION" ]; then

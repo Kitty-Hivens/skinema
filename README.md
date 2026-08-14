@@ -65,7 +65,7 @@ license:
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
 | `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
-| `decode` | core + subtitles + the broad legacy/extended format set + GPU H.264/HEVC encode, AAC/FLAC encode and the mp4/mkv/webm muxers | LGPL |
+| `decode` | core + GPU decode + subtitles + the broad legacy/extended format set; on Linux also GPU H.264/HEVC encode, AAC/FLAC encode and the mp4/mkv/webm muxers | LGPL |
 | `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
 `core` is the lean tier -- the modern codecs only, no subtitles, no GPU
@@ -77,8 +77,7 @@ fontconfig. `decode` (used above) is the complete LGPL
 player: it adds the libass subtitle stack and the broad `formats` set (the
 legacy and broadcast containers and codecs in "What it plays" below). `full`
 adds software encode and is GPL because it bundles x264/x265; HEVC encode
-ships on Linux only for now -- macOS/Windows `full` carry H.264 encode
-(issue #22). On first use the jars unpack to a per-user cache. Without a
+ships everywhere since the x265 source patch (issue #22). On first use the jars unpack to a per-user cache. Without a
 natives jar, skinema looks for matching system libraries -- fine for
 development, not what you ship.
 
@@ -117,7 +116,8 @@ community-tier support means here.
 
 **How old a system the bundles still load on.** glibc 2.39 for `linux-arm64`
 `full`, 2.38 for the other glibc bundles, 2.35 for `core-linux-x64` -- so
-Ubuntu 24.04, Debian 13 and Fedora 39 upward, and not RHEL 9 or Ubuntu 22.04.
+Ubuntu 24.04, Debian 13 and Fedora 39 upward for the desktop tiers, and not
+RHEL 9. `core-linux-x64` alone still loads on Ubuntu 22.04.
 macOS bundles are built for 14.0, so Sonoma upward. The `linux-musl-*`
 bundles have no such floor: musl does not version its symbols. The `decode`
 and `full` Linux bundles link `libva`, `libva-drm` and `libfontconfig` from
@@ -131,7 +131,7 @@ libc and libm and has no such requirement.
 |-----------------|-----------------------------------------------------------------------------------------------|
 | Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
 | Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
-| Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
+| Animated images | GIF, APNG, animated WebP -- the latter through the bundled libwebp                            |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
 | Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |

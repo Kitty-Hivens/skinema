@@ -144,8 +144,8 @@ the containers, the atempo chain); each tier layers features on:
 
 | Tier     | Features over the base                       | License |
 |----------|----------------------------------------------|---------|
-| `core`   | av1 vpx webp hwaccel                          | LGPL    |
-| `decode` | + subs (libass) + formats + enc-vaapi         | LGPL    |
+| `core`   | av1 vpx webp                                  | LGPL    |
+| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi | LGPL  |
 | `full`   | + enc-vaapi + enc-h264 enc-hevc (x264/x265)   | GPL     |
 
 `enc-vaapi` (M13) is the LGPL hardware H.264/HEVC encoder -- the codec lives
@@ -376,7 +376,7 @@ README once the library is usable.
   upgrades never overwrite mapped libraries), load precedence
   prop > env > bundle > system; the headless soak runner measures the
   adoption bar (2-minute smoke: exact 30 fps pacing, RSS flat after
-  warm-up). The natives workflow is green on all four platforms --
+  warm-up). The natives workflow is green on all eight platforms --
   including macos-x64 cross-compiled on the arm runner -- each delivering
   independently to the rolling release after its on-runner acceptance
   suite (cross builds excepted). The script emits a flat, jar-ready
@@ -899,7 +899,7 @@ README once the library is usable.
   ~211 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
   per-platform artifactIds (`skinema-natives-linux-x64` and friends, each on its
   own version) would have made the Windows-only repack cost 66 MiB and slipped
-  under the cap, but it splits the namespace into six artifacts whose versions
+  under the cap, but it splits the namespace into eight artifacts whose versions
   drift apart in the consumer's build file, and a new FFmpeg pin -- the ordinary
   reason bundles change -- touches every platform and costs the same 211 MiB
   either way.
