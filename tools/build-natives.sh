@@ -200,7 +200,14 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         libass.tar.xz)       echo 78f1179b838d025e9c26e8fef33f8092f65611444ffa1bfc0cfac6a33511a05a ;;
         ffmpeg.tar)          echo cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635 \
                                   195d54bebe1a27f84d77f4b989d193466f305b355da92292766a69f16880b18a ;;
-        *) echo "" ;;
+        # "-" is the deliberate opt-out, spelled so it cannot be reached by
+        # accident. Falling through to it silently would mean a new dependency,
+        # or a typo in a dest name, quietly downloads unverified.
+        x264.tar.gz)         echo "-" ;;
+        # A sentinel, not an exit: every caller runs this inside a command
+        # substitution, where exiting kills only that substitution and the
+        # script carries on downloading unverified.
+        *) echo "?" ;;
     esac
 }
 
@@ -209,6 +216,18 @@ sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
     else shasum -a 256 "$1" | cut -d' ' -f1
     fi
+}
+
+# Whether a file on disk matches its pin. Quiet -- callers say what they are
+# doing with the answer, since a mismatch means something different for a
+# cached file than for one that just came off a mirror.
+sha_ok() {
+    local want got
+    want="$(sha_for "$(basename "$1")")"
+    [ "$want" = "-" ] && return 0
+    got="$(sha256_of "$1")"
+    case " $want " in *" $got "*) return 0 ;; esac
+    return 1
 }
 
 fetch() { # dest-file, url...
@@ -220,7 +239,25 @@ fetch() { # dest-file, url...
     # not treat as retryable by default; the extra urls are tried in turn when
     # a host is down rather than merely slow.
     local dest="$1"; shift
-    [ -f "$dest" ] && return 0
+    # Top level, where exiting actually stops the build: an unknown dest name
+    # is a new dependency someone forgot to pin, or a typo, and either way it
+    # must not download on trust.
+    if [ "$(sha_for "$(basename "$dest")")" = "?" ]; then
+        echo "build-natives: no sha256 entry for $(basename "$dest") -- add one to sha_for" >&2
+        exit 1
+    fi
+    # A cached archive is verified too, not trusted for being present. $WORK is
+    # warm across runs by design, so without this the pin protects only the
+    # first download: anything already sitting there -- a truncated file from
+    # an interrupted run, or something another user dropped in a shared /tmp --
+    # would be used forever without ever being hashed.
+    if [ -f "$dest" ]; then
+        if sha_ok "$dest"; then
+            return 0
+        fi
+        echo "build-natives: discarding cached $(basename "$dest"), it does not match its pin" >&2
+        rm -f "$dest"
+    fi
     local url
     for url in "$@"; do
         # Patient rather than quick: a run died with five resets inside
@@ -236,16 +273,21 @@ fetch() { # dest-file, url...
             if ! tar -tf "$dest" >/dev/null 2>&1; then
                 echo "build-natives: $url answered with something that is not an archive" >&2
             else
-                want="$(sha_for "$(basename "$dest")")"
-                got="$(sha256_of "$dest")"
-                case " $want " in
-                    "  ") echo "build-natives: $(basename "$dest") is not hash-pinned, taking $url on trust" >&2
-                          return 0 ;;
-                    *" $got "*) return 0 ;;
-                    *) echo "build-natives: $url served unexpected bytes for $(basename "$dest")" >&2
-                       echo "  got:      $got" >&2
-                       echo "  expected: $want" >&2 ;;
-                esac
+                if [ "$(sha_for "$(basename "$dest")")" = "-" ]; then
+                    echo "build-natives: $(basename "$dest") is not hash-pinned, taking $url on trust" >&2
+                    return 0
+                elif sha_ok "$dest"; then
+                    return 0
+                else
+                    echo "build-natives: $url served unexpected bytes for $(basename "$dest")" >&2
+                    echo "  got:      $(sha256_of "$dest")" >&2
+                    echo "  expected: $(sha_for "$(basename "$dest")")" >&2
+                    # The pins are per file name, not per version, so overriding
+                    # a *_VERSION knob lands here too. That is not a compromised
+                    # mirror, it is a pin that needs updating -- say so, because
+                    # the two look identical from here.
+                    echo "  (if you overrode a *_VERSION, update sha_for to match)" >&2
+                fi
             fi
         else
             echo "build-natives: mirror failed, trying the next: $url" >&2
@@ -281,7 +323,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             CFLAGS="-O3 -fPIC ${CFLAGS:-}" ./configure --prefix="$DEPS" --static
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     license "zlib-$ZLIB_VERSION/LICENSE" "zlib-LICENSE"
 
@@ -296,7 +338,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             mkdir -p "$DEPS/lib" "$DEPS/include"
             cp libbz2.a "$DEPS/lib/"
             cp bzlib.h "$DEPS/include/"
-        )
+        ) || exit 1
     fi
     license "bzip2-$BZIP2_VERSION/LICENSE" "bzip2-LICENSE"
 
@@ -321,7 +363,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     license "xz-$XZ_VERSION/COPYING" "xz-COPYING"
 
@@ -367,7 +409,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                     ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
                 make -j"$JOBS"
                 make install
-            )
+            ) || exit 1
         fi
     fi
     if has webp; then license "libwebp-$WEBP_VERSION/COPYING" "libwebp-COPYING"; fi
@@ -400,7 +442,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 || { echo "=== libvpx config.log tail ==="; tail -40 config.log 2>/dev/null; exit 1; }
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     if has vpx; then license "libvpx-${VPX_VERSION#v}/LICENSE" "libvpx-LICENSE"; fi
 
@@ -425,7 +467,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     if has enc-h264; then license "x264-$X264_VERSION/COPYING" "x264-COPYING"; fi
 
@@ -510,7 +552,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     license "freetype-$FREETYPE_VERSION/docs/FTL.TXT" "freetype-FTL.TXT"
 
@@ -527,7 +569,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
     fi
     license "fribidi-$FRIBIDI_VERSION/COPYING" "fribidi-COPYING"
 
@@ -619,7 +661,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
-        )
+        ) || exit 1
         cp "libass-$LIBASS_VERSION/COPYING" "$PREFIX/licenses/libass-COPYING"
         # The static freetype+harfbuzz fold leaves several MB of dead
         # symbol weight; the bundles ship stripped.
@@ -1007,7 +1049,7 @@ if [ "$HOST_OS" = mac ]; then
     # when it fails dyld falls back to $HOME/lib:/usr/local/lib:/usr/lib, where
     # a Homebrew FFmpeg of the same soname major can bind into a binding that
     # pins struct offsets. Rewrite to @loader_path -- the ELF $ORIGIN analogue.
-    bundled="$(ls "$BUNDLE"/*.dylib 2>/dev/null | xargs -n1 basename | sort -u)"
+    bundled="$(for f in "$BUNDLE"/*.dylib; do [ -e "$f" ] && basename "$f"; done | sort -u)"
     for f in "$BUNDLE"/*.dylib; do
         install_name_tool -id "@loader_path/$(basename "$f")" "$f"
         otool -L "$f" | awk 'NR > 1 {print $1}' | while read -r ref; do
@@ -1077,7 +1119,7 @@ if [ "$HOST_OS" = linux ]; then
     for t in readelf ldd; do
         command -v "$t" >/dev/null 2>&1 || { echo "build-natives: $t is required to verify the bundle" >&2; exit 1; }
     done
-    bundled="$(ls "$BUNDLE"/*.so.* 2>/dev/null | xargs -n1 basename | sort -u)"
+    bundled="$(for f in "$BUNDLE"/*.so.*; do [ -e "$f" ] && basename "$f"; done | sort -u)"
     rpath_broken=0
     for f in "$BUNDLE"/*.so.*; do
         # Both ldd dialects: glibc writes "name => not found" to stdout, musl
@@ -1136,7 +1178,7 @@ else
     # regex extension that BSD sed reads as a literal plus, so on macOS the
     # row never matched and the bundle stage failed claiming the file declares
     # no surface for it. GNU sed warns about exactly this.
-    allowed="$(sed -n "s/^$key[[:space:]][[:space:]]*$TIER[[:space:]]*=[[:space:]]*//p" "$surface" | head -1)"
+    allowed="$(sed -n "s/^$key[[:space:]][[:space:]]*$TIER[[:space:]]*=[[:space:]]*//p;/^$key[[:space:]][[:space:]]*$TIER[[:space:]]*=/q" "$surface")"
     [ -n "$allowed" ] || { echo "build-natives: $surface declares no surface for $key $TIER" >&2; exit 1; }
 fi
 [ "$allowed" = "-" ] && allowed=""
@@ -1202,7 +1244,7 @@ if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum 
     files="$(find . -type f ! -name index.txt | sed 's|^\./||' | LC_ALL=C sort)"
     fingerprint="$(printf '%s\n' "$files" | xargs cat | $SHA | cut -c1-16)"
     { echo "$fingerprint"; printf '%s\n' "$files"; } > index.txt
-)
+) || exit 1
 
 echo "== bundle =="
 du -sh "$BUNDLE"
