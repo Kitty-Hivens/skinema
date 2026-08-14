@@ -27,7 +27,9 @@ linux-glibc  full   = libc.so.6 libm.so.6 libmvec.so.1 libva.so.2 libva-drm.so.2
 # musl folds libm into libc, so the leanest tier needs exactly one library.
 linux-musl   core   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1
 linux-musl   decode = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1
-linux-musl   full   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libc++.so.1
+# libstdc++, not libc++: Alpine builds with GCC, and the guess that it
+# would mirror the Windows aarch64 clang toolchain was wrong -- measured.
+linux-musl   full   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libstdc++.so.6
 
 # Mach-O: the system frameworks are always present, so only the dylibs a
 # consumer could plausibly lack are worth naming.
