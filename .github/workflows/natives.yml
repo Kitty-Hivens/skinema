@@ -160,8 +160,13 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src \
             -e FEATURES -e CAPS -e TIER -e FFMPEG_VERSION \
             alpine:edge sh -euc '
-              # edge, not a stable tag: openjdk25 is only there, and the
-              # project builds on a 25 toolchain. ffmpeg is the fixture CLI
+              # edge, not a stable tag, and deliberately not pinned: openjdk25
+              # is only there, and edge is also what the Alpine desktop users
+              # these bundles are for actually run -- it is a rolling release
+              # like Arch, so building against a frozen snapshot would test a
+              # musl and a toolchain no consumer has. The cost is that an edge
+              # regression lands here first, which is the trade taken.
+              # ffmpeg is the fixture CLI
               # the acceptance suite shells out to. font-dejavu because the
               # image carries no font at all -- fontconfig-dev installs the
               # library, not a typeface, and libass renders nothing without
