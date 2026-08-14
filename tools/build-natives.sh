@@ -660,7 +660,7 @@ fi
     --enable-parser="$PARSE" \
     ${ENCFLAG[@]+"${ENCFLAG[@]}"} \
     ${MUXFLAG[@]+"${MUXFLAG[@]}"} \
-    --enable-filter=atempo,abuffer,abuffersink \
+    --enable-filter=atempo \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
     ${VAENC[@]+"${VAENC[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
@@ -689,10 +689,11 @@ if [ -f config_components.h ]; then
     verify_enabled decoder "$DECODE"
     verify_enabled parser "$PARSE"
     verify_enabled protocol "file,pipe"
-    # Filters are deliberately not verified: configure derives their component
-    # names by stripping the ff_<type>_ prefix, so ff_asrc_abuffer and
-    # ff_asink_abuffer both collapse to "abuffer" and the sink has no component
-    # name of its own. --enable-filter=abuffer is what brings both in.
+    # Filters: only atempo is a component. abuffer and abuffersink are not --
+    # buffersrc and buffersink are built into libavfilter unconditionally, so
+    # naming them enabled nothing and was dropped in silence. Measured off
+    # config_components.h, then confirmed against the built library, which
+    # still resolves all three by name.
     [ ${#ENC[@]} -gt 0 ] && verify_enabled encoder "$(IFS=,; echo "${ENC[*]}")"
     [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "mov,mp4,matroska,webm"
     if [ -n "$WHITELIST_GAPS" ]; then
@@ -879,6 +880,33 @@ if [ "$HOST_OS" = linux ]; then
         exit 1
     fi
     [ -z "$TIER" ] || echo "host surface matches the declaration for $key $TIER: $(echo $host_deps)"
+fi
+
+# What the bundle PROVIDES, taken from the build rather than restated by hand.
+# The requires side is asserted against tools/bundle-surface.txt above; this is
+# the other half, and the same argument applies -- the format table in the
+# README is hand-maintained, and it advertised mov_text for the whole life of
+# the project while no bundle carried the decoder.
+#
+# Names here are configure's component names, which are not always the name a
+# codec registers under at runtime (movtext registers as "mov_text"). The file
+# is the substrate for checking a claim, and it makes "what changed between two
+# revisions" a diff instead of an archaeology exercise -- which the natives
+# version line needs, since a repack that changes nothing must not be republished.
+FF_CONFIG="$WORK/ffmpeg-$FFMPEG_VERSION/config_components.h"
+if [ -f "$FF_CONFIG" ]; then
+    {
+        echo "# skinema natives bundle -- enabled components"
+        echo "ffmpeg $FFMPEG_VERSION"
+        echo "features $FEATURES"
+        for kind in DEMUXER MUXER DECODER ENCODER PARSER PROTOCOL FILTER HWACCEL BSF; do
+            lower="$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')"
+            names="$(sed -n "s/^#define CONFIG_\([A-Z0-9_]*\)_$kind 1$/\1/p" "$FF_CONFIG" \
+                     | tr '[:upper:]' '[:lower:]' | LC_ALL=C sort | tr '\n' ' ')"
+            [ -n "$names" ] && echo "$lower $names"
+        done
+    } > "$BUNDLE/manifest.txt"
+    echo "manifest: $(grep -c ' ' "$BUNDLE/manifest.txt") component lines"
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
