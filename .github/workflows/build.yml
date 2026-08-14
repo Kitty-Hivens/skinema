@@ -38,10 +38,24 @@ jobs:
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
+          # The musl bundles are published like every other platform and were
+          # the only ones no test here ever loaded. They run inside Alpine,
+          # because the question is whether a musl JVM can load them -- a
+          # glibc runner cannot answer it. Scoped to :skinema-core:test rather
+          # than the whole build for the same reason the natives workflow is:
+          # skiko ships no musl native, so :skinema-skiko cannot run there.
+          - os: ubuntu-latest
+            platform: linux-musl-x64
+            libc: musl
+            caps: decode,subs,webp,encode,formats
+          - os: ubuntu-24.04-arm
+            platform: linux-musl-arm64
+            libc: musl
+            caps: decode,subs,webp,encode,formats
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
-          # saying five tested of six.
+          # saying seven tested of eight.
     runs-on: ${{ matrix.os }}
     env:
       # The capabilities CI holds mandatory on this platform: a bundle
@@ -52,12 +66,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The musl jobs get their JDK and their tools from apk inside the
+      # container instead: a zulu build for glibc cannot run there at all.
       - uses: actions/setup-java@v5
+        if: matrix.libc != 'musl'
         with:
           distribution: zulu
           java-version: 25
 
       - uses: gradle/actions/setup-gradle@v6
+        if: matrix.libc != 'musl'
 
       # Fixture generation needs a full-build CLI (libx264); the libraries
       # under test come from the natives release below. The GL/X11/font
@@ -67,6 +85,7 @@ jobs:
       # (Windows has no system libass -- its subs coverage starts with
       # the rebuilt bundles).
       - name: Install ffmpeg CLI (fixtures), skiko's GL stack, libass
+        if: matrix.libc != 'musl'
         shell: bash
         run: |
           case "${{ runner.os }}" in
@@ -92,7 +111,11 @@ jobs:
           rev=$(gh api "repos/${{ github.repository }}/releases/tags/$tag" \
             --jq '[.assets[] | select(.name == "skinema-natives-full-${{ matrix.platform }}.tar.gz")][0].updated_at' \
             2>/dev/null | tr -dc '0-9TZ:-' || true)
-          echo "rev=${rev:-unknown}" >> "$GITHUB_OUTPUT"
+          # A constant fallback would be a STABLE key, so one lookup failure
+          # would pin a stale bundle in the cache and serve it to every later
+          # run. Falling back to the run id makes the key unique instead: the
+          # cache misses, the bundle downloads fresh, and nothing is poisoned.
+          echo "rev=${rev:-run-${{ github.run_id }}}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the trimmed natives bundle
         id: libav-cache
@@ -112,14 +135,39 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/download/$TAG/skinema-natives-full-${{ matrix.platform }}.tar.gz"
           tar -xzf bundle.tar.gz -C libav-bundle
 
+      # Once per matrix, not seven times: the claims are about the format set,
+      # which is the same everywhere the full tier is built.
+      - name: Check the README format claims against the bundle
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: bash tools/check-readme-formats.sh libav-bundle/manifest.txt
+
       - name: Point skinema at the bundle under test
+        if: matrix.libc != 'musl'
         shell: bash
         run: |
           base="$PWD"
           if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
           echo "SKINEMA_LIBAV_DIR=$base/libav-bundle" >> "$GITHUB_ENV"
 
+      # libva and fontconfig are the host libraries the full musl bundle links
+      # eagerly (tools/bundle-surface.txt names them), font-dejavu because the
+      # image carries no typeface and libass renders nothing without one, and
+      # ffmpeg is the CLI the fixtures shell out to.
+      - name: Build and test (musl, in Alpine)
+        if: matrix.libc == 'musl'
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e SKINEMA_REQUIRE_CAPS \
+            alpine:edge sh -euc '
+              apk add --no-cache bash openjdk25 ffmpeg font-dejavu fontconfig libva libstdc++ >/dev/null
+              export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
+              export SKINEMA_LIBAV_DIR=/src/libav-bundle
+              ./gradlew :skinema-core:test
+            '
+
       - name: Build and test
+        if: matrix.libc != 'musl'
         shell: bash
         run: |
           # Windows: make CI the clean machine. Drop the mingw/msys dirs
