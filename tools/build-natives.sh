@@ -129,14 +129,27 @@ EOF
     FFMPEG_CROSS=(--enable-cross-compile --arch=x86_64 --target-os=darwin --cc="clang -arch x86_64")
 fi
 
-fetch() { # url, dest-file
-    # Retry: a single upstream hiccup used to kill a twenty-minute build, and
-    # it happens -- savannah has answered 502 and zlib.net has dropped TLS
-    # mid-handshake during this script's own development. --retry covers the
-    # transport, --retry-all-errors extends it to HTTP 5xx, which curl does
-    # not treat as retryable by default.
-    [ -f "$2" ] || curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
-        --connect-timeout 20 -o "$2" "$1"
+fetch() { # dest-file, url...
+    # Retries AND alternates. One flaky mirror must not take down a matrix of
+    # 24 builds, and it does: savannah went fully unreachable mid-run and took
+    # every subtitle-carrying tier with it, having already answered 502 during
+    # this script's development, and zlib.net dropped TLS mid-handshake before
+    # that. --retry-all-errors extends retrying to HTTP 5xx, which curl does
+    # not treat as retryable by default; the extra urls are tried in turn when
+    # a host is down rather than merely slow.
+    local dest="$1"; shift
+    [ -f "$dest" ] && return 0
+    local url
+    for url in "$@"; do
+        if curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors \
+                --connect-timeout 20 -o "$dest" "$url"; then
+            return 0
+        fi
+        echo "build-natives: mirror failed, trying the next: $url" >&2
+        rm -f "$dest"
+    done
+    echo "build-natives: every mirror failed for $dest" >&2
+    return 1
 }
 
 if [ "${STATIC_DEPS:-}" = "1" ]; then
@@ -152,7 +165,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # consumer's problem. zlib ships a .pc; bzip2 does not, hence the explicit
     # -I/-L below.
     if [ ! -f "$DEPS/lib/libz.a" ]; then
-        fetch "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" zlib.tar.gz
+        fetch zlib.tar.gz "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz"
         rm -rf "zlib-$ZLIB_VERSION"
         tar -xzf zlib.tar.gz
         (
@@ -165,7 +178,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
 
     if [ ! -f "$DEPS/lib/libbz2.a" ]; then
-        fetch "https://sourceware.org/pub/bzip2/bzip2-$BZIP2_VERSION.tar.gz" bzip2.tar.gz
+        fetch bzip2.tar.gz "https://sourceware.org/pub/bzip2/bzip2-$BZIP2_VERSION.tar.gz"
         rm -rf "bzip2-$BZIP2_VERSION"
         tar -xzf bzip2.tar.gz
         (
@@ -184,7 +197,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # host dependency -- measured, liblzma.so.5 appeared in the decode tier
     # the moment --enable-lzma went in without this.
     if [ ! -f "$DEPS/lib/liblzma.a" ]; then
-        fetch "https://github.com/tukaani-project/xz/releases/download/v$XZ_VERSION/xz-$XZ_VERSION.tar.gz" xz.tar.gz
+        fetch xz.tar.gz "https://github.com/tukaani-project/xz/releases/download/v$XZ_VERSION/xz-$XZ_VERSION.tar.gz"
         rm -rf "xz-$XZ_VERSION"
         tar -xzf xz.tar.gz
         (
@@ -204,7 +217,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
-        fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz" dav1d.tar.gz
+        fetch dav1d.tar.gz "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz"
         rm -rf "dav1d-$DAV1D_VERSION"
         tar -xzf dav1d.tar.gz
         meson setup "dav1d-$DAV1D_VERSION/build" "dav1d-$DAV1D_VERSION" \
@@ -222,7 +235,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # all, so build with cmake there (as MSYS2 does); CMAKE_DLL_NAME_WITH_SOVERSION
     # reproduces the same -<major> DLL names.
     if has webp && ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
-        fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz" libwebp-dist.tar.gz
+        fetch libwebp-dist.tar.gz "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz"
         rm -rf "libwebp-$WEBP_VERSION"
         tar -xzf libwebp-dist.tar.gz
         if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
@@ -251,7 +264,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
 
     if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
-        fetch "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz" libvpx.tar.gz
+        fetch libvpx.tar.gz "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz"
         rm -rf "libvpx-${VPX_VERSION#v}"
         tar -xzf libvpx.tar.gz
         (
@@ -287,7 +300,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
     # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
     if has enc-h264 && [ ! -f "$DEPS/lib/libx264.a" ]; then
-        fetch "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz" x264.tar.gz
+        fetch x264.tar.gz "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz"
         rm -rf "x264-$X264_VERSION"
         tar -xzf x264.tar.gz
         (
@@ -312,7 +325,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # C++, so on Windows the ffmpeg link folds the C++ runtime in (see FFLD
     # at the configure below); Linux/macOS take the system C++ runtime.
     if has enc-hevc && [ ! -f "$DEPS/lib/libx265.a" ]; then
-        fetch "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz" x265.tar.gz
+        fetch x265.tar.gz "https://download.videolan.org/pub/videolan/x265/x265_$X265_VERSION.tar.gz"
         rm -rf "x265_$X265_VERSION"
         tar -xzf x265.tar.gz
         # x265 4.1 predates cmake 4.x: it sets pre-3.5 policies to OLD (which
@@ -368,7 +381,9 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     fi
 
     if [ ! -f "$FT_PREFIX/lib/libfreetype.a" ] && ! ls "$FT_PREFIX"/bin/libfreetype-*.dll >/dev/null 2>&1; then
-        fetch "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" freetype.tar.xz
+        fetch freetype.tar.xz \
+            "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" \
+            "https://downloads.sourceforge.net/project/freetype/freetype2/$FREETYPE_VERSION/freetype-$FREETYPE_VERSION.tar.xz"
         rm -rf "freetype-$FREETYPE_VERSION"
         tar -xJf freetype.tar.xz
         (
@@ -390,7 +405,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     fi
 
     if ! ls "$PREFIX"/lib/libfribidi.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libfribidi-*.dll >/dev/null 2>&1; then
-        fetch "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz" fribidi.tar.xz
+        fetch fribidi.tar.xz "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz"
         rm -rf "fribidi-$FRIBIDI_VERSION"
         tar -xJf fribidi.tar.xz
         (
@@ -407,7 +422,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     fi
 
     if [ ! -f "$HB_PREFIX/lib/libharfbuzz.a" ] && ! ls "$HB_PREFIX"/bin/libharfbuzz-*.dll >/dev/null 2>&1; then
-        fetch "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz" harfbuzz.tar.xz
+        fetch harfbuzz.tar.xz "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz"
         rm -rf "harfbuzz-$HARFBUZZ_VERSION"
         tar -xJf harfbuzz.tar.xz
         if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
@@ -449,7 +464,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
     fi
 
     if ! ls "$PREFIX"/lib/libass.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libass-*.dll >/dev/null 2>&1; then
-        fetch "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.xz" libass.tar.xz
+        fetch libass.tar.xz "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.xz"
         rm -rf "libass-$LIBASS_VERSION"
         tar -xJf libass.tar.xz
         (
@@ -515,7 +530,7 @@ if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
 fi
 
 if [ ! -d "ffmpeg-$FFMPEG_VERSION" ]; then
-    fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" ffmpeg.tar.xz
+    fetch ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
     tar -xJf ffmpeg.tar.xz
 fi
 
