@@ -1,5 +1,7 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.Debug
+
 /** Host platform, as far as native library naming is concerned. */
 enum class Os {
     LINUX, MAC, WINDOWS;
@@ -55,20 +57,65 @@ fun nativesPlatform(): String {
  * Whether THIS process is linked against musl. Read off the running
  * process's own mappings rather than probed on the filesystem: the question
  * is which C library the JVM that will dlopen these libraries actually uses,
- * and a host can carry both (Alpine's gcompat, a glibc JVM unpacked onto a
+ * and a host can carry both (Alpine with gcompat, a glibc JVM unpacked onto a
  * musl system). A filesystem probe answers "what is installed", which is a
  * different question and gets those hosts wrong.
+ *
+ * Latin-1, not UTF-8: the markers are ASCII, but a mapped file whose name
+ * holds one non-UTF-8 byte would fail the decode of the whole file and
+ * silently answer glibc on a musl host. Latin-1 cannot fail on any byte.
  */
-private fun isMuslProcess(): Boolean = runCatching {
-    isMuslLinked(java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/maps")))
-}.getOrDefault(false)
-
-/** The pure half of [isMuslProcess], so the parsing is testable without /proc. */
-internal fun isMuslLinked(procSelfMaps: String): Boolean =
-    procSelfMaps.lineSequence().any { line ->
-        val mapped = line.substringAfterLast(' ')
-        mapped.contains("ld-musl-") || mapped.contains("libc.musl-")
+private fun isMuslProcess(): Boolean =
+    try {
+        isMuslLinked(String(java.nio.file.Files.readAllBytes(MAPS), Charsets.ISO_8859_1))
+    } catch (e: java.io.IOException) {
+        // No /proc (a minimal container, a chroot) leaves the flavour unknown.
+        // glibc is the safer guess -- it is the majority of hosts -- but the
+        // resulting bundle miss is otherwise indistinguishable from shipping
+        // no natives at all, so say so where it can be seen.
+        Debug.trace("reading $MAPS to detect the C library", e)
+        false
     }
+
+private val MAPS = java.nio.file.Path.of("/proc/self/maps")
+
+/**
+ * The pure half of [isMuslProcess], so the parsing is testable without /proc.
+ *
+ * glibc, once seen, settles it. Under Alpine's gcompat a *glibc* process maps
+ * musl's loader too -- gcompat's ld-linux shim is itself a musl program -- so
+ * a musl marker alone would hand a glibc process musl objects it cannot load,
+ * getting wrong the one host that motivates reading maps in the first place.
+ */
+internal fun isMuslLinked(procSelfMaps: String): Boolean {
+    var musl = false
+    for (line in procSelfMaps.lineSequence()) {
+        val name = mappedFileName(line) ?: continue
+        if (name.startsWith("libgcompat.") ||
+            name.startsWith("libc.so.6") ||
+            name.startsWith("ld-linux-")
+        ) {
+            return false
+        }
+        if (name.startsWith("ld-musl-") || name.startsWith("libc.musl-")) musl = true
+    }
+    return musl
+}
+
+/**
+ * The file name of a mapping, or null for an anonymous or pseudo-file one.
+ *
+ * The path is the sixth field and runs to end of line: the kernel pads to the
+ * column with spaces and does not escape spaces inside the path, so the path
+ * cannot be taken as the last whitespace-separated token. It also appends
+ * " (deleted)" once the file is unlinked -- which is what `apk upgrade musl`
+ * does to a running JVM -- and that suffix must not hide the name behind it.
+ */
+private fun mappedFileName(line: String): String? {
+    val path = line.split(' ', limit = 6).getOrNull(5)?.trimStart()?.removeSuffix(" (deleted)")
+    if (path.isNullOrEmpty() || path.startsWith('[')) return null
+    return path.substringAfterLast('/')
+}
 
 /**
  * The libav* shared libraries skinema binds, with the soname major each one
