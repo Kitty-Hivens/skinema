@@ -59,11 +59,7 @@ MJPEG           = decoder:mjpeg
 # -- Animated images ---------------------------------------------------------
 GIF             = decoder:gif
 APNG            = decoder:apng
-# animated WebP waits for a bundle built from this branch. The claim below is
-# decoder:webp_anim, which the published bundles predate -- they still carry
-# the libwebp stack this replaced -- so it goes in with the natives that have
-# it, not before, or the check fails against the release it runs on.
-# animated WebP  = decoder:webp_anim
+animated WebP   = decoder:webp_anim
 
 # -- Audio -------------------------------------------------------------------
 AAC             = decoder:aac
