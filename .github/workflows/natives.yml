@@ -162,10 +162,14 @@ jobs:
             alpine:edge sh -euc '
               # edge, not a stable tag: openjdk25 is only there, and the
               # project builds on a 25 toolchain. ffmpeg is the fixture CLI
-              # the acceptance suite shells out to.
+              # the acceptance suite shells out to. font-dejavu because the
+              # image carries no font at all -- fontconfig-dev installs the
+              # library, not a typeface, and libass renders nothing without
+              # one, which is what failed the subtitle tests on musl while the
+              # same tests passed on runners whose images ship fonts.
               apk add --no-cache bash build-base nasm cmake meson ninja pkgconf \
                   curl patchelf linux-headers autoconf automake libtool \
-                  fontconfig-dev libva-dev openjdk25 ffmpeg >/dev/null
+                  fontconfig-dev libva-dev openjdk25 ffmpeg font-dejavu >/dev/null
               STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" TIER="$TIER" \
                 bash tools/build-natives.sh "/src/natives/${{ matrix.platform }}"
               # Acceptance against the freshly built musl bundle, on the musl
