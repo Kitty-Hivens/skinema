@@ -25,7 +25,7 @@ disable-everything plus an explicit whitelist;
                  ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub
 --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,
                 opus,vorbis,flac,ac3
---enable-filter=atempo,abuffer,abuffersink
+--enable-filter=atempo
 ```
 
 `--disable-network` is a load-bearing guarantee, not an optimization:
@@ -44,7 +44,8 @@ for Windows:
   required for the webm alpha path; the native vp8/vp9 decoders drop
   it.)
 - **libwebp** -- built shared and shipped; the bindings load it at
-  runtime on every OS (FFmpeg cannot decode animated WebP at all).
+  runtime on every OS. FFmpeg 9 does carry a native `webp_anim` decoder,
+  but the whitelist does not enable it -- libwebp is the animated path.
 - **fribidi** -- built shared and shipped: it is LGPL and must not fold
   into the libass binary. The preload pattern resolves it.
 - **freetype, harfbuzz** -- folded static into libass on Linux and
@@ -74,13 +75,16 @@ MinGW libtool refuses to fold a static archive into a DLL, so the
 static freetype/harfbuzz fold that works on Linux/macOS leaves the
 Windows libass DLL unbuildable. On Windows, freetype and harfbuzz are
 built **shared** (their own DLLs, which the loader preloads), and the
-MinGW runtime DLLs the bundle links -- `zlib1`, `libbz2-1`,
-`libiconv-2`, `liblzma-5`, `libwinpthread-1` -- are copied into the
-bundle and preloaded by name. These had been a latent gap since M3
-(`liblzma-5`, avcodec's lzma path, surfaced later): a clean machine
-without them on PATH could fail to load avcodec; the runner's PATH had
-masked it. The script hard-fails if any is missing, so a broken bundle
-never ships.
+MinGW runtime DLLs the bundle links are copied in and preloaded by name.
+Which ones those are is read off the built DLLs' import tables and closed
+transitively, not listed by hand: what the toolchain links differs by
+architecture, by tier and by what was folded in statically this round, and a
+hand-written list was wrong in both directions -- it shipped four runtimes
+that had become static and would have missed a genuinely new import until a
+clean Windows failed to load. A runtime with no licence mapping fails the
+build. `tools/check-windows-bundle.sh` then proves the result is
+import-closed and that every runtime import is preloaded before its
+importer.
 
 ## Bundle layout
 
@@ -92,6 +96,7 @@ bundle/
   lib<name>.<major>.dylib     (macOS)
   <name>-<major>.dll          (Windows, plus the MinGW runtime DLLs)
   licenses/                   (every shipped library's license text)
+  manifest.txt                (ffmpeg version, tier features, enabled components)
   index.txt                   (first line: content fingerprint; rest: sorted file list)
 ```
 
@@ -134,6 +139,23 @@ release is what put the namespace over Maven Central's monthly size limit
 (ROADMAP M17). A release that does not touch the bundles publishes none of
 them.
 
+## The files that hold the invariants
+
+Three artefacts carry claims the build asserts rather than restates, and a
+change that contradicts one fails CI rather than shipping:
+
+- `tools/bundle-surface.txt` -- the host libraries each libc/tier bundle is
+  allowed to need. Asserted in both directions: an undeclared dependency and a
+  declared one that never appears both fail the build.
+- `docs/format-claims.txt` and `tools/check-readme-formats.sh` -- the join
+  between the README's "What it plays" table and the component names in a
+  bundle's `manifest.txt`. Editing that table without editing the claims file
+  fails the pull request, which is the point: the README advertised a subtitle
+  decoder no bundle carried for the whole life of the project.
+- `tools/check-windows-bundle.sh` -- import closure and preload order for the
+  Windows bundles, read off the PE headers and off the loader's own preload
+  lists in the Kotlin sources.
+
 ## Delivery: two workflows
 
 Delivery is **asynchronous by design**. Each platform uploads
@@ -153,7 +175,7 @@ platforms, and a rebuild replaces just its own asset.
   first-class, because GitHub's free `ubuntu-24.04-arm` and `windows-11-arm`
   runners are real machines. The matrix is generated in a prepare job, so a
   dispatch can narrow to one platform or tier (`only_platform`/`only_tier`).
-- **build.yml** (push and PR) runs the test matrix on four platforms,
+- **build.yml** (push and PR) runs the test matrix on seven platforms,
   downloads OUR release bundles (not BtbN or brew), points
   `SKINEMA_LIBAV_DIR` at them, and runs `./gradlew build`. On Windows it
   strips mingw/msys from PATH first, so a green run proves the bundle is
@@ -171,7 +193,7 @@ that changes the bundle, the order is mandatory:
 
 1. Push the `build-natives.sh` change.
 2. Dispatch `natives.yml` and wait for **every** affected asset on the
-   rolling release to be replaced -- all 18 for a change that touches every
+   rolling release to be replaced -- all 24 for a change that touches every
    tier and platform (check each asset's `updated_at`).
 3. Only then push the consuming code.
 

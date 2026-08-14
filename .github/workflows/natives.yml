@@ -24,11 +24,14 @@ permissions:
 env:
   FFMPEG_VERSION: "9.0.1"
 
-# Serialised on purpose. Two runs clobber each other's release assets,
-# which is how a release ends up carrying bundles from two different
-# builds while every asset is present and the guard is green.
+# Serialised on purpose, and across every ref rather than per ref. Two runs
+# clobber each other's release assets, which is how a release ends up carrying
+# bundles from two different builds while every asset is present and the guard
+# is green -- and the assets live on one rolling tag that every branch uploads
+# to, so keying this on the branch would leave exactly that door open. A
+# constant group is the whole namespace.
 concurrency:
-  group: natives-${{ github.ref }}
+  group: natives-rolling-release
   cancel-in-progress: false
 
 jobs:

@@ -37,6 +37,9 @@ TABLE="$(awk '/^## What it plays/ {inside = 1; next}
 # component as missing.
 have() { # kind, name
     local line
+    # An empty name would match the run of spaces every manifest line ends
+    # with, so every claim spelled "decoder:" passed.
+    [ -n "$2" ] || return 1
     line="$(grep "^$1 " "$MANIFEST" || true)"
     [ -n "$line" ] || return 1
     case " ${line#* } " in *" $2 "*) return 0 ;; esac
@@ -70,8 +73,11 @@ while IFS= read -r line || [ -n "$line" ]; do
         stale=$((stale + 1))
     fi
 
-    # Quoted: an unquoted expansion would glob a component named with a star
-    # against the working directory.
+    # Globbing off for the split: the expansion has to stay unquoted to split
+    # on spaces, and a component name carrying a star would otherwise be
+    # matched against the working directory -- which passed for any claim
+    # whose glob happened to hit a file there.
+    set -f
     for spec in ${comps}; do
         kind="${spec%%:*}"
         name="${spec#*:}"
@@ -80,11 +86,12 @@ while IFS= read -r line || [ -n "$line" ]; do
             missing=$((missing + 1))
         }
     done
+    set +f
 done < "$CLAIMS"
 
 # A truncated or emptied claims file would otherwise report success over
 # nothing, which is the failure mode this whole script exists to prevent.
-MIN_CLAIMS=50
+MIN_CLAIMS=60
 if [ "$claims" -lt "$MIN_CLAIMS" ]; then
     echo "check-readme-formats: only $claims claims parsed, expected at least $MIN_CLAIMS" >&2
     echo "$(basename "$CLAIMS") looks truncated; a near-empty file would pass every other check here." >&2
