@@ -300,7 +300,7 @@ README once the library is usable.
   race-safe), keyed by platform so the loader stays tier-agnostic.
 - Natives versioning: `skinema-natives` is versioned as the FFmpeg build it
   carries plus a repack revision (`<ffmpeg>-<revision>`), NOT as the library
-  (M17). A library release republishes none of the ~159 MiB of bundles; they
+  (M17). A library release republishes none of the ~211 MiB of bundles; they
   move only when their bytes do. Consumers pair the natives version the
   release notes name with any library version that names it.
 - Natives delivery is asynchronous by design: every platform build
@@ -883,7 +883,7 @@ README once the library is usable.
   percentile of all publishers), hard-enforced from 2026-08-11. dev.hivens ran
   287.9 MiB in June and 317.8 MiB in the first six days of July: 369% and 407%
   of the size cap, June also over on files (1990). The overage is one artifact.
-  The 18 tier/platform bundles are ~159 MiB per release; everything else in the
+  The 24 tier/platform bundles are ~211 MiB per release; everything else in the
   namespace -- core, skiko, compose, libtray, libnotify, libvault -- is ~0.4 MiB
   together. Nearly all of it bought nothing: versioning the bundles with the
   library republished all 18 even when the bytes were identical. 0.6.0 -> 0.6.1
@@ -892,16 +892,16 @@ README once the library is usable.
   12 linux/macos jars were byte-identical), both checkable against the `.sha1`
   files on repo1. Decoupled, a release that leaves the bundles alone costs
   ~0.4 MiB. What this does NOT fix: a release that does change them still costs
-  ~159 MiB that month, ~2x the free cap, because the matrix is real -- 6
+  ~211 MiB that month, ~2x the free cap, because the matrix is real -- 8
   platforms x 3 licence tiers, and trimming it means dropping platforms or the
   LGPL-only tiers, which is what those tiers exist for. That residue is the
   exemption request to central-support, and it is the whole ask: ~0 most months,
-  ~159 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
+  ~211 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
   per-platform artifactIds (`skinema-natives-linux-x64` and friends, each on its
   own version) would have made the Windows-only repack cost 66 MiB and slipped
   under the cap, but it splits the namespace into six artifacts whose versions
   drift apart in the consumer's build file, and a new FFmpeg pin -- the ordinary
-  reason bundles change -- touches every platform and costs the same 159 MiB
+  reason bundles change -- touches every platform and costs the same 211 MiB
   either way.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
