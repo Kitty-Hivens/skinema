@@ -58,10 +58,13 @@ class LibavLibraryTest {
     }
 
     /**
-     * Real /proc/self/maps excerpts. The glibc one is from this repo's own
-     * CI shape, the musl one from an Alpine JVM; the mixed case is a glibc
-     * process on a host that also has musl installed, which is exactly where
-     * a filesystem probe would answer wrongly.
+     * /proc/self/maps excerpts captured from running processes -- the glibc
+     * one from this repo's CI image, the rest from Alpine containers.
+     *
+     * Each case defeats a plausible shortcut: matching the last
+     * whitespace-separated token misses a path the kernel padded or a file
+     * that has been unlinked, and matching the musl marker anywhere in the
+     * text calls gcompat's glibc process musl.
      */
     @Test
     fun `musl is detected from the process own mappings, not from what is installed`() {
@@ -73,22 +76,42 @@ class LibavLibraryTest {
             7f9b4c000000-7f9b4c022000 r-xp 00000000 08:03 4321  /lib/ld-musl-x86_64.so.1
             7f9b4c400000-7f9b4c401000 rw-p 00000000 00:00 0     [heap]
         """.trimIndent()
-        // glibc process, musl merely present on disk (gcompat and friends).
-        val mixed = glibc + "\n7f00aa000000-7f00aa001000 r--p 00000000 08:03 9  /usr/lib/libc.musl-x86_64.so.1.bak"
+        // A glibc binary run through Alpine's gcompat. The shim is itself a
+        // musl program, so musl's loader is mapped -- but the process needs
+        // glibc objects, and handing it musl ones cannot work.
+        val gcompat = """
+            7f71a63d7000-7f71a63d9000 r-xp 00000000 00:2f 1799  /usr/bin/some-glibc-tool
+            7f71a63c5000-7f71a63c7000 r-xp 00000000 00:2f 1806  /lib/libgcompat.so.0
+            7f71a63e9000-7f71a6420000 r-xp 00000000 00:2f 1793  /lib/ld-musl-x86_64.so.1
+        """.trimIndent()
+        // `apk upgrade musl` installs to a temp name and renames, so a JVM
+        // that was already running sees every musl mapping unlinked.
+        val deleted = "7fb9f269d000-7fb9f26cb000 r-xp 00000000 08:03 123  /lib/ld-musl-x86_64.so.1 (deleted)"
+        // The kernel does not escape spaces in the path (unlike /proc/mounts).
+        val spaced = "7f00aa000000-7f00aa001000 r--p 00000000 08:03 9  /opt/my libs/libc.musl-x86_64.so.1"
 
         assertEquals(false, isMuslLinked(glibc))
         assertEquals(true, isMuslLinked(musl))
-        assertEquals(true, isMuslLinked(mixed), "a mapped musl libc counts wherever it came from")
+        assertEquals(false, isMuslLinked(gcompat), "a glibc process under gcompat needs glibc objects")
+        assertEquals(true, isMuslLinked(deleted), "an unlinked musl loader is still a musl process")
+        assertEquals(true, isMuslLinked(spaced), "a padded path is not the last token on the line")
         assertEquals(false, isMuslLinked(""), "no mappings is not musl")
     }
 
     @Test
     fun `the platform tag is the classifier the natives jars publish`() {
-        // Whatever this host is, the tag must be one the build actually ships.
-        val shipped = setOf(
-            "linux-x64", "linux-arm64", "linux-musl-x64", "linux-musl-arm64",
-            "windows-x64", "windows-arm64", "macos-arm64", "macos-x64",
-        )
-        assertTrue(nativesPlatform() in shipped, "unknown platform tag ${nativesPlatform()}")
+        // Read the tags the natives module actually publishes rather than
+        // restating them: a hand-copied list agrees with itself while the two
+        // sides drift, and the drift is a jar coordinate that never resolves.
+        var dir = java.io.File(System.getProperty("user.dir")).absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) {
+            dir = dir.parentFile ?: error("no settings.gradle.kts above ${System.getProperty("user.dir")}")
+        }
+        val build = java.io.File(dir, "skinema-natives/build.gradle.kts").readText()
+        val platforms = Regex("\"((?:linux|macos|windows)(?:-musl)?-(?:x64|arm64))\"")
+            .findAll(build).map { it.groupValues[1] }.toSet()
+
+        assertEquals(8, platforms.size, "expected 8 published platform tags, got $platforms")
+        assertTrue(nativesPlatform() in platforms, "unknown platform tag ${nativesPlatform()} (published: $platforms)")
     }
 }
