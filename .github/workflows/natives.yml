@@ -24,6 +24,13 @@ permissions:
 env:
   FFMPEG_VERSION: "9.0.1"
 
+# Serialised on purpose. Two runs clobber each other's release assets,
+# which is how a release ends up carrying bundles from two different
+# builds while every asset is present and the guard is green.
+concurrency:
+  group: natives-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # The tier x platform matrix is generated here so a dispatch can narrow it to
   # one platform and/or tier -- targeted rebuilds, and cheap iteration on a new
@@ -63,6 +70,13 @@ jobs:
               items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\",\"libc\":\"${LIBC[$p]:-glibc}\"}")
             done
           done
+          # A typo in either input matches nothing, and a matrix with no
+          # entries is a run with no jobs, which GitHub marks success. That
+          # reads as "the platform was rebuilt" when nothing was built at all.
+          if [ ${#items[@]} -eq 0 ]; then
+            echo "::error::no tier/platform matched (only_tier='$ONLY_TIER' only_platform='$ONLY_PLATFORM')"
+            exit 1
+          fi
           echo "matrix={\"include\":[$(IFS=,; echo "${items[*]}")]}" >> "$GITHUB_OUTPUT"
 
   build:
