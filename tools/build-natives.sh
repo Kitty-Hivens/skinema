@@ -985,16 +985,17 @@ if [ "$HOST_OS" = mac ]; then
     # frameworks are dropped: they ship with macOS itself and are not
     # something a consumer can lack, which is what the declaration is about.
     key="macos"
+    # Filtered with grep rather than a case: macOS still ships bash 3.2, whose
+    # parser cannot read a case statement inside a command substitution, and
+    # `bash -n` on any newer bash accepts it happily.
     host_deps="$(
         for f in "$BUNDLE"/*.dylib; do
             otool -L "$f" | awk 'NR > 1 {print $1}'
-        done | sort -u | while read -r ref; do
-            case "$ref" in
-                @loader_path/*|/usr/lib/*|/System/Library/Frameworks/*) continue ;;
-            esac
-            base="$(basename "$ref")"
-            printf '%s\n' "$bundled" | grep -qx "$base" || printf '%s\n' "$ref"
-        done
+        done | sort -u \
+            | { grep -Ev '^(@loader_path/|/usr/lib/|/System/Library/Frameworks/)' || true; } \
+            | while read -r ref; do
+                  printf '%s\n' "$bundled" | grep -qx "${ref##*/}" || printf '%s\n' "$ref"
+              done
     )"
 fi
 
