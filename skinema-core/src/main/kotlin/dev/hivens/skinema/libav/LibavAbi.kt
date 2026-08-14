@@ -228,6 +228,13 @@ object LibavAbi {
     object Frame {
         const val DATA = 0L
         const val LINESIZE = 64L
+
+        // The planar plane array. `data` holds only AV_NUM_DATA_POINTERS (8)
+        // of them; beyond that FFmpeg stores the planes here and `data` is
+        // just the first eight. Passing `data` to a resampler on planar audio
+        // with more than eight channels walks off its end into `linesize`,
+        // where small ints get read as pointers.
+        const val EXTENDED_DATA = 96L
         const val WIDTH = 104L
         const val HEIGHT = 108L
         const val NB_SAMPLES = 112L
