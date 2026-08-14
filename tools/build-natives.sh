@@ -819,36 +819,63 @@ cp COPYING.LGPLv2.1 LICENSE.md "$PREFIX/licenses/"
 # a failed run skipped the rebuild, and the text it needed was gone with the
 # work tree.
 
-# The Windows DLLs link toolchain runtime libraries -- zlib1/libbz2-1 (the
-# ffmpeg demuxers), libiconv-2 (avcodec + libass), liblzma-5 (avcodec's
-# xz/lzma path), libwinpthread-1 (av threading) -- that live in the MSYS2
-# prefix, not the bundle, so a clean machine that lacks them cannot load
-# avcodec or libass. Every one an av* DLL hard-imports must ride here, or
-# LoadLibrary of the importer fails on a clean Windows. The aarch64
-# clang toolchain additionally links its C++ runtime and unwinder as DLLs
-# (libc++/libunwind), where x64 GCC folded libstdc++/libgcc in statically.
-# Copy them all in (MINGW_PREFIX is /mingw64 on MINGW64, /clangarm64 on
-# CLANGARM64) with their notices so the bundle is self-contained. Hard-fail
-# on a missing name -- a typo would silently ship a host-only bundle.
+# The Windows DLLs may link toolchain runtime libraries that live in the MSYS2
+# prefix (MINGW_PREFIX is /mingw64 on MINGW64, /clangarm64 on CLANGARM64)
+# rather than the bundle, so a clean machine that lacks them cannot load
+# avcodec or libass. Which ones those are differs by toolchain, by tier and by
+# what is linked statically this round -- so they are read off the built DLLs
+# instead of named here, and their notices ride along.
 if [ "$HOST_OS" = windows ]; then
     MINGW="${MINGW_PREFIX:-/mingw64}"
-    runtime_dlls="zlib1 libbz2-1 libiconv-2 liblzma-5 libwinpthread-1"
-    runtime_lics="zlib bzip2 libiconv xz winpthreads"
-    if [ "$HOST_ARCH" = arm64 ]; then
-        runtime_dlls="$runtime_dlls libc++ libunwind"
-        runtime_lics="$runtime_lics libc++ libunwind"
-    else
+    command -v objdump >/dev/null 2>&1 || { echo "build-natives: objdump is required to close the DLL imports" >&2; exit 1; }
+    # Take the set from what the built DLLs actually import, closed
+    # transitively, rather than from a list written by hand. A fixed list is
+    # wrong in both directions at once: it shipped zlib1/libbz2-1/liblzma-5/
+    # libiconv-2 into every bundle after those became static, and libc++ and
+    # libunwind into arm64 tiers with no C++ in them, while a genuinely new
+    # import would have gone unnoticed until a clean Windows failed to load.
+    runtime_dlls=""
+    queue="$(ls "$PREFIX"/bin/*.dll 2>/dev/null | xargs -r -n1 basename)"
+    while [ -n "$queue" ]; do
+        next=""
+        for dll in $queue; do
+            [ -f "$PREFIX/bin/$dll" ] || continue
+            for imp in $(objdump -p "$PREFIX/bin/$dll" | sed -n 's/.*DLL Name:[[:space:]]*//p'); do
+                [ -f "$PREFIX/bin/$imp" ] && continue          # already ours
+                [ -f "$MINGW/bin/$imp" ] || continue           # a system DLL; Windows provides it
+                cp "$MINGW/bin/$imp" "$PREFIX/bin/"
+                runtime_dlls="$runtime_dlls $imp"
+                next="$next $imp"
+            done
+        done
+        queue="$next"
+    done
+    echo "toolchain runtimes pulled in by import closure:${runtime_dlls:- none}"
+
+    # Licence text per DLL that actually shipped. The names are MSYS2 package
+    # directories under share/licenses, which do not match the DLL names.
+    runtime_lics=""
+    for dll in $runtime_dlls; do
+        case "$dll" in
+            zlib1.dll)           runtime_lics="$runtime_lics zlib" ;;
+            libbz2-*.dll)        runtime_lics="$runtime_lics bzip2" ;;
+            libiconv-*.dll)      runtime_lics="$runtime_lics libiconv" ;;
+            liblzma-*.dll)       runtime_lics="$runtime_lics xz" ;;
+            libwinpthread-*.dll) runtime_lics="$runtime_lics winpthreads" ;;
+            libc++.dll)          runtime_lics="$runtime_lics libc++" ;;
+            libunwind.dll)       runtime_lics="$runtime_lics libunwind" ;;
+            libgcc_s*.dll|libstdc++-*.dll) runtime_lics="$runtime_lics gcc-libs" ;;
+            *) echo "build-natives: no licence mapping for shipped runtime $dll" >&2; exit 1 ;;
+        esac
+    done
+    if [ "$HOST_ARCH" != arm64 ]; then
         # x64 links libstdc++ and libgcc statically, so no DLL names them --
         # but their code is inside the shipped ones (x265 pulls in the C++
         # runtime), and the GCC Runtime Library Exception is what allows that
-        # without the whole bundle inheriting GPLv3. arm64 needs no equivalent:
-        # it ships those runtimes as DLLs, licensed just above.
+        # without the whole bundle inheriting GPLv3.
         runtime_lics="$runtime_lics gcc-libs"
     fi
-    for dll in $runtime_dlls; do
-        cp "$MINGW/bin/$dll.dll" "$PREFIX/bin/" \
-            || { echo "missing toolchain runtime $dll.dll under $MINGW/bin" >&2; exit 1; }
-    done
+    runtime_lics="$(printf '%s\n' $runtime_lics | sort -u)"
     # Fail on a missing text rather than skipping it. Shipping a binary whose
     # licence is silently absent is a redistribution problem, and a skip is how
     # the GCC runtime went unlicensed on x64 through several releases.

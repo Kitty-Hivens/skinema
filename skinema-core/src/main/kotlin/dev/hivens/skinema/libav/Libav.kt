@@ -62,12 +62,15 @@ object Libav {
     // through. Ass routes its own loads through resolveLibraryPath, so
     // touching it runs this first -- libass's iconv import resolves too.
     //
-    // The list spans both Windows toolchains, since one loader serves every
-    // bundle. libc++/libunwind are the aarch64 half: clang there ships its C++
-    // runtime as DLLs, where the x64 MinGW build folds libstdc++/libgcc into
-    // the libraries statically -- so on arm64 the x265 in a full-tier avcodec
-    // imports libc++ and nothing else does. A name absent from the bundle
-    // simply falls through, which is what the other tiers and x64 rely on.
+    // The list is a superset spanning both Windows toolchains and all three
+    // tiers, since one loader serves every bundle: a name absent from the
+    // bundle simply falls through. Which of these a bundle actually carries is
+    // decided at build time by closing over the DLLs' real imports, so most
+    // bundles carry only some of them -- libc++/libunwind ride only where
+    // clang links its C++ runtime dynamically (aarch64, full tier), and the
+    // compression runtimes only where they were not linked statically.
+    // Listing a name that never ships costs nothing; omitting one that does
+    // fails the load on a clean machine, which is why this errs wide.
     init {
         if (Os.current() == Os.WINDOWS) {
             val runtimes = listOf(
