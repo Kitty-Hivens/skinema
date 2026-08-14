@@ -238,9 +238,8 @@ class VideoDecoderTest {
 
     @Test
     fun `still webp decodes as a single frame through the libav path`() {
-        // The fallback for builds without libwebpdemux: ffmpeg's webp
-        // decoder handles stills (animations are libwebp's job -- see
-        // WebpAnimSourceTest).
+        // Stills go through ffmpeg's own webp decoder; the animated ones
+        // through webp_anim, covered by WebpDecodingTest.
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libwebp")
         assertDecodesEveryFrame(

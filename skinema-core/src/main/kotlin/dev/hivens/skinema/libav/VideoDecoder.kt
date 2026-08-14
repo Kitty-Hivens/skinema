@@ -19,7 +19,7 @@ import java.nio.file.Path
  */
 class VideoDecoder private constructor(
     private val arena: Arena,
-    private val fmtCtx: MemorySegment,
+    private var fmtCtx: MemorySegment,
     private val codecCtx: MemorySegment,
     private val packet: MemorySegment,
     private val frame: MemorySegment,
@@ -43,6 +43,9 @@ class VideoDecoder private constructor(
     // The custom byte source backing this decoder (freed at close, after the
     // format context); null for a file-Path decoder.
     private val avioSource: AvioSource?,
+    // The file this decoder can reopen to restart a demuxer that cannot seek;
+    // null when the bytes come from a MediaSource, which seeks on its own.
+    private val reopenPath: String?,
 ) : FrameSource {
 
     // The container's duration when it declares one, otherwise what a full
@@ -185,15 +188,16 @@ class VideoDecoder private constructor(
         Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
-        rewindPending = ptsNanos == 0L
+        restartStage = if (ptsNanos == 0L) 0 else 2
     }
 
     /**
-     * Whether a seek to the start may still need the byte-level escape below.
-     * Cleared the moment a packet arrives, so the escape is tried at most once
-     * per seek and never on a demuxer that repositioned properly.
+     * How far the restart escalation has gone for the seek in flight: 0 before
+     * either escape, 1 after the byte rewind, 2 after the demuxer replacement.
+     * Parked at 2 outside a seek to the start, so an ordinary end of stream is
+     * an end of stream.
      */
-    private var rewindPending = false
+    private var restartStage = 2
 
     /**
      * Restarts the demuxer by moving the byte stream back to the beginning.
@@ -216,6 +220,41 @@ class VideoDecoder private constructor(
     }
 
     /**
+     * Restarts by replacing the demuxer outright, for the formats where
+     * neither seeking nor rewinding the bytes brings one back: FFmpeg 9's
+     * animated-WebP demuxer accepts a seek, reports success and stays
+     * drained, and flushing it does not help either.
+     *
+     * Only the demuxer is replaced. The codec context outlives it -- it is
+     * independent once opened, and the file has not changed, so the stream it
+     * was configured for is the same stream. The hardware device, the frame
+     * and packet buffers and the arena are all untouched.
+     *
+     * Not reachable from a MediaSource decoder: that one seeks through the
+     * consumer's own callbacks, and reopening a path it never had is not a
+     * thing this can do.
+     */
+    private fun reopenDemuxer(): Boolean {
+        val path = reopenPath ?: return false
+        val ptrPtr = arena.allocate(ADDRESS)
+        ptrPtr.set(ADDRESS, 0, fmtCtx)
+        Libav.avformatCloseInput(ptrPtr)
+
+        val ctxOut = arena.allocate(ADDRESS)
+        if (Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path)) < 0) {
+            // The old context is gone either way; a decoder that cannot
+            // reopen its own file is finished, and saying so beats handing
+            // back a silently empty stream.
+            throw LibavException("reopening $path to restart a non-seekable demuxer failed")
+        }
+        fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+        Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info(reopen)")
+        Libav.avcodecFlushBuffers(codecCtx)
+        draining = false
+        return true
+    }
+
+    /**
      * Feeds exactly one packet of this video stream to the decoder; on
      * input EOF sends the flush packet instead, switching to draining.
      */
@@ -228,9 +267,14 @@ class VideoDecoder private constructor(
         }
         while (true) {
             val ret = Libav.avReadFrame(fmtCtx, packet)
-            if (ret < 0 && rewindPending) {
-                rewindPending = false
-                if (rewindToStart()) continue
+            // A seek to the start that found nothing to read gets two
+            // escapes, cheapest first: rewind the byte stream, then replace
+            // the demuxer. Each is tried once, so a demuxer that seeks
+            // properly never reaches either and a broken one cannot spin.
+            if (ret < 0 && restartStage < 2) {
+                restartStage++
+                val restarted = if (restartStage == 1) rewindToStart() else reopenDemuxer()
+                if (restarted) continue
             }
             if (ret < 0) {
                 // The demuxer stopped: a real EOF, or our AvioSource caught a
@@ -241,7 +285,7 @@ class VideoDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(flush)")
                 return
             }
-            rewindPending = false
+            restartStage = 2
             if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
                 Libav.avPacketUnref(packet)
                 continue
@@ -595,7 +639,7 @@ class VideoDecoder private constructor(
                 arena.close()
                 throw t
             }
-            return openVideo(arena, fmtCtx, null, hardware, path.toString())
+            return openVideo(arena, fmtCtx, null, hardware, path.toString(), path.toString())
         }
 
         /**
@@ -640,6 +684,7 @@ class VideoDecoder private constructor(
             avioSource: AvioSource?,
             hardware: HwAccel,
             label: String,
+            reopenPath: String? = null,
         ): VideoDecoder {
             var codecCtx = MemorySegment.NULL
             var hwDevice = MemorySegment.NULL
@@ -700,6 +745,15 @@ class VideoDecoder private constructor(
                 val duration = containerDurationNanos(fmtCtx, stream, timeBaseNum, timeBaseDen)
                 val codedWidth = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.WIDTH)
                 val codedHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
+                // A video stream still without dimensions once stream info has
+                // been probed is one nothing can decode. Truncated and
+                // malformed files reach here looking healthy -- the container
+                // parses, the stream is found, the codec is known -- and would
+                // otherwise open cleanly and then hand back no frames at all,
+                // which reads as an empty video rather than a broken file.
+                if (codedWidth <= 0 || codedHeight <= 0) {
+                    throw LibavException("$label has a video stream with no dimensions -- truncated or corrupt")
+                }
                 return VideoDecoder(
                     arena, fmtCtx, codecCtx, packet, frame, streamIndex, timeBaseNum, timeBaseDen,
                     startTimeNanos,
@@ -713,6 +767,7 @@ class VideoDecoder private constructor(
                     hw.pixFmt,
                     hwDevice,
                     avioSource,
+                    reopenPath,
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)

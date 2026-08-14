@@ -25,7 +25,6 @@ BUNDLE="${1:?usage: check-windows-bundle.sh <bundle-dir> [repo-root]}"
 ROOT="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
 LIBAV_KT="$ROOT/skinema-core/src/main/kotlin/dev/hivens/skinema/libav/Libav.kt"
 ASS_KT="$ROOT/skinema-core/src/main/kotlin/dev/hivens/skinema/ass/Ass.kt"
-WEBP_KT="$ROOT/skinema-core/src/main/kotlin/dev/hivens/skinema/webp/Webp.kt"
 
 lower() { tr 'A-Z' 'a-z'; }
 
@@ -93,7 +92,7 @@ echo "Import-closed: every non-system import is present."
 
 # Libav preloads by exact file name; Ass and Webp name a base and a soname
 # major (the Windows spelling is lib<base>-<major>.dll) plus the odd literal.
-LOADER_SOURCES=("$LIBAV_KT" "$ASS_KT" "$WEBP_KT")
+LOADER_SOURCES=("$LIBAV_KT" "$ASS_KT")
 preload="$(
     {
         grep -hoE '"[A-Za-z0-9_+.-]+\.dll"' "${LOADER_SOURCES[@]}" 2>/dev/null | tr -d '"'
@@ -108,7 +107,7 @@ preload="$(
 shopt -s nullglob
 loaded=("$BUNDLE"/avutil-*.dll "$BUNDLE"/avcodec-*.dll "$BUNDLE"/avformat-*.dll \
         "$BUNDLE"/avfilter-*.dll "$BUNDLE"/swscale-*.dll "$BUNDLE"/swresample-*.dll \
-        "$BUNDLE"/libass-*.dll "$BUNDLE"/libwebp-*.dll "$BUNDLE"/libwebpdemux-*.dll)
+        "$BUNDLE"/libass-*.dll)
 shopt -u nullglob
 # A renamed library would empty this array and the loop below would verify
 # nothing while printing that the load order is sound.

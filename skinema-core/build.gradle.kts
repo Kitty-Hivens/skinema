@@ -67,6 +67,6 @@ tasks.test {
 
 mavenPublishing {
     pom {
-        description.set("Video decoding for the JVM: FFmpeg and libwebp through hand-written FFM bindings, paced RGBA frames out.")
+        description.set("Video decoding for the JVM: FFmpeg through hand-written FFM bindings, paced RGBA frames out.")
     }
 }

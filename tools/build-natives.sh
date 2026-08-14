@@ -11,10 +11,7 @@
 # Env:
 #   FFMPEG_VERSION  release to build (default 9.0.1; must stay in the n9.0 pin)
 #   STATIC_DEPS=1   shipping mode: libvpx + dav1d from source statically
-#                   linked into ffmpeg, plus libwebp/libwebpdemux built as
-#                   SHARED libraries for the bundle (the animated-WebP path
-#                   binds them directly; FFmpeg cannot decode animations)
-#   WEBP_VERSION    libwebp release for STATIC_DEPS (default 1.5.0)
+#                   linked into ffmpeg
 #   ZLIB_VERSION    zlib release for STATIC_DEPS (default 1.3.1)
 #   BZIP2_VERSION   bzip2 release for STATIC_DEPS (default 1.0.8)
 #   XZ_VERSION      xz/liblzma release for STATIC_DEPS (default 5.6.4)
@@ -32,7 +29,6 @@
 set -euo pipefail
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-9.0.1}"
-WEBP_VERSION="${WEBP_VERSION:-1.5.0}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
 X264_VERSION="${X264_VERSION:-stable}"
@@ -191,7 +187,6 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         bzip2.tar.gz)        echo ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 ;;
         xz.tar.gz)           echo 269e3f2e512cbd3314849982014dc199a7b2148cf5c91cedc6db629acdf5e09b ;;
         dav1d.tar.gz)        echo fa635e2bdb25147b1384007c83e15de44c589582bb3b9a53fc1579cb9d74b695 ;;
-        libwebp-dist.tar.gz) echo 7d6fab70cf844bf6769077bd5d7a74893f8ffd4dfb42861745750c63c2a5c92c ;;
         libvpx.tar.gz)       echo 26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa ;;
         x265.tar.gz)         echo a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29 ;;
         freetype.tar.xz)     echo 0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289 ;;
@@ -377,42 +372,6 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         ninja -C "dav1d-$DAV1D_VERSION/build" install
     fi
     if has av1; then license "dav1d-$DAV1D_VERSION/COPYING" "dav1d-COPYING"; fi
-
-    # libwebp ships SHARED into the bundle prefix (the webp bindings load it at
-    # runtime; it is not linked into ffmpeg). Autotools elsewhere -- libtool
-    # produces the soname naming the loader expects (libwebp.so.7 /
-    # libwebp.7.dylib / libwebp-7.dll). On CLANGARM64 that libtool cannot fold
-    # the static sharpyuv convenience lib into a DLL and emits no libwebp DLL at
-    # all, so build with cmake there (as MSYS2 does); CMAKE_DLL_NAME_WITH_SOVERSION
-    # reproduces the same -<major> DLL names.
-    if has webp && ! ls "$PREFIX"/lib/libwebp.* >/dev/null 2>&1 && ! ls "$PREFIX"/bin/libwebp-*.dll >/dev/null 2>&1; then
-        fetch libwebp-dist.tar.gz "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz"
-        rm -rf "libwebp-$WEBP_VERSION"
-        tar -xzf libwebp-dist.tar.gz
-        if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
-            cmake -G Ninja -S "libwebp-$WEBP_VERSION" -B "libwebp-$WEBP_VERSION/build" \
-                -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_SHARED_LIBS=ON -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
-                -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF -DWEBP_BUILD_GIF2WEBP=OFF \
-                -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF \
-                -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_EXTRAS=OFF
-            ninja -C "libwebp-$WEBP_VERSION/build" install
-            # cmake also emits decoder-only and mux libraries; the bindings use
-            # neither (libwebp covers decode, libwebpdemux drives animation), and
-            # the autotools build on other platforms ships neither -- drop them.
-            rm -f "$PREFIX"/bin/libwebpdecoder-*.dll "$PREFIX"/bin/libwebpmux-*.dll
-        else
-            (
-                cd "libwebp-$WEBP_VERSION"
-                ./configure --prefix="$PREFIX" --enable-shared --disable-static \
-                    --enable-libwebpdemux --disable-libwebpmux \
-                    ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
-                make -j"$JOBS"
-                make install
-            ) || exit 1
-        fi
-    fi
-    if has webp; then license "libwebp-$WEBP_VERSION/COPYING" "libwebp-COPYING"; fi
 
     if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
         fetch libvpx.tar.gz "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz"
@@ -768,7 +727,12 @@ ENC=()
 GPL=()
 has av1  && { LIBS+=(--enable-libdav1d); DECODE+=",libdav1d,av1"; PARSE+=",av1"; }
 has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9"; PARSE+=",vp8,vp9"; }
-has webp && { DEMUX+=",image_webp_pipe"; DECODE+=",webp"; PARSE+=",webp"; }
+# webp_anim is FFmpeg 9's own animated-WebP demuxer and decoder, and it is the
+# whole webp path now -- libwebp, libwebpdemux and libsharpyuv are no longer
+# built or shipped. The one thing it cannot do is seek: it accepts a seek,
+# reports success and stays drained, so the decoder restarts it by replacing
+# the demuxer, which is what keeps looping working.
+has webp && { DEMUX+=",image_webp_pipe,webp_anim"; DECODE+=",webp,webp_anim"; PARSE+=",webp"; }
 has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub"; }
 # The broad legacy/extended decode set (the "formats" feature). All native
 # FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
@@ -1011,7 +975,7 @@ cp "$PREFIX"/licenses/* "$BUNDLE/licenses/"
 # Soname-level names come from the symlinks (ELF) or the install names
 # (Mach-O): dereference whatever matches lib<name>.<so-or-dylib>.<major>,
 # which covers both ffmpeg's x.y.z chains and libtool's single-level
-# naming for libwebp.
+# naming.
 shopt -s nullglob
 for f in "$PREFIX"/lib/lib*.so.*; do
     base="$(basename "$f")"

@@ -2,7 +2,7 @@ package dev.hivens.skinema.libav
 
 /**
  * A pull-style RGBA frame source. [VideoDecoder] is the libav-backed
- * implementation; [dev.hivens.skinema.webp.WebpAnimSource] covers the one
+ * implementation covering every format skinema opens; the one
  * format FFmpeg cannot (animated WebP). VideoPlayer paces whichever it
  * gets from [FrameSources] -- the pacing/mailbox layers never know which
  * demuxer feeds them.
