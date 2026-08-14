@@ -37,13 +37,29 @@ dlls=("$BUNDLE"/*.dll)
 shopt -u nullglob
 [ ${#dlls[@]} -gt 0 ] || { echo "no DLLs under $BUNDLE"; exit 1; }
 
-have="$(printf '%s\n' "${dlls[@]}" | xargs -n1 basename | lower | sort -u)"
+have="$(for f in "${dlls[@]}"; do basename "$f"; done | lower | sort -u)"
 
 # A DLL's imports, minus itself and the Windows apisets.
 imports_of() {
     "$DUMPER" -p "$1" 2>/dev/null | sed -n 's/.*DLL Name:[[:space:]]*//p' | lower | sort -u \
         | grep -v "^$(basename "$1" | lower)$" | grep -v '^api-ms-win-'
 }
+
+# Every file must actually parse as a PE before either check below means
+# anything. Silence used to read as "nothing to check": a file objdump cannot
+# read has no imports, so a directory of junk passed both halves and printed
+# two success lines. No library in this bundle has an empty import table --
+# they all call into the C runtime -- so an empty read is a broken one.
+unreadable=0
+for f in "${dlls[@]}"; do
+    [ -n "$(imports_of "$f")" ] && continue
+    echo "UNREADABLE: $(basename "$f") yielded no imports -- $DUMPER cannot read it as a PE"
+    unreadable=$((unreadable + 1))
+done
+if [ "$unreadable" -gt 0 ]; then
+    echo "Refusing to verify a bundle with $unreadable unreadable file(s); neither check below would mean anything."
+    exit 1
+fi
 
 # Windows' own DLLs. Named explicitly rather than probed, so the script gives
 # the same answer off Windows (a maintainer's box, a Linux runner) as on it;
@@ -94,13 +110,31 @@ loaded=("$BUNDLE"/avutil-*.dll "$BUNDLE"/avcodec-*.dll "$BUNDLE"/avformat-*.dll 
         "$BUNDLE"/avfilter-*.dll "$BUNDLE"/swscale-*.dll "$BUNDLE"/swresample-*.dll \
         "$BUNDLE"/libass-*.dll "$BUNDLE"/libwebp-*.dll "$BUNDLE"/libwebpdemux-*.dll)
 shopt -u nullglob
+# A renamed library would empty this array and the loop below would verify
+# nothing while printing that the load order is sound.
+[ ${#loaded[@]} -gt 0 ] || {
+    echo "no av*/libass/libwebp libraries under $BUNDLE -- the loaded set is empty, so load order is unverifiable"
+    exit 1
+}
 
 unmapped=0
+# Built once, and matched with a case rather than a pipeline. `grep -q` closes
+# the pipe on its first match, which raises SIGPIPE in the xargs still forking
+# behind it; under `pipefail` that pipeline then returns 141, the `&& continue`
+# does not run, and a sound bundle is reported as having a broken load order.
+# It only bites where xargs is slow enough to still be running -- busybox and
+# BSD, i.e. exactly the Alpine and macOS hosts this script advertises support
+# for -- so CI never saw it.
+loaded_names=""
+for f in "${loaded[@]}"; do
+    loaded_names="$loaded_names $(basename "$f" | lower)"
+done
+
 for f in "${loaded[@]}"; do
     self="$(basename "$f" | lower)"
     for i in $(imports_of "$f"); do
         # Another library the loader opens itself, in dependency order.
-        printf '%s\n' "${loaded[@]}" | xargs -n1 basename 2>/dev/null | lower | grep -qx "$i" && continue
+        case " $loaded_names " in *" $i "*) continue ;; esac
         printf '%s\n' "$preload" | grep -qx "$i" && continue
         is_system "$i" && continue
         echo "NOT PRELOADED: $self imports $i, which is in the bundle but never mapped before it"
