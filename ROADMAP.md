@@ -77,20 +77,22 @@ this.
 
 ## 4. FFmpeg pin
 
-Pinned line: **FFmpeg n8.1.x, LGPL, shared** (pinned 2026-06).
+Pinned line: **FFmpeg n9.0.x, LGPL, shared** (pinned 2026-08; n8.1.x before it).
+The n8.1 -> n9.0 move changed no struct offset the bindings read -- only the
+six sonames and `AV_CODEC_ID_VP9`, both re-captured with the oracle.
 
-| Library     | soname major (n8.1) |
+| Library     | soname major (n9.0) |
 |-------------|---------------------|
-| avutil      | 60                  |
-| swresample  | 6                   |
-| swscale     | 9                   |
-| avcodec     | 62                  |
-| avformat    | 62                  |
-| avfilter    | 11                  |
+| avutil      | 61                  |
+| swresample  | 7                   |
+| swscale     | 10                  |
+| avcodec     | 63                  |
+| avformat    | 63                  |
+| avfilter    | 12                  |
 
 Rules:
 
-- Load by exact soname (`libavformat.so.62`), never the bare name -- majors
+- Load by exact soname (`libavformat.so.63`), never the bare name -- majors
   coexist on real systems and the unversioned symlink belongs to -dev
   packages. The table lives in `LibavLibrary` with a matching test.
 - `avformat_version()` (and siblings) are checked right after load; a major
@@ -142,8 +144,8 @@ the containers, the atempo chain); each tier layers features on:
 
 | Tier     | Features over the base                       | License |
 |----------|----------------------------------------------|---------|
-| `core`   | av1 vpx webp hwaccel                          | LGPL    |
-| `decode` | + subs (libass) + formats + enc-vaapi         | LGPL    |
+| `core`   | av1 vpx webp                                  | LGPL    |
+| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi | LGPL  |
 | `full`   | + enc-vaapi + enc-h264 enc-hevc (x264/x265)   | GPL     |
 
 `enc-vaapi` (M13) is the LGPL hardware H.264/HEVC encoder -- the codec lives
@@ -298,7 +300,7 @@ README once the library is usable.
   race-safe), keyed by platform so the loader stays tier-agnostic.
 - Natives versioning: `skinema-natives` is versioned as the FFmpeg build it
   carries plus a repack revision (`<ffmpeg>-<revision>`), NOT as the library
-  (M17). A library release republishes none of the ~159 MiB of bundles; they
+  (M17). A library release republishes none of the ~211 MiB of bundles; they
   move only when their bytes do. Consumers pair the natives version the
   release notes name with any library version that names it.
 - Natives delivery is asynchronous by design: every platform build
@@ -374,7 +376,7 @@ README once the library is usable.
   upgrades never overwrite mapped libraries), load precedence
   prop > env > bundle > system; the headless soak runner measures the
   adoption bar (2-minute smoke: exact 30 fps pacing, RSS flat after
-  warm-up). The natives workflow is green on all four platforms --
+  warm-up). The natives workflow is green on all eight platforms --
   including macos-x64 cross-compiled on the arm runner -- each delivering
   independently to the rolling release after its on-runner acceptance
   suite (cross builds excepted). The script emits a flat, jar-ready
@@ -881,7 +883,7 @@ README once the library is usable.
   percentile of all publishers), hard-enforced from 2026-08-11. dev.hivens ran
   287.9 MiB in June and 317.8 MiB in the first six days of July: 369% and 407%
   of the size cap, June also over on files (1990). The overage is one artifact.
-  The 18 tier/platform bundles are ~159 MiB per release; everything else in the
+  The 24 tier/platform bundles are ~211 MiB per release; everything else in the
   namespace -- core, skiko, compose, libtray, libnotify, libvault -- is ~0.4 MiB
   together. Nearly all of it bought nothing: versioning the bundles with the
   library republished all 18 even when the bytes were identical. 0.6.0 -> 0.6.1
@@ -890,16 +892,16 @@ README once the library is usable.
   12 linux/macos jars were byte-identical), both checkable against the `.sha1`
   files on repo1. Decoupled, a release that leaves the bundles alone costs
   ~0.4 MiB. What this does NOT fix: a release that does change them still costs
-  ~159 MiB that month, ~2x the free cap, because the matrix is real -- 6
+  ~211 MiB that month, ~2x the free cap, because the matrix is real -- 8
   platforms x 3 licence tiers, and trimming it means dropping platforms or the
   LGPL-only tiers, which is what those tiers exist for. That residue is the
   exemption request to central-support, and it is the whole ask: ~0 most months,
-  ~159 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
+  ~211 MiB when FFmpeg is re-rolled. Granularity considered and rejected:
   per-platform artifactIds (`skinema-natives-linux-x64` and friends, each on its
   own version) would have made the Windows-only repack cost 66 MiB and slipped
-  under the cap, but it splits the namespace into six artifacts whose versions
+  under the cap, but it splits the namespace into eight artifacts whose versions
   drift apart in the consumer's build file, and a new FFmpeg pin -- the ordinary
-  reason bundles change -- touches every platform and costs the same 159 MiB
+  reason bundles change -- touches every platform and costs the same 211 MiB
   either way.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
@@ -918,7 +920,7 @@ without breaking changes. Not before.
 | Compose    | 1.11.0         | matches the primary consumer           |
 | Skiko      | 0.144.6        | what Compose 1.11.0 ships; compileOnly |
 | Gradle     | 9.5.1 (wrapper)|                                        |
-| FFmpeg     | n8.1.x         | sonames in section 4                   |
+| FFmpeg     | n9.0.x         | sonames in section 4                   |
 
 ## 13. Open questions
 

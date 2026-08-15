@@ -13,7 +13,7 @@ plugins {
 val appVersion = providers.gradleProperty("appVersion").getOrElse("0.1.0-SNAPSHOT")
 
 // The natives track the FFmpeg build they carry, not the library API, so a
-// library release republishes none of their ~159 MiB of platform bundles
+// library release republishes none of their ~211 MiB of platform bundles
 // (ROADMAP M17). Set in gradle.properties; -PnativesVersion overrides.
 val nativesVersion = providers.gradleProperty("nativesVersion").get()
 
@@ -47,6 +47,62 @@ subprojects {
         testLogging {
             events("failed")
             exceptionFormat = TestExceptionFormat.FULL
+        }
+
+        // The native bundle under test reaches the JVM through the
+        // environment, and Gradle sees neither the variable nor the directory
+        // it names -- both live outside the project tree. Without declaring
+        // them, a test task whose sources are unchanged is served FROM-CACHE,
+        // so CI reports on a bundle it never loaded. That matters because the
+        // rolling natives release replaces bytes under a fixed path: the
+        // bundle changes while the cache key does not.
+        val libavDir = providers.environmentVariable("SKINEMA_LIBAV_DIR")
+        inputs.property("skinemaLibavDir", libavDir.orElse(""))
+        inputs.property("skinemaRequireCaps", providers.environmentVariable("SKINEMA_REQUIRE_CAPS").orElse(""))
+        libavDir.map { file(it) }.orNull?.takeIf { it.isDirectory }?.let {
+            inputs.dir(it)
+                .withPropertyName("skinemaLibavBundle")
+                .withPathSensitivity(PathSensitivity.NAME_ONLY)
+        }
+
+        // How many tests ran, printed on every run, and a ceiling on how many
+        // may skip. Without this a suite that skipped itself into silence and
+        // one that passed look identical: a missing fixture CLI, an unreadable
+        // bundle or one unparsed line of `ffmpeg -encoders` takes whole suites
+        // out and the build stays green. The counts are not observable from a
+        // CI log otherwise -- only failures are printed, and Gradle reports
+        // totals only when something fails.
+        //
+        // The ceiling is a backstop against collapse, not a per-environment
+        // expectation: the hardware suites skip wherever no GPU is wired up,
+        // and a platform with a legitimate gap of its own raises it explicitly
+        // rather than everyone loosening to the slackest case.
+        val maxSkipped = providers.gradleProperty("maxSkippedTests")
+            .orElse(providers.environmentVariable("SKINEMA_MAX_SKIPPED"))
+            .orElse("8")
+        val xmlDir = reports.junitXml.outputLocation
+        val label = path
+        doLast {
+            var total = 0
+            var skipped = 0
+            val head = Regex("<testsuite\\b[^>]*")
+            fun count(text: String, name: String): Int =
+                Regex("\\b" + name + "=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
+            for (f in xmlDir.get().asFile.listFiles().orEmpty()) {
+                if (!f.name.endsWith(".xml")) continue
+                val suite = head.find(f.readText()) ?: continue
+                total += count(suite.value, "tests")
+                skipped += count(suite.value, "skipped")
+            }
+            logger.lifecycle(label + ": " + (total - skipped) + " of " + total + " tests ran, " + skipped + " skipped")
+            val ceiling = maxSkipped.get().toInt()
+            if (skipped > ceiling) {
+                throw GradleException(
+                    label + " skipped " + skipped + " tests, more than the " + ceiling + " allowed -- " +
+                        "something the suite needs is missing rather than the suite passing. Raise it " +
+                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.",
+                )
+            }
         }
     }
 }
@@ -111,7 +167,7 @@ subprojects {
 }
 
 // A library release must not re-upload the natives. They sit on their own
-// version line, and republishing all 18 unchanged platform bundles with every
+// version line, and republishing all 24 unchanged platform bundles with every
 // release is what put the namespace over Maven Central's monthly size limit
 // (ROADMAP M17); the natives publish on their own, only when their bundles
 // change: `:skinema-natives:publishToMavenCentral -PnativesVersion=<v>`.

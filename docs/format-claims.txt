@@ -1,0 +1,93 @@
+# What README.md's "What it plays" table claims, and the components each claim
+# needs. tools/check-readme-formats.sh asserts both halves against a bundle's
+# manifest.txt: the claim text must still appear in the README, and every
+# component listed for it must be in the bundle.
+#
+# The table is prose on purpose -- "H.266/VVC" reads better than "vvc" -- so it
+# cannot be generated from the manifest. This file is the join between the two,
+# and it exists because the README advertised mov_text for the whole life of
+# the project while no bundle carried the decoder.
+#
+# Claims are checked against the FULL tier, which is the superset. The lean
+# tiers carry less by design; the README says so in prose above the table.
+#
+# Format: <claim text as it appears in README> = <kind>:<component> ...
+
+# -- Containers --------------------------------------------------------------
+mp4/mov/m4a     = demuxer:mov
+webm/mkv        = demuxer:matroska
+avi             = demuxer:avi
+MPEG-PS/TS      = demuxer:mpegps demuxer:mpegts
+flv             = demuxer:flv
+asf/wmv         = demuxer:asf
+RealMedia       = demuxer:rm
+ogg             = demuxer:ogg
+dv              = demuxer:dv
+mp3             = demuxer:mp3
+flac            = demuxer:flac
+wav             = demuxer:wav
+gif             = demuxer:gif
+webp            = demuxer:image_webp_pipe
+apng            = demuxer:apng
+raw ac3/eac3    = demuxer:ac3 demuxer:eac3
+
+# -- Video -------------------------------------------------------------------
+H.264           = decoder:h264
+HEVC            = decoder:hevc
+H.266/VVC       = decoder:vvc
+# libvpx, not the native decoders: the table advertises webm alpha, and the
+# native vp8/vp9 decoders drop the alpha channel. Asserting the native ones
+# would keep passing with the capability gone.
+VP8             = decoder:libvpx_vp8
+VP9             = decoder:libvpx_vp9
+AV1             = decoder:av1 decoder:libdav1d
+MPEG-1/2        = decoder:mpeg1video decoder:mpeg2video
+MPEG-4 Part 2   = decoder:mpeg4
+VC-1            = decoder:vc1
+WMV 7-9         = decoder:wmv1 decoder:wmv2 decoder:wmv3
+H.263           = decoder:h263
+Theora          = decoder:theora
+ProRes          = decoder:prores
+DNxHD           = decoder:dnxhd
+FFV1            = decoder:ffv1
+RealVideo       = decoder:rv10 decoder:rv20 decoder:rv30 decoder:rv40
+Cinepak         = decoder:cinepak
+Indeo           = decoder:indeo2 decoder:indeo3 decoder:indeo4 decoder:indeo5
+VP6             = decoder:vp6 decoder:vp6a decoder:vp6f
+MJPEG           = decoder:mjpeg
+
+# -- Animated images ---------------------------------------------------------
+GIF             = decoder:gif
+APNG            = decoder:apng
+animated WebP   = decoder:webp_anim
+
+# -- Audio -------------------------------------------------------------------
+AAC             = decoder:aac
+AC-3/E-AC-3     = decoder:ac3 decoder:eac3
+DTS             = decoder:dca
+TrueHD          = decoder:truehd
+ALAC            = decoder:alac
+Opus            = decoder:opus
+Vorbis          = decoder:vorbis
+MP1/MP2/MP3     = decoder:mp1 decoder:mp2 decoder:mp3
+FLAC            = decoder:flac
+WMA (v1/v2/Pro) = decoder:wmav1 decoder:wmav2 decoder:wmapro
+AMR             = decoder:amrnb decoder:amrwb
+WavPack         = decoder:wavpack
+Monkey's Audio  = decoder:ape
+TTA             = decoder:tta
+ADPCM           = decoder:adpcm_ms decoder:adpcm_ima_wav
+G.72x           = decoder:adpcm_g722 decoder:adpcm_g726
+RealAudio       = decoder:cook decoder:ra_144 decoder:ra_288
+ATRAC           = decoder:atrac1 decoder:atrac3 decoder:atrac9
+GSM             = decoder:gsm decoder:gsm_ms
+WAV PCM         = decoder:pcm_s16le decoder:pcm_s24le decoder:pcm_f32le
+
+# -- Subtitles ---------------------------------------------------------------
+ASS/SSA         = decoder:ass decoder:ssa
+SRT             = decoder:subrip
+mov_text        = decoder:movtext
+WebVTT          = decoder:webvtt
+PGS             = decoder:pgssub
+VobSub          = decoder:dvdsub
+external .srt/.ass = demuxer:srt demuxer:ass

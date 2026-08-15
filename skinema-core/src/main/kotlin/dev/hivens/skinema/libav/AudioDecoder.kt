@@ -130,7 +130,10 @@ class AudioDecoder private constructor(
 
         // No resampling (out rate = in rate), so swresample buffers nothing
         // and out count always equals in count -- no drain pass needed.
-        val converted = Libav.swrConvert(swrCtx, outPlanes, nbSamples, frame.asSlice(LibavAbi.Frame.DATA), nbSamples)
+        // extended_data, not data: they are the same pointer for eight
+        // channels or fewer, and only extended_data is complete beyond that.
+        val inPlanes = frame.get(ADDRESS, LibavAbi.Frame.EXTENDED_DATA)
+        val converted = Libav.swrConvert(swrCtx, outPlanes, nbSamples, inPlanes, nbSamples)
         Libav.checkAv(converted, "swr_convert")
         val bytes = converted * OUT_CHANNELS * 2
         MemorySegment.copy(outNative, JAVA_BYTE, 0, pcmHeap, 0, bytes)

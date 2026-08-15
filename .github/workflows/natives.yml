@@ -22,7 +22,17 @@ permissions:
   contents: write
 
 env:
-  FFMPEG_VERSION: "8.1.1"
+  FFMPEG_VERSION: "9.0.1"
+
+# Serialised on purpose, and across every ref rather than per ref. Two runs
+# clobber each other's release assets, which is how a release ends up carrying
+# bundles from two different builds while every asset is present and the guard
+# is green -- and the assets live on one rolling tag that every branch uploads
+# to, so keying this on the branch would leave exactly that door open. A
+# constant group is the whole namespace.
+concurrency:
+  group: natives-rolling-release
+  cancel-in-progress: false
 
 jobs:
   # The tier x platform matrix is generated here so a dispatch can narrow it to
@@ -46,16 +56,30 @@ jobs:
           # real machines and get the on-runner acceptance run; macos-x64 cross-
           # compiles on the arm mac (Intel runners are scarce) -- community tier,
           # no acceptance, an arm JVM cannot load x86_64 dylibs.
-          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
+          #
+          # The musl platforms build inside an Alpine container on the ordinary
+          # glibc runner rather than on a runner of their own: GitHub has no
+          # musl image, and putting the whole job in a container breaks the
+          # JavaScript actions, whose node is glibc-linked. Only the build and
+          # its acceptance run go in; checkout and setup stay on the host.
+          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [linux-musl-x64]=ubuntu-latest [linux-musl-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
           declare -A CROSS=( [macos-x64]=mac-x64 )
+          declare -A LIBC=( [linux-musl-x64]=musl [linux-musl-arm64]=musl )
           items=()
           for t in core decode full; do
             [ -n "$ONLY_TIER" ] && [ "$ONLY_TIER" != "$t" ] && continue
-            for p in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
+            for p in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64 windows-x64 windows-arm64 macos-arm64 macos-x64; do
               [ -n "$ONLY_PLATFORM" ] && [ "$ONLY_PLATFORM" != "$p" ] && continue
-              items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\"}")
+              items+=("{\"tier\":\"$t\",\"platform\":\"$p\",\"os\":\"${OS[$p]}\",\"cross\":\"${CROSS[$p]:-}\",\"libc\":\"${LIBC[$p]:-glibc}\"}")
             done
           done
+          # A typo in either input matches nothing, and a matrix with no
+          # entries is a run with no jobs, which GitHub marks success. That
+          # reads as "the platform was rebuilt" when nothing was built at all.
+          if [ ${#items[@]} -eq 0 ]; then
+            echo "::error::no tier/platform matched (only_tier='$ONLY_TIER' only_platform='$ONLY_PLATFORM')"
+            exit 1
+          fi
           echo "matrix={\"include\":[$(IFS=,; echo "${items[*]}")]}" >> "$GITHUB_OUTPUT"
 
   build:
@@ -78,7 +102,7 @@ jobs:
         shell: bash
         run: |
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp hwaccel";                                          caps="decode,webp" ;;
+            core)   feat="av1 vpx webp";                                                  caps="decode,webp" ;;
             decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats" ;;
             full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
           esac
@@ -86,13 +110,13 @@ jobs:
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.libc != 'musl'
         # libfontconfig-dev: libass's Linux font provider builds against the
         # system fontconfig (and links it dynamically -- every desktop ships
         # it). libva-dev: the VAAPI hwaccel builds against libva and links it
         # dynamically, the same pattern -- pulled in for the build and for
         # the on-runner acceptance test (libva-dev depends on libva2).
-        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config libfontconfig-dev libva-dev
+        run: sudo apt-get update && sudo apt-get install -y nasm cmake meson ninja-build pkg-config patchelf libfontconfig-dev libva-dev
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
@@ -139,10 +163,51 @@ jobs:
             curl
             unzip
 
-      - name: Build trimmed FFmpeg (unix)
-        if: runner.os != 'Windows'
+      # Alpine carries the toolchain and a musl JDK, so the build and the
+      # acceptance run both happen inside it. The bundle it produces links
+      # musl's libc and nothing else, which is the whole point -- a glibc
+      # bundle cannot load into a musl process at all.
+      - name: Build and accept (musl, in Alpine)
+        if: matrix.libc == 'musl'
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          CAPS: ${{ steps.tier.outputs.caps }}
+          TIER: ${{ matrix.tier }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e FEATURES -e CAPS -e TIER -e FFMPEG_VERSION \
+            alpine:edge sh -euc '
+              # edge, not a stable tag, and deliberately not pinned: openjdk25
+              # is only there, and edge is also what the Alpine desktop users
+              # these bundles are for actually run -- it is a rolling release
+              # like Arch, so building against a frozen snapshot would test a
+              # musl and a toolchain no consumer has. The cost is that an edge
+              # regression lands here first, which is the trade taken.
+              # ffmpeg is the fixture CLI
+              # the acceptance suite shells out to. font-dejavu because the
+              # image carries no font at all -- fontconfig-dev installs the
+              # library, not a typeface, and libass renders nothing without
+              # one, which is what failed the subtitle tests on musl while the
+              # same tests passed on runners whose images ship fonts.
+              apk add --no-cache bash build-base nasm cmake meson ninja pkgconf \
+                  curl patchelf linux-headers autoconf automake libtool \
+                  fontconfig-dev libva-dev openjdk25 ffmpeg font-dejavu >/dev/null
+              STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" TIER="$TIER" \
+                bash tools/build-natives.sh "/src/natives/${{ matrix.platform }}"
+              # Acceptance against the freshly built musl bundle, on the musl
+              # JVM that will actually load it. Gradle brings its own toolchain
+              # resolution, so JAVA_HOME is enough.
+              export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
+              SKINEMA_REQUIRE_CAPS="$CAPS" \
+              SKINEMA_LIBAV_DIR="/src/natives/${{ matrix.platform }}/bundle" \
+                ./gradlew :skinema-core:test --rerun-tasks
+            '
+
+      - name: Build trimmed FFmpeg (unix)
+        if: runner.os != 'Windows' && matrix.libc != 'musl'
+        env:
+          FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: |
           if [ "${{ matrix.cross }}" = "mac-x64" ]; then export MAC_CROSS_X64=1; fi
           STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
@@ -152,6 +217,7 @@ jobs:
         shell: msys2 {0}
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" VPX_TARGET=x86_64-win64-gcc tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
       # No VPX_TARGET forced: there is no fixed arm64-win64 gcc triplet like
@@ -161,6 +227,7 @@ jobs:
         shell: msys2 {0}
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
+          TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
       # Static proof the Windows bundle both carries and MAPS what it imports
@@ -179,7 +246,7 @@ jobs:
       # about to ship, on the platform that will run them. Cross-built
       # bundles skip it (no metal to run them on) -- community tier.
       - uses: actions/setup-java@v5
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         with:
           # Azul Zulu (OpenJDK): one distribution that ships JDK 25 on every
           # platform including windows-arm64, which Temurin does not build yet.
@@ -187,10 +254,10 @@ jobs:
           java-version: 25
 
       - uses: gradle/actions/setup-gradle@v6
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
 
       - name: Install ffmpeg CLI (fixtures)
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         shell: bash
         run: |
           case "${{ runner.os }}" in
@@ -200,7 +267,7 @@ jobs:
           esac
 
       - name: Test against the freshly built natives
-        if: matrix.cross == ''
+        if: matrix.cross == '' && matrix.libc != 'musl'
         shell: bash
         # Strict here catches a bundle that built but cannot load a
         # capability BEFORE it uploads -- the workflow that produced the
@@ -212,9 +279,13 @@ jobs:
         run: |
           base="$PWD"
           if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi
-          libdir="lib"
-          if [ "${{ runner.os }}" = "Windows" ]; then libdir="bin"; fi
-          SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/$libdir" ./gradlew :skinema-core:test --rerun-tasks
+          # The BUNDLE, not the install tree: that is what ships, and it is
+          # the only one carrying the $ORIGIN RUNPATH. The install tree loaded
+          # on glibc by accident -- its loader satisfies a DT_NEEDED from an
+          # already-mapped object, so the loader's declaration order covered
+          # for the missing RUNPATH. musl does not, so the same acceptance
+          # failed there and found the gap.
+          SKINEMA_LIBAV_DIR="$base/natives/${{ matrix.platform }}/bundle" ./gradlew :skinema-core:test --rerun-tasks
 
       # The flat loader-named bundle/ (built by the script) is the asset:
       # no symlinks, jar-ready layout, index.txt included. gzip, not xz --

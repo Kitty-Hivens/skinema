@@ -95,7 +95,7 @@ non-negotiable.
 
 The maintainer cuts releases. Libraries and natives release separately --
 they are on separate version lines (ROADMAP M17), and a library release must
-never re-upload the ~159 MiB of platform bundles.
+never re-upload the ~211 MiB of platform bundles.
 
 Both go out through the `Publish` workflow (vanniktech maven-publish,
 auto-release to Maven Central, GPG-signed). It runs in the `maven-central`
@@ -107,12 +107,18 @@ A library release:
    and on the rolling `natives-<ffmpeg version>` release (the
    push-sequencing rule). The workflow checks the published half itself and
    refuses a release whose natives are not up.
-2. Tag `vX.Y.Z` on the release commit and push the tag -- that is the
+2. Update the library version in the `README.md` dependency block and in
+   `docs/guide/getting-started.md`. Both snippets pin a library version next
+   to a natives version, and nothing checks that the pair is coherent: a
+   natives bump left the documented pair naming a library built for the
+   previous FFmpeg line, which resolves cleanly and then cannot load a single
+   bundle.
+3. Tag `vX.Y.Z` on the release commit and push the tag -- that is the
    trigger. The workflow reads the version from the tag, refuses one that
    already exists on Central (versions are immutable), and runs
    `publishLibraries`, which ships core/skiko/compose only. The bare
    `publishToMavenCentral` sweeps in the natives; nothing calls it.
-3. Create the GitHub release with consumer-facing notes, naming the natives
+4. Create the GitHub release with consumer-facing notes, naming the natives
    version consumers should pair with it.
 
 A natives release, only when the bundles actually change (a new FFmpeg pin,
@@ -120,11 +126,11 @@ a repack that fixes what a bundle carries):
 
 1. Bump `nativesVersion` in `gradle.properties`: the FFmpeg version of the
    build, plus a revision that increments for repacks of that same build
-   (`8.1.1-1` -> `8.1.1-2`; a new pin resets it, `8.2.0-1`). Central versions
+   (`9.0.1-1` -> `9.0.1-2`; a new pin resets it, `9.1.0-1`). Central versions
    are immutable, so changed bytes always need a new number -- reusing one is
    rejected.
 2. Dispatch `Publish` with target `natives`. It refuses a version already on
-   Central, fails on any of the 18 tier/platform assets missing from the
+   Central, fails on any of the 24 tier/platform assets missing from the
    rolling release, and logs each asset's `updated_at` -- read them and
    confirm they are the build you mean to ship before approving the
    environment.
@@ -142,7 +148,7 @@ login), plus `SIGNING_KEY` (the ASCII-armored secret key) and
 present and falls back to the keyring when it is not.
 
 `skinema-core`/`-skiko`/`-compose` publish as libraries; `skinema-natives`
-publishes an empty main jar with the 18 tier/platform bundles attached as
+publishes an empty main jar with the 24 tier/platform bundles attached as
 classifiers.
 
 ## License

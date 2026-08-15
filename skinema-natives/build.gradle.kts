@@ -14,6 +14,17 @@ plugins {
     alias(libs.plugins.maven.publish)
 }
 
+// These jars hold shared objects and no classes at all, but java-library still
+// stamps the building JDK into the module metadata as a minimum. That made
+// every one of the 24 classifier jars unresolvable for a consumer below JDK 25
+// -- with an error telling them to pick an earlier version, of which none
+// exists -- while the library itself asks only for 22, which is what the
+// README promises. Say 22 here so the natives never raise the floor.
+java {
+    sourceCompatibility = JavaVersion.VERSION_22
+    targetCompatibility = JavaVersion.VERSION_22
+}
+
 mavenPublishing {
     pom {
         description.set(
@@ -30,7 +41,13 @@ val resourceRoot = "dev/hivens/skinema/natives"
 // <ffmpeg>-<revision> (gradle.properties), so the tag is its FFmpeg half and
 // the two cannot drift apart.
 val nativesTag = "natives-" + version.toString().substringBefore('-')
-val platforms = listOf("linux-x64", "linux-arm64", "windows-x64", "windows-arm64", "macos-arm64", "macos-x64")
+// linux-musl-* are their own platforms, not a variant of linux-*: a glibc
+// shared object cannot load into a musl process at all, so Alpine and
+// Void-musl need bundles built against musl or nothing works (#33).
+val platforms = listOf(
+    "linux-x64", "linux-arm64", "linux-musl-x64", "linux-musl-arm64",
+    "windows-x64", "windows-arm64", "macos-arm64", "macos-x64",
+)
 // The modular tiers (ROADMAP.md section 4). Each (tier, platform) ships as
 // its own classifier jar "<tier>-<platform>"; a consumer puts exactly one
 // tier per platform on the runtime classpath. The unpacked layout is keyed

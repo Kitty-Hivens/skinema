@@ -17,15 +17,15 @@ disable-everything plus an explicit whitelist;
 --disable-programs --disable-doc --disable-avdevice
 --enable-libvpx --enable-libdav1d
 --enable-protocol=file,pipe
---enable-demuxer=mov,matroska,gif,apng,image2,png_pipe,webp_pipe,jpeg_pipe,
+--enable-demuxer=mov,matroska,gif,apng,image2,image_png_pipe,image_webp_pipe,image_jpeg_pipe,
                  ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup
 --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,
                  png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,
                  pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,
-                 ass,ssa,srt,subrip,mov_text,webvtt,pgssub,dvdsub
+                 ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub
 --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,
                 opus,vorbis,flac,ac3
---enable-filter=atempo,abuffer,abuffersink
+--enable-filter=atempo
 ```
 
 `--disable-network` is a load-bearing guarantee, not an optimization:
@@ -43,8 +43,13 @@ for Windows:
 - **dav1d, libvpx** -- built static and folded into FFmpeg. (libvpx is
   required for the webm alpha path; the native vp8/vp9 decoders drop
   it.)
-- **libwebp** -- built shared and shipped; the bindings load it at
-  runtime on every OS (FFmpeg cannot decode animated WebP at all).
+- **animated WebP** -- FFmpeg 9's own `webp_anim` demuxer and decoder, in
+  the whitelist. The libwebp/libwebpdemux/libsharpyuv stack the bindings used
+  to load at runtime is gone: 1.4 MB compressed per bundle, a binding layer,
+  a preload chain and a routing branch that sent still WebP down the animated
+  path too. The one thing `webp_anim` cannot do is seek -- it accepts a seek,
+  reports success and stays drained -- so `VideoDecoder` restarts it by
+  replacing the demuxer, which is what keeps looping working.
 - **fribidi** -- built shared and shipped: it is LGPL and must not fold
   into the libass binary. The preload pattern resolves it.
 - **freetype, harfbuzz** -- folded static into libass on Linux and
@@ -74,13 +79,16 @@ MinGW libtool refuses to fold a static archive into a DLL, so the
 static freetype/harfbuzz fold that works on Linux/macOS leaves the
 Windows libass DLL unbuildable. On Windows, freetype and harfbuzz are
 built **shared** (their own DLLs, which the loader preloads), and the
-MinGW runtime DLLs the bundle links -- `zlib1`, `libbz2-1`,
-`libiconv-2`, `liblzma-5`, `libwinpthread-1` -- are copied into the
-bundle and preloaded by name. These had been a latent gap since M3
-(`liblzma-5`, avcodec's lzma path, surfaced later): a clean machine
-without them on PATH could fail to load avcodec; the runner's PATH had
-masked it. The script hard-fails if any is missing, so a broken bundle
-never ships.
+MinGW runtime DLLs the bundle links are copied in and preloaded by name.
+Which ones those are is read off the built DLLs' import tables and closed
+transitively, not listed by hand: what the toolchain links differs by
+architecture, by tier and by what was folded in statically this round, and a
+hand-written list was wrong in both directions -- it shipped four runtimes
+that had become static and would have missed a genuinely new import until a
+clean Windows failed to load. A runtime with no licence mapping fails the
+build. `tools/check-windows-bundle.sh` then proves the result is
+import-closed and that every runtime import is preloaded before its
+importer.
 
 ## Bundle layout
 
@@ -92,6 +100,7 @@ bundle/
   lib<name>.<major>.dylib     (macOS)
   <name>-<major>.dll          (Windows, plus the MinGW runtime DLLs)
   licenses/                   (every shipped library's license text)
+  manifest.txt                (ffmpeg version, tier features, enabled components)
   index.txt                   (first line: content fingerprint; rest: sorted file list)
 ```
 
@@ -105,9 +114,9 @@ fingerprint keys the per-user unpack cache (see
 ## The classifier jars
 
 `skinema-natives` packs each bundle into a classifier jar named
-`<tier>-<platform>` -- three tiers (`core`, `decode`, `full`) across six
-platforms (`linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`,
-`macos-arm64`, `macos-x64`), 18 in all -- resources under
+`<tier>-<platform>` -- three tiers (`core`, `decode`, `full`) across eight
+platforms (`linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`,
+`windows-x64`, `windows-arm64`, `macos-arm64`, `macos-x64`), 24 in all -- resources under
 `dev/hivens/skinema/natives/<platform>/`. The layout is keyed by platform
 alone, so `NativeBundle` stays tier-agnostic: it loads whichever bundle the
 platform carries. The main jar is empty; the bundles attach as classifiers.
@@ -121,7 +130,7 @@ packs a bundle you built:
 ### Versioning
 
 The module publishes on its own version line, `<ffmpeg>-<revision>` from
-`nativesVersion` in `gradle.properties` (`8.1.1-1`): the FFmpeg build the
+`nativesVersion` in `gradle.properties` (`9.0.1-1`): the FFmpeg build the
 bundles carry, plus a revision for repacks of that same build. `nativesTag`
 derives from its FFmpeg half, so the version and the rolling release it packs
 from cannot drift.
@@ -129,10 +138,27 @@ from cannot drift.
 The rule is one line: **the bundles change, the version bumps.** Central
 versions are immutable, so a repack that ships different bytes under a version
 already published is simply rejected -- and the library's own version cannot
-carry the natives, because 18 bundles at ~159 MiB republished per library
+carry the natives, because 24 bundles at ~211 MiB republished per library
 release is what put the namespace over Maven Central's monthly size limit
 (ROADMAP M17). A release that does not touch the bundles publishes none of
 them.
+
+## The files that hold the invariants
+
+Three artefacts carry claims the build asserts rather than restates, and a
+change that contradicts one fails CI rather than shipping:
+
+- `tools/bundle-surface.txt` -- the host libraries each libc/tier bundle is
+  allowed to need. Asserted in both directions: an undeclared dependency and a
+  declared one that never appears both fail the build.
+- `docs/format-claims.txt` and `tools/check-readme-formats.sh` -- the join
+  between the README's "What it plays" table and the component names in a
+  bundle's `manifest.txt`. Editing that table without editing the claims file
+  fails the pull request, which is the point: the README advertised a subtitle
+  decoder no bundle carried for the whole life of the project.
+- `tools/check-windows-bundle.sh` -- import closure and preload order for the
+  Windows bundles, read off the PE headers and off the loader's own preload
+  lists in the Kotlin sources.
 
 ## Delivery: two workflows
 
@@ -142,8 +168,8 @@ moment it passes its on-runner acceptance suite. A queued or broken
 platform delays only itself, never a release and never the other
 platforms, and a rebuild replaces just its own asset.
 
-- **natives.yml** (manual `workflow_dispatch`) builds the six platforms
-  across the three tiers -- 18 bundles -- with `fail-fast: false`. Linux
+- **natives.yml** (manual `workflow_dispatch`) builds the eight platforms
+  across the three tiers -- 24 bundles -- with `fail-fast: false`. Linux
   x64/arm64, Windows x64 (MSYS2 MINGW64) and arm64 (MSYS2 CLANGARM64), and
   macOS-arm64 all build, run the acceptance suite on metal, and upload.
   macos-x64 is cross-compiled on the arm runner (GitHub's Intel macs queue
@@ -153,7 +179,7 @@ platforms, and a rebuild replaces just its own asset.
   first-class, because GitHub's free `ubuntu-24.04-arm` and `windows-11-arm`
   runners are real machines. The matrix is generated in a prepare job, so a
   dispatch can narrow to one platform or tier (`only_platform`/`only_tier`).
-- **build.yml** (push and PR) runs the test matrix on four platforms,
+- **build.yml** (push and PR) runs the test matrix on seven platforms,
   downloads OUR release bundles (not BtbN or brew), points
   `SKINEMA_LIBAV_DIR` at them, and runs `./gradlew build`. On Windows it
   strips mingw/msys from PATH first, so a green run proves the bundle is
@@ -171,7 +197,7 @@ that changes the bundle, the order is mandatory:
 
 1. Push the `build-natives.sh` change.
 2. Dispatch `natives.yml` and wait for **every** affected asset on the
-   rolling release to be replaced -- all 18 for a change that touches every
+   rolling release to be replaced -- all 24 for a change that touches every
    tier and platform (check each asset's `updated_at`).
 3. Only then push the consuming code.
 

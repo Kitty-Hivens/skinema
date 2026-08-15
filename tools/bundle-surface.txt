@@ -1,0 +1,38 @@
+# The host libraries each bundle is ALLOWED to depend on.
+#
+# Every unsatisfied NEEDED entry of a shipped library must appear here, and
+# every line here must actually be needed -- the build fails on drift in
+# either direction. That is the point: the whole class of bugs this file
+# exists to stop came from not knowing what we asked for. A dependency that
+# appears because configure autodetected it (libva turning up in a bundle
+# built without the hwaccel feature, because the container had libva-dev) is
+# a build that must not ship, not a surprise for a user to discover.
+#
+# Format: <os>-<libc> <tier> = <space-separated sonames>, "-" for none.
+# Windows is not listed: its equivalent invariant is the loader's preload
+# list, checked by tools/check-windows-bundle.sh.
+#
+# Raising a line is a decision about which machines can run the bundle.
+# libva/libva-drm mean "a graphics stack is installed", which a
+# headless container has not; libfontconfig means "a font stack", which the
+# subtitle tiers genuinely need.
+
+linux-glibc  core   = libc.so.6 libm.so.6
+linux-glibc  decode = libc.so.6 libm.so.6 libva.so.2 libva-drm.so.2 libfontconfig.so.1
+# libmvec is part of glibc itself (vectorised math, pulled in by x265),
+# so it costs a consumer nothing; libnuma would NOT be -- x265 is built
+# with it off deliberately.
+linux-glibc  full   = libc.so.6 libm.so.6 libmvec.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libstdc++.so.6
+
+# musl folds libm into libc, so the leanest tier needs exactly one library.
+linux-musl   core   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1
+linux-musl   decode = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1
+# libstdc++, not libc++: Alpine builds with GCC, and the guess that it
+# would mirror the Windows aarch64 clang toolchain was wrong -- measured.
+linux-musl   full   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libstdc++.so.6
+
+# Mach-O: the system frameworks are always present, so only the dylibs a
+# consumer could plausibly lack are worth naming.
+macos        core   = -
+macos        decode = -
+macos        full   = -
