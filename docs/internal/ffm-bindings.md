@@ -55,7 +55,7 @@ unavoidable set.
 
 FFmpeg structs are opaque pointers; skinema reads a handful of their
 fields by byte offset. `LibavAbi.kt` holds those offsets as constants
-for the pinned major (n8.1):
+for the pinned major (n9.0):
 
 ```kotlin
 object Frame {
@@ -118,27 +118,27 @@ Each was paid for once; do not rediscover them.
 
 ## Soname pinning
 
-Pinned line: **FFmpeg n8.1.x, LGPL, shared.** `LibavLibrary` is the
+Pinned line: **FFmpeg n9.0.x, LGPL, shared.** `LibavLibrary` is the
 single source of the soname majors:
 
 | Library    | soname major |
 |------------|--------------|
-| avutil     | 60           |
-| swresample | 6            |
-| swscale    | 9            |
-| avcodec    | 62           |
-| avformat   | 62           |
-| avfilter   | 11           |
+| avutil     | 61           |
+| swresample | 7            |
+| swscale    | 10           |
+| avcodec    | 63           |
+| avformat   | 63           |
+| avfilter   | 12           |
 
 ```kotlin
 enum class LibavLibrary(val baseName: String, val sonameMajor: Int) {
-    AVUTIL("avutil", 60), SWRESAMPLE("swresample", 6), SWSCALE("swscale", 9),
-    AVCODEC("avcodec", 62), AVFORMAT("avformat", 62), AVFILTER("avfilter", 11);
+    AVUTIL("avutil", 61), SWRESAMPLE("swresample", 7), SWSCALE("swscale", 10),
+    AVCODEC("avcodec", 63), AVFORMAT("avformat", 63), AVFILTER("avfilter", 12);
 
     fun fileName(os: Os): String = when (os) {
-        Os.LINUX -> "lib$baseName.so.$sonameMajor"     // libavformat.so.62
-        Os.MAC -> "lib$baseName.$sonameMajor.dylib"    // libavformat.62.dylib
-        Os.WINDOWS -> "$baseName-$sonameMajor.dll"      // avformat-62.dll
+        Os.LINUX -> "lib$baseName.so.$sonameMajor"     // libavformat.so.63
+        Os.MAC -> "lib$baseName.$sonameMajor.dylib"    // libavformat.63.dylib
+        Os.WINDOWS -> "$baseName-$sonameMajor.dll"      // avformat-63.dll
     }
 }
 ```

@@ -1,21 +1,16 @@
 package dev.hivens.skinema.libav
 
-import dev.hivens.skinema.webp.Webp
-import dev.hivens.skinema.webp.WebpAnimSource
 import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Picks the [FrameSource] for a file: RIFF/WEBP goes to libwebp when its
- * bindings loaded (FFmpeg only decodes still WebP), everything else --
- * and WebP on builds without libwebpdemux -- goes to libav.
+ * Picks the [FrameSource] for a file. One implementation covers every
+ * format now: FFmpeg 9 decodes animated WebP itself, so the libwebp stack
+ * the animated path used to need is gone from the bundles.
  */
 object FrameSources {
 
     fun open(path: Path, hardware: HwAccel = HwAccel.OFF): FrameSource {
-        // Animated WebP rides libwebp, which has no hardware path; the
-        // hardware policy applies to the libav decoder only.
-        if (Webp.available && isWebp(path)) return WebpAnimSource.open(path)
         return VideoDecoder.open(path, hardware)
     }
 

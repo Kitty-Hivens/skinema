@@ -1,19 +1,23 @@
-package dev.hivens.skinema.webp
+package dev.hivens.skinema.libav
 
-import dev.hivens.skinema.libav.Fixtures
-import dev.hivens.skinema.libav.FrameSources
-import dev.hivens.skinema.libav.LibavException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class WebpAnimSourceTest {
+/**
+ * WebP decoding, animated and still, through whatever [FrameSources] picks.
+ *
+ * These assert behaviour and never the implementation behind it: they were
+ * written against a libwebp binding, and every one of them survived the move
+ * to FFmpeg's own animated-WebP decoder unchanged except for dropping the
+ * assertions that named the class.
+ */
+class WebpDecodingTest {
 
     private val dir: Path = Files.createTempDirectory("skinema-webp-test")
 
@@ -22,11 +26,6 @@ class WebpAnimSourceTest {
         dir.toFile().deleteRecursively()
     }
 
-    // libwebpdemux is an optional capability (absent = the libav
-    // fallback); the fixture also needs a libwebp ENCODER, which brew's
-    // ffmpeg lacks, so this can skip on the encoder before reaching the
-    // load check. SKINEMA_REQUIRE_CAPS 'webp' makes a present-but-broken
-    // library loud (here when reached; always in CapabilitiesTest).
     private fun assumeWebpEnvironment() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libwebp")
@@ -43,7 +42,6 @@ class WebpAnimSourceTest {
     fun `animated webp decodes every frame on the pts grid`() {
         assumeWebpEnvironment()
         FrameSources.open(animated("anim.webp")).use { source ->
-            assertIs<WebpAnimSource>(source, "RIFF/WEBP must route to libwebp")
             val pts = generateSequence { source.nextFrame()?.ptsNanos }.toList()
             assertEquals(List(10) { it * 100_000_000L }, pts)
         }
@@ -65,6 +63,11 @@ class WebpAnimSourceTest {
         }
     }
 
+    /**
+     * The loop primitive, and the reason the animated-WebP demuxer needs the
+     * decoder's restart escalation: it accepts a seek, reports success and
+     * stays drained, so nothing here would produce a second frame without it.
+     */
     @Test
     fun `seek resets to the start -- the loop primitive`() {
         assumeWebpEnvironment()
@@ -78,7 +81,7 @@ class WebpAnimSourceTest {
     }
 
     @Test
-    fun `still webp routes through libwebp as a single frame`() {
+    fun `still webp decodes as a single frame`() {
         assumeWebpEnvironment()
         val video = Fixtures.generate(
             dir.resolve("still.webp"),
@@ -86,7 +89,6 @@ class WebpAnimSourceTest {
             "-c:v", "libwebp",
         )
         FrameSources.open(video).use { source ->
-            assertIs<WebpAnimSource>(source)
             val frames = generateSequence { source.nextFrame() }.count()
             assertEquals(1, frames)
         }
@@ -97,7 +99,6 @@ class WebpAnimSourceTest {
         assumeWebpEnvironment()
         FrameSources.open(animated("dur.webp")).use { source ->
             assertNull(source.durationNanos(), "the format declares none up front")
-            // Decode the whole lap; the final frame's end time is the duration.
             generateSequence { source.nextFrame() }.count()
             assertNull(source.nextFrame(), "the lap is drained")
             assertEquals(1_000_000_000L, source.durationNanos(), "one full lap reveals the 1s duration")

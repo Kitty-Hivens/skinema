@@ -1,7 +1,6 @@
 package dev.hivens.skinema.libav
 
 import dev.hivens.skinema.ass.Ass
-import dev.hivens.skinema.webp.Webp
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -57,7 +56,9 @@ object Fixtures {
         // carries no subtitle decoders of its own. The subrip decoder is
         // the bundle's own subtitle tell.
         "subs" -> Ass.available && libavHasDecoder("subrip")
-        "webp" -> Webp.available
+        // Animated WebP is FFmpeg's own decoder now; the still webp decoder
+        // rides the base whitelist, so webp_anim is the tell for the feature.
+        "webp" -> libavHasDecoder("webp_anim")
         // The full tier always carries x264 (mac/win keep enc-h264 even
         // without x265, #22), so libx264 is the encode path's load probe.
         "encode" -> libavHasEncoder("libx264")
@@ -107,19 +108,19 @@ object Fixtures {
     }
 
     /**
-     * Animated-webp decoding needs libwebpdemux, an OPTIONAL capability
-     * (absent = the libav fallback). Listed as 'webp' in
-     * SKINEMA_REQUIRE_CAPS its absence is a loud failure; otherwise a
-     * skip. The webp suite reaches this only past [assumeEncoder], which
-     * can skip first on a CLI without the libwebp encoder -- so the load
+     * Animated-webp decoding is an OPTIONAL capability: the whitelist can be
+     * built without it, and a bundle then plays still WebP only. Listed as
+     * 'webp' in SKINEMA_REQUIRE_CAPS its absence is a loud failure; otherwise
+     * a skip. The webp suite reaches this only past [assumeEncoder], which can
+     * skip first on a CLI without the libwebp encoder -- so the capability
      * itself is held by [CapabilitiesTest], not only here.
      */
     fun assumeWebpDecoding() {
         if (requires("webp")) {
-            check(Webp.available) { "SKINEMA_REQUIRE_CAPS lists 'webp' but libwebpdemux did not load" }
+            check(capLoads("webp")) { "SKINEMA_REQUIRE_CAPS lists 'webp' but the webp_anim decoder is absent" }
             return
         }
-        assumeTrue(Webp.available, "libwebpdemux not loadable -- optional capability, skipping")
+        assumeTrue(capLoads("webp"), "no webp_anim decoder -- optional capability, skipping")
     }
 
     /**

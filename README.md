@@ -33,13 +33,15 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
 The two versions are independent, and that is deliberate. `skinema-natives`
@@ -48,23 +50,34 @@ is versioned as the FFmpeg build it carries plus a repack revision
 -- most library releases leave it untouched. Take the natives version the
 release notes name and pair it with any library version that names it.
 
+Independent, but not unrelated: the bindings are valid for one set of FFmpeg
+soname majors, so a library release that moves the pin needs the natives that
+carry it. Gradle consumers do not have to track that by hand -- `skinema-core`
+publishes a constraint naming the natives version it was built against, so a
+stale pin is raised to it rather than failing at runtime. Override with
+`version { strictly("...") }` to hold a specific bundle (a local build, a
+repack under test); the runtime refuses a mismatched major either way.
+
 The natives classifier is `<tier>-<platform>`: pick one tier for the
 platforms you target. The tier sets what the bundle carries -- and its
 license:
 
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
-| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles | LGPL |
-| `decode` | core + subtitles + the broad legacy/extended format set           | LGPL    |
+| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
+| `decode` | core + GPU decode + subtitles + the broad legacy/extended format set; on Linux also GPU H.264/HEVC encode, AAC/FLAC encode and the mp4/mkv/webm muxers | LGPL |
 | `full`   | decode + H.264/HEVC software encode                                | GPL     |
 
-`core` is the lean tier -- the modern codecs only, no subtitles -- for apps
-that just play current video. `decode` (used above) is the complete LGPL
+`core` is the lean tier -- the modern codecs only, no subtitles, no GPU
+decode -- for apps that just play current video. It is also the portable one:
+it needs nothing from the host but the C library, so it loads in a bare
+container and on a distribution that keeps no libraries at the usual paths.
+The desktop tiers carry GPU decode, which means they need libva alongside
+fontconfig. `decode` (used above) is the complete LGPL
 player: it adds the libass subtitle stack and the broad `formats` set (the
 legacy and broadcast containers and codecs in "What it plays" below). `full`
 adds software encode and is GPL because it bundles x264/x265; HEVC encode
-ships on Linux only for now -- macOS/Windows `full` carry H.264 encode
-(issue #22). On first use the jars unpack to a per-user cache. Without a
+ships everywhere since the x265 source patch (issue #22). On first use the jars unpack to a per-user cache. Without a
 natives jar, skinema looks for matching system libraries -- fine for
 development, not what you ship.
 
@@ -74,17 +87,24 @@ Compose -- are restricted methods that otherwise warn on every run.
 
 ## Platforms
 
-Every tier ships for six platforms -- x64 and arm64 on all three desktop
-operating systems:
+Every tier ships for eight platforms -- x64 and arm64 on all three desktop
+operating systems, and both C libraries on Linux:
 
 | Platform        | Bundle built                 | Acceptance suite |
 |-----------------|------------------------------|------------------|
 | `linux-x64`     | on metal                     | on metal         |
 | `linux-arm64`   | on metal                     | on metal         |
+| `linux-musl-x64`| in Alpine, on metal          | on metal, musl JVM |
+| `linux-musl-arm64` | in Alpine, on metal       | on metal, musl JVM |
 | `windows-x64`   | on metal (MSYS2 MINGW64)     | on metal         |
 | `windows-arm64` | on metal (MSYS2 CLANGARM64)  | on metal         |
 | `macos-arm64`   | on metal                     | on metal         |
 | `macos-x64`     | cross-compiled on an arm mac | none             |
+
+Linux ships twice because a glibc shared object cannot load into a musl
+process at all -- Alpine and Void-musl take the `linux-musl-*` bundles, and
+`nativesPlatform()` picks between them by reading which C library the running
+JVM is itself linked against, not by looking at what the system has installed.
 
 arm64 is first-class here, not an afterthought: `linux-arm64` and
 `windows-arm64` are built on real arm machines and must pass the same
@@ -94,13 +114,24 @@ scarce, so it cross-compiles on an arm mac and ships without an on-metal
 run, because an arm JVM cannot load x86_64 dylibs. That is what
 community-tier support means here.
 
+**How old a system the bundles still load on.** glibc 2.39 for `linux-arm64`
+`full`, 2.38 for the other glibc bundles, 2.35 for `core-linux-x64` -- so
+Ubuntu 24.04, Debian 13 and Fedora 39 upward for the desktop tiers, and not
+RHEL 9. `core-linux-x64` alone still loads on Ubuntu 22.04.
+macOS bundles are built for 14.0, so Sonoma upward. The `linux-musl-*`
+bundles have no such floor: musl does not version its symbols. The `decode`
+and `full` Linux bundles link `libva`, `libva-drm` and `libfontconfig` from
+the host and load none of their libraries without them, which is worth
+knowing before putting them in a headless container -- `core` needs only
+libc and libm and has no such requirement.
+
 ## What it plays
 
 |                 |                                                                                               |
 |-----------------|-----------------------------------------------------------------------------------------------|
 | Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
 | Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
-| Animated images | GIF, APNG, animated WebP -- the latter via libwebp, which plain FFmpeg cannot decode          |
+| Animated images | GIF, APNG, animated WebP                                                                      |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
 | Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |

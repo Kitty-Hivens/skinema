@@ -12,6 +12,7 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.nio.file.Files
 import java.nio.file.Path
 
 /** The byte stream did not decode, or a libav call refused it. */
@@ -51,6 +52,26 @@ object Libav {
     internal fun resolveLibraryPath(name: String): String =
         if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
 
+    /**
+     * Loads an OPTIONAL library -- one a tier may legitimately not carry, like
+     * libass in `core`. Taken from the natives directory when that directory
+     * holds a copy, and from the system loader otherwise.
+     *
+     * The distinction is which of two states we are in, and they used to be
+     * conflated. "The directory has no such file" is an absent capability, and
+     * the host's copy is the right answer. "The file is there and will not
+     * open" is a broken bundle -- substituting the host's copy there reports
+     * the capability as present, so CI passes on a runner that happens to have
+     * the library installed while a user without it gets nothing. The
+     * acceptance gate installs the ffmpeg CLI for fixtures, which pulls libass
+     * in with it, so that runner always had one.
+     */
+    internal fun optionalLookup(name: String): SymbolLookup {
+        val resolved = resolveLibraryPath(name)
+        val fromDir = resolved != name && Files.exists(Path.of(resolved))
+        return SymbolLookup.libraryLookup(if (fromDir) resolved else name, Arena.global())
+    }
+
     // Windows: the pinned av* DLLs and libass import MinGW runtime
     // libraries (zlib, bzip2, iconv, lzma, winpthread) that ride in the
     // bundle but are not themselves pinned. Preload them from the bundle by
@@ -62,12 +83,15 @@ object Libav {
     // through. Ass routes its own loads through resolveLibraryPath, so
     // touching it runs this first -- libass's iconv import resolves too.
     //
-    // The list spans both Windows toolchains, since one loader serves every
-    // bundle. libc++/libunwind are the aarch64 half: clang there ships its C++
-    // runtime as DLLs, where the x64 MinGW build folds libstdc++/libgcc into
-    // the libraries statically -- so on arm64 the x265 in a full-tier avcodec
-    // imports libc++ and nothing else does. A name absent from the bundle
-    // simply falls through, which is what the other tiers and x64 rely on.
+    // The list is a superset spanning both Windows toolchains and all three
+    // tiers, since one loader serves every bundle: a name absent from the
+    // bundle simply falls through. Which of these a bundle actually carries is
+    // decided at build time by closing over the DLLs' real imports, so most
+    // bundles carry only some of them -- libc++/libunwind ride only where
+    // clang links its C++ runtime dynamically (aarch64, full tier), and the
+    // compression runtimes only where they were not linked statically.
+    // Listing a name that never ships costs nothing; omitting one that does
+    // fails the load on a clean machine, which is why this errs wide.
     init {
         if (Os.current() == Os.WINDOWS) {
             val runtimes = listOf(
@@ -206,6 +230,8 @@ object Libav {
     private val hAvFindBestStream = fn(LibavLibrary.AVFORMAT, "av_find_best_stream", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT))
     private val hAvReadFrame = fn(LibavLibrary.AVFORMAT, "av_read_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvSeekFrame = fn(LibavLibrary.AVFORMAT, "av_seek_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, JAVA_INT))
+    private val hAvioSeek = fn(LibavLibrary.AVFORMAT, "avio_seek", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_INT))
+    private val hAvformatFlush = fn(LibavLibrary.AVFORMAT, "avformat_flush", FunctionDescriptor.of(JAVA_INT, ADDRESS))
     private val hAvformatCloseInput = fn(LibavLibrary.AVFORMAT, "avformat_close_input", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvformatAllocOutputContext2 = fn(LibavLibrary.AVFORMAT, "avformat_alloc_output_context2", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
     private val hAvformatNewStream = fn(LibavLibrary.AVFORMAT, "avformat_new_stream", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS))
@@ -234,8 +260,14 @@ object Libav {
         raw.forEach { (lib, v) ->
             val major = v shr 16
             if (major != lib.sonameMajor) {
+                // Name the fix, not just the numbers: this fires for a stale
+                // skinema-natives pin and for a system FFmpeg of the wrong
+                // major, and the two have different answers.
                 throw UnsatisfiedLinkError(
-                    "${lib.baseName} runtime major $major does not match the pinned ${lib.sonameMajor}",
+                    "${lib.baseName} runtime major $major does not match the pinned ${lib.sonameMajor}, " +
+                        "loaded from ${libavDir ?: "the system library path"} -- " +
+                        "pair this skinema version with the skinema-natives version its release notes name, " +
+                        "or point skinema.libav.dir at an FFmpeg build of the pinned major",
                 )
             }
         }
@@ -429,6 +461,12 @@ object Libav {
     fun avSeekFrame(ctx: MemorySegment, streamIndex: Int, timestamp: Long, flags: Int): Int =
         hAvSeekFrame.invoke(ctx, streamIndex, timestamp, flags) as Int
     fun avformatCloseInput(ctxPtrPtr: MemorySegment) { hAvformatCloseInput.invoke(ctxPtrPtr) }
+
+    /** Rewinds the byte stream itself; the escape when a demuxer cannot seek. */
+    fun avioSeek(pb: MemorySegment, offset: Long, whence: Int): Long = hAvioSeek.invoke(pb, offset, whence) as Long
+
+    /** Drops the demuxer's buffered state after the byte stream moved under it. */
+    fun avformatFlush(ctx: MemorySegment): Int = hAvformatFlush.invoke(ctx) as Int
 
     // -- encode + mux (M12) ------------------------------------------------------
 
