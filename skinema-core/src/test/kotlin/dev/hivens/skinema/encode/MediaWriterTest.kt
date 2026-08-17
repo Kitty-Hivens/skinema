@@ -8,6 +8,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -58,8 +59,12 @@ class MediaWriterTest {
         assertTrue(Files.size(out) > 0, "the muxed file must not be empty")
         VideoDecoder.open(out).use { decoder ->
             val decoded = generateSequence { decoder.nextFrame() }.toList()
-            // ultrafast x264 may merge the static tail; tolerate +-1 frame.
-            assertTrue(decoded.size in (frames - 1)..(frames + 1), "expected ~$frames frames, got ${decoded.size}")
+            // Exactly, not about. The tolerance that used to sit here was one
+            // frame wide in the direction of a real defect and hid it: the
+            // packets carried no duration, so the muxer gave the last sample
+            // none, flagged it discard, and every clip came back a frame short.
+            // Nothing merges a static tail -- it was thrown away.
+            assertEquals(frames, decoded.size, "every pushed frame must come back")
             // Timing must survive the round-trip: a nanos/micros units slip in
             // the pts conversion compresses the whole clip ~1000x (10s -> 10ms).
             val interval = 1_000_000_000L / fps
@@ -77,6 +82,77 @@ class MediaWriterTest {
             val b = first.rgba[i + 2].toInt() and 0xFF
             assertTrue(g > 180 && r < 80 && b < 80, "solid green must round-trip, got r=$r g=$g b=$b")
         }
+    }
+
+    /**
+     * The documented `use { }` idiom, with something going wrong inside it.
+     * close() used to free the natives and never write the container index,
+     * so the caller was left with an mp4 that has no moov atom -- a file no
+     * player opens, produced with no error and no exception. Fail-closed
+     * cannot mean "and then leave a silently broken file behind".
+     */
+    @Test
+    fun `a writer closed without finishing still leaves a readable file`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        val out = dir.resolve("aborted.mp4")
+        runCatching {
+            MediaWriter.open(
+                out,
+                VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")),
+            ).use { writer ->
+                repeat(5) { i -> writer.writeFrame(solidGreen(64, 64), i * 100_000_000L) }
+                throw IllegalStateException("the caller's own failure, mid-encode")
+            }
+        }
+        assertTrue(Files.size(out) > 0, "the file must exist")
+        VideoDecoder.open(out).use { decoder ->
+            assertNotNull(decoder.nextFrame(), "an aborted encode must still open and decode")
+        }
+    }
+
+    /**
+     * The muxer's IO truncates the path on the way in, so a refusal after
+     * that point had already destroyed whatever was there -- and then left
+     * the wreck. The open promises to leave nothing behind, and a file the
+     * caller already had is the last thing it may take.
+     */
+    @Test
+    fun `a failed open leaves no output file behind`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        // A wav muxer takes one audio stream and no video, so the refusal
+        // lands at the header -- after the IO has been opened and the file
+        // truncated, which is the only window where this can go wrong.
+        val out = dir.resolve("prior.wav")
+        Files.writeString(out, "something the caller already had")
+        val before = Files.size(out)
+        val threw = runCatching {
+            MediaWriter.open(out, VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")))
+        }.isFailure
+        assertTrue(threw, "a container that cannot carry the stream must fail the open")
+        assertTrue(before > 0 && !Files.exists(out), "a failed open must not leave a truncated file")
+    }
+
+    /** AutoCloseable's guarantee, and the natives are freed by then. */
+    @Test
+    fun `writing after close is refused rather than reaching freed memory`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        val writer = MediaWriter.open(
+            dir.resolve("afterclose.mp4"),
+            VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")),
+        )
+        writer.writeFrame(solidGreen(64, 64), 0)
+        writer.close()
+        // The message matters, not just the type. Without the guard the call
+        // reaches libav on freed pointers and is stopped -- if at all -- by
+        // the confined arena's own liveness check, which raises the SAME
+        // exception type from far deeper in. Only naming the guard tells the
+        // two apart.
+        assertEquals(
+            "writeFrame after close()",
+            assertFailsWith<IllegalStateException> { writer.writeFrame(solidGreen(64, 64), 100_000_000L) }.message,
+        )
+        assertEquals("finish after close()", assertFailsWith<IllegalStateException> { writer.finish() }.message)
+        writer.close()
     }
 
     @Test
@@ -116,7 +192,7 @@ class MediaWriterTest {
 
         assertTrue(Files.size(out) > 0, "the muxed file must not be empty")
         VideoDecoder.open(out).use { d ->
-            assertTrue(generateSequence { d.nextFrame() }.count() >= frames - 1, "video stream must decode back")
+            assertEquals(frames, generateSequence { d.nextFrame() }.count(), "every pushed frame must come back")
         }
         val audioDec = AudioDecoder.openOrNull(out)
         assertNotNull(audioDec, "the muxed file must carry a decodable audio stream")

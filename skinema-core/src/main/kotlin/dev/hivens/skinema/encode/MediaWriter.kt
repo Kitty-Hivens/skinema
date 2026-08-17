@@ -1,5 +1,6 @@
 package dev.hivens.skinema.encode
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
@@ -9,6 +10,7 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -81,15 +83,20 @@ class MediaWriter private constructor(
     private var finished = false
     private var closed = false
 
+    // Whether the container's index reached the file. Separate from [finished]
+    // so close() can tell "nothing to do" from "nobody wrote it".
+    private var trailerWritten = false
+
     /**
      * Encodes one RGBA8888 frame ([VideoEncodeConfig.width] x height,
      * tightly packed) presented at [ptsNanos]. Frames must arrive in
      * non-decreasing pts order.
      */
     fun writeFrame(rgba: ByteArray, ptsNanos: Long) {
+        check(!closed) { "writeFrame after close()" }
         check(!finished) { "writeFrame after finish()" }
         video.send(rgba, ptsNanos)
-        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen)
+        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen, video.frameDurationMicros)
     }
 
     /**
@@ -99,31 +106,52 @@ class MediaWriter private constructor(
      * [AudioEncodeConfig] was given to [open] -- otherwise throws.
      */
     fun writeAudio(pcm: ByteArray) {
+        check(!closed) { "writeAudio after close()" }
         check(!finished) { "writeAudio after finish()" }
         val a = audio ?: throw LibavException("this MediaWriter has no audio stream")
+        require(pcm.size % BYTES_PER_AUDIO_FRAME == 0) {
+            "PCM must be whole S16LE stereo frames, got ${pcm.size} bytes"
+        }
         a.append(pcm)
         while (a.hasFullFrame()) {
             a.send(a.frameSize)
-            drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen)
+            drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
         }
     }
 
     /** Drains both encoders and writes the container trailer. Call once, before [close]. */
     fun finish() {
+        check(!closed) { "finish after close()" }
         if (finished) return
-        finished = true
-        Libav.checkAv(Libav.avcodecSendFrame(video.codecCtx, MemorySegment.NULL), "avcodec_send_frame(video flush)")
-        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen)
+        flushEncoder(video.codecCtx, "avcodec_send_frame(video flush)")
+        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen, video.frameDurationMicros)
         audio?.let { a ->
             // A short final frame, then the flush packet.
             a.remainingSamples()?.let { samples ->
                 a.send(samples)
-                drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen)
+                drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
             }
-            Libav.checkAv(Libav.avcodecSendFrame(a.codecCtx, MemorySegment.NULL), "avcodec_send_frame(audio flush)")
-            drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen)
+            flushEncoder(a.codecCtx, "avcodec_send_frame(audio flush)")
+            drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
         }
         Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer")
+        // Set last, not first. Set up front, a refusal anywhere above left the
+        // writer believing it had finished: the retry was a silent no-op and
+        // close() then produced a file with no trailer, which is the one
+        // outcome this class must never reach quietly.
+        finished = true
+        trailerWritten = true
+    }
+
+    /**
+     * Sends the flush frame, tolerating an encoder an earlier attempt already
+     * flushed -- [finish] is retryable, and a second flush of a drained
+     * encoder answers EOF rather than succeeding.
+     */
+    private fun flushEncoder(encCtx: MemorySegment, what: String) {
+        val ret = Libav.avcodecSendFrame(encCtx, MemorySegment.NULL)
+        if (ret == LibavAbi.AVERROR_EOF) return
+        Libav.checkAv(ret, what)
     }
 
     /**
@@ -131,14 +159,28 @@ class MediaWriter private constructor(
      * time_base (1 / [codecTbDen]) to the muxer's stream time_base, stamps
      * the stream index, and interleaves it into the container.
      */
-    private fun drain(encCtx: MemorySegment, streamIndex: Int, codecTbDen: Int, streamTbNum: Int, streamTbDen: Int) {
+    private fun drain(
+        encCtx: MemorySegment,
+        streamIndex: Int,
+        codecTbDen: Int,
+        streamTbNum: Int,
+        streamTbDen: Int,
+        fallbackDuration: Long,
+    ) {
         while (true) {
             val ret = Libav.avcodecReceivePacket(encCtx, packet)
             if (ret == LibavAbi.AVERROR_EAGAIN || ret == LibavAbi.AVERROR_EOF) return
             Libav.checkAv(ret, "avcodec_receive_packet")
             rescaleField(LibavAbi.Packet.PTS, codecTbDen, streamTbNum, streamTbDen)
             rescaleField(LibavAbi.Packet.DTS, codecTbDen, streamTbNum, streamTbDen)
-            val dur = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION)
+            // libavcodec fills a packet duration for audio and leaves it at
+            // zero for video. Passing that zero on made the muxer derive
+            // interior durations from dts deltas and give the LAST sample none
+            // -- so mp4 wrote an edit list a frame short and flagged the final
+            // sample discard, and every clip this writer produced came back
+            // one frame shorter than it was given, with the frame rate
+            // misreported to match.
+            val dur = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION).takeIf { it > 0 } ?: fallbackDuration
             packet.set(JAVA_LONG, LibavAbi.Packet.DURATION, dur * streamTbDen / (codecTbDen.toLong() * streamTbNum))
             packet.set(JAVA_INT, LibavAbi.Packet.STREAM_INDEX, streamIndex)
             val written = Libav.avInterleavedWriteFrame(fmtCtx, packet)
@@ -158,6 +200,15 @@ class MediaWriter private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        // A writer closed without finish() -- the `use` block that threw, the
+        // caller who forgot -- used to leave a file with no trailer: an mp4
+        // with no moov atom, which no player opens and nothing reported. Best
+        // effort, because whatever aborted the write may refuse this too; a
+        // file missing its undrained tail still beats one missing its index.
+        if (!trailerWritten) {
+            runCatching { Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer(close)") }
+                .onFailure { Debug.trace("av_write_trailer on close", it) }
+        }
         val ptrPtr = arena.allocate(ADDRESS)
         video.free(ptrPtr)
         audio?.free(ptrPtr)
@@ -188,6 +239,8 @@ class MediaWriter private constructor(
         val streamTbDen: Int,
         private val width: Int,
         private val height: Int,
+        /** One frame at the configured rate, in the codec's microsecond base. */
+        val frameDurationMicros: Long,
         private val dstFormat: Int,
         private val hwFramesCtx: MemorySegment,
         private val hwFrame: MemorySegment,
@@ -490,7 +543,7 @@ class MediaWriter private constructor(
                 val videoTrack = VideoTrack(
                     arena, vCtx, vFrame, vStreamIndex,
                     vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE), vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4),
-                    video.width, video.height,
+                    video.width, video.height, MICROS_DEN.toLong() / video.fps,
                     swFrameFormat, hwFramesRef, hwFrame, hwDeviceRef,
                 )
                 val audioTrack = if (audio == null) null else AudioTrack(
@@ -513,7 +566,16 @@ class MediaWriter private constructor(
                 }
                 if (swr != MemorySegment.NULL) { ptrPtr.set(ADDRESS, 0, swr); Libav.swrFree(ptrPtr) }
                 if (packet != MemorySegment.NULL) { ptrPtr.set(ADDRESS, 0, packet); Libav.avPacketFree(ptrPtr) }
-                if (openedIo) { ptrPtr.set(ADDRESS, 0, fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB)); Libav.avioClosep(ptrPtr) }
+                if (openedIo) {
+                    ptrPtr.set(ADDRESS, 0, fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB))
+                    Libav.avioClosep(ptrPtr)
+                    // avio_open truncates on the way in, so a refusal after it
+                    // -- a codec the inferred container will not carry, above
+                    // all -- had already destroyed whatever was at that path
+                    // and then left the wreck behind. The open promises to
+                    // leave nothing; that has to include the file.
+                    runCatching { Files.deleteIfExists(path) }
+                }
                 if (fmtCtx != MemorySegment.NULL) Libav.avformatFreeContext(fmtCtx)
                 arena.close()
                 throw t
