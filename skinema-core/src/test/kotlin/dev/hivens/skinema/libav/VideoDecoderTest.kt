@@ -20,6 +20,30 @@ class VideoDecoderTest {
         dir.toFile().deleteRecursively()
     }
 
+    /**
+     * AutoCloseable asks for idempotence and this did not give it: the scaler
+     * contexts are freed before the arena is touched and were not cleared, so
+     * a second close freed them again. That is a double free, which aborts the
+     * process rather than throwing -- a regression here does not fail this
+     * test, it takes the whole test JVM down, which is the correct amount of
+     * noise for memory corruption in a public class.
+     */
+    @Test
+    fun `closing a decoder twice is safe`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("twice.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        val decoder = VideoDecoder.open(video)
+        // A frame first: the scaler contexts only exist once something was
+        // converted, and they are what the second close freed twice.
+        assertNotNull(decoder.nextFrame(), "the fixture must decode")
+        decoder.close()
+        decoder.close()
+    }
+
     @Test
     fun `decodes every frame with pts on the frame grid`() {
         Fixtures.assumeDecodeEnvironment()

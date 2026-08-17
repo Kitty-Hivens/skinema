@@ -370,6 +370,20 @@ object LibavAbi {
     const val AV_CODEC_ID_VP9 = 166
     const val AV_LOG_QUIET = -8
     const val AVERROR_EOF = -541478725
+
+    /**
+     * av_find_best_stream found no stream of the requested type. Distinct
+     * from AVERROR_DECODER_NOT_FOUND, which means the stream is there and
+     * unplayable -- one is a shape of file, the other is a failure.
+     */
+    const val AVERROR_STREAM_NOT_FOUND = -1381258232
+
+    /**
+     * av_find_best_stream found the stream but no decoder for it. Still
+     * "nothing this can show" from the player's side -- a trimmed bundle
+     * carries a deliberately narrow decoder set -- so it is not a failure.
+     */
+    const val AVERROR_DECODER_NOT_FOUND = -1128613112
     const val AV_NOPTS_VALUE = Long.MIN_VALUE
 
     /**

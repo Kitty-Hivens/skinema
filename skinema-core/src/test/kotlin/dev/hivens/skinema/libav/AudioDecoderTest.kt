@@ -288,4 +288,23 @@ class AudioDecoderTest {
         )
         assertNull(AudioDecoder.openOrNull(video))
     }
+
+    /**
+     * AutoCloseable requires it, the video decoder guarantees it explicitly,
+     * and this one threw: close() allocates from the confined arena it then
+     * closes, so a second call died inside the allocation. Every call site
+     * inside the pipeline wraps close in runCatching, which is why nobody
+     * noticed -- a consumer holding the decoder directly would not.
+     */
+    @Test
+    fun `close is idempotent`() {
+        Fixtures.assumeDecodeEnvironment()
+        val tone = Fixtures.generate(
+            dir.resolve("twice.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
+        )
+        val decoder = assertNotNull(AudioDecoder.openOrNull(tone))
+        decoder.close()
+        decoder.close()
+    }
 }
