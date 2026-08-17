@@ -144,14 +144,23 @@ clock = explicitClock ?: audioClock ?: PlaybackClock()
 ownsClock = explicitClock != null || audioClock == null
 ```
 
-`ownsClock` is the invariant that keeps the two clocks from fighting.
-When audio masters (`ownsClock == false`), the video side **never**
-calls `clock.seek` -- the audio thread re-anchors at its actual
-landing, on seeks and on loop wraps. The video parks
-(`awaitClockWrap`) until the audio restarts time. (The original
-intermittent post-seek freeze was exactly a park that handled a seek
-command with `decoder = null`, re-anchoring audio but never moving the
-video; the fix runs park commands against the real decoder.)
+`ownsClock` says which side supplies media time -- the audio device or
+the wall -- and no longer says who may move it. The rule that kept the
+two clocks from fighting is now about WHEN rather than WHO: the clock is
+re-anchored only at points where nothing is in flight on either side,
+and the decode thread is the one that picks those points because it is
+the one that knows when a lap or a landing is complete.
+
+It re-anchors in three places, all of them on the decode thread: at the
+end of playback (stopped, then placed on the duration), at a lap (after
+the queue has drained and the file's own time is up, restarting the
+sound with the same call), and at a seek landing. The audio thread
+re-anchors at its own landing, and the watchdog hands the clock to the
+wall when the device dies. Nothing parks waiting for another side to
+move time -- the earlier arrangement, where the sound wrapped the clock
+at its own end and the picture waited for that, could not describe a
+file whose track is shorter than its picture: the timeline sawed back
+to zero while the picture still had seconds to run.
 
 AudioClock's three disciplined operations:
 
