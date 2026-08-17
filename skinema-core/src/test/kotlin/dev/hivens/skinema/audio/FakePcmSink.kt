@@ -51,8 +51,14 @@ class FakePcmSink : PcmSink {
         // [stopped] untouched would let freeze-across-reopen tests pass
         // vacuously.
         stopped = false
+        // And a fresh line counts its frames from zero. The written bytes are
+        // kept, because tests assert on them across the reopen; only the
+        // playhead restarts, which is what a track switch rebases against.
+        openedAtFrames = (totalBytes / 4).toLong()
         opens++
     }
+
+    private var openedAtFrames = 0L
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
         synchronized(all) {
@@ -79,12 +85,18 @@ class FakePcmSink : PcmSink {
 
     override fun framePosition(): Long {
         val manual = positionFrames.get()
-        return if (manual >= 0) manual else (totalBytes / 4).toLong()
+        return if (manual >= 0) manual else (totalBytes / 4).toLong() - openedAtFrames
     }
 
     override fun setVolume(volume: Float) {
         this.volume = volume
     }
 
-    override fun close() = Unit
+    /** close() calls; the pipeline must close a sink it was handed, once. */
+    var closes = 0
+        private set
+
+    override fun close() {
+        closes++
+    }
 }
