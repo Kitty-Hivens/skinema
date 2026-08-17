@@ -137,6 +137,41 @@ Two implementations:
   A DAC plays samples at a fixed rate, so this is the honest position.
   When sound is present, the audio clock masters.
 
+### What the device actually reports
+
+Worth knowing exactly, because several of this clock's mechanisms exist
+only because of it, and because "we ask the device" sounds more precise
+than it is.
+
+A JavaSound line does not read a hardware register. The ALSA backend
+computes `handed over - still queued`
+(`estimatePositionFromAvail` in openjdk's
+`PLATFORM_API_LinuxOS_ALSA_PCM.c`, whose own comment calls it "not an
+elegant solution"). That is the same quantity ffplay estimates; the
+difference is that ffplay guesses the queued term as two driver periods
+while a line measures it. It is `snd_pcm_avail`, so it covers the ring
+buffer and not the latency downstream of it. Measured against wall time
+over 30 s the reading drifts by -24 ppm, which is to say not at all --
+whatever the device clock buys, it is not drift correction.
+
+Two properties of it shape the code:
+
+- **It refreshes once per device period and is a constant in between.**
+  Measured on a USB DAC through PipeWire: 21.3 ms still, then a 21.3 ms
+  jump. Read raw, media time is a staircase, and a staircase step longer
+  than a frame period paces video in bursts -- 60 fps content delivered
+  48.4 distinct frames a second to a consumer, the rest overwritten in
+  the mailbox before anything could take them. `AudioClock` therefore
+  fills the gaps with wall time, bounded by the device's own last step
+  and by a 60 ms ceiling; the same measurement then delivers 60.0.
+  `MasteredClockPacingTest` holds it, over a real device.
+- **A flush destroys the "still queued" term**, so afterwards the
+  backend reports the whole of what was handed over as played -- a
+  forward step of the discarded tail, measured at 130 and 177 ms on a
+  200 ms line. `JavaSoundSink` subtracts it off, because
+  `PcmSink.framePosition` promises frames PLAYED and the mastered clock
+  anchors on it. `PcmSinkContract` holds every sink to that rule.
+
 The player picks the clock once at startup:
 
 ```kotlin
@@ -175,6 +210,13 @@ AudioClock's three disciplined operations:
   last one it returned (some backends reconcile `framePosition`
   non-monotonically around a flush/restart); the floor is cleared on a
   deliberate re-anchor.
+- **setDeviceRunning(running)** -- whether the line is consuming, which
+  only the pipeline knows: `isPaused` covers the player's pause and none
+  of the seeks, switches and rate changes that also stop the line. It
+  gates the gap fill, because a stopped line plays nothing and every
+  nanosecond added past the stop is time the following re-anchor would
+  have to take back. `AudioPipeline` funnels every `stop`/`start`
+  through `freezeSink`/`runSink` so the two cannot drift apart.
 
 ## Seeks: the freeze-first handshake
 
@@ -182,11 +224,13 @@ A seek with sound is a coordination, not a jump:
 
 1. The video side marks the seek in flight and tells the audio and
    subtitle pipelines (incrementing their `pendingSeeks`).
-2. The audio thread **freezes first** -- `sink.stop()` then
-   `sink.flush()` -- and only then reads the playhead and crops to the
-   sample-precise anchor, re-anchoring the clock there. Freezing after
-   reading would let the line play its buffered tail and step the
-   mastered clock backward, which the pacer's invariants forbid.
+2. The audio thread **freezes first** -- `sink.stop()` -- and only then
+   reads the playhead, crops to the sample-precise anchor and
+   re-anchors the clock there. Freezing after reading would let the line
+   play its buffered tail and step the mastered clock backward, which
+   the pacer's invariants forbid. The read goes BETWEEN the stop and the
+   flush: the freeze is what makes it safe to take, and the flush is
+   what destroys the evidence (see "What the device actually reports").
 3. The video lands by decoding forward to the target, publishing the
    keyframe as a forced preview while it works.
 4. The video side calls `videoLanded()`; the audio thread restarts the
@@ -219,11 +263,24 @@ write path (bypassed at rate 1.0). Looping is drain-then-wrap: flush
 the stretcher, let the buffered tail play out, then seek to zero and
 re-anchor. Seeks crop the decoder output to the sample at the target.
 
-The **device-death watchdog** is a separate thread that polls the
-sink's frame position while a write is in flight; if the position
-freezes past a wall deadline, it calls `detachToWallTime` so a silently
-dead device cannot freeze the whole pipeline (a blocking JavaSound
-write on a vanished device raises nothing).
+The **device-death watchdog** is a separate thread that judges a stall
+by how long one write has been outstanding; past a wall deadline it
+calls `detachToWallTime` and closes the line, so a silently dead device
+cannot freeze the whole pipeline (a blocking JavaSound write on a
+vanished device raises nothing) and the stuck write returns into
+recovery.
+
+It deliberately asks the device nothing. It used to poll the frame
+position and call the device stuck when that stopped advancing, which
+cannot work: `nGetBytePosition` and `nWrite` are taken under the same
+native monitor (`lockNative` in openjdk's `DirectAudioDevice.java`), so
+on the dead device this exists to rescue, the watchdog parked on the
+very lock it came to break -- taking the pacer, the decode thread and
+the consumer's render loop down behind it, since they all read this
+clock. How long its own write has been outstanding is the one thing it
+can know without the device's help, and it is enough. The same monitor
+is why `AudioClock` samples the line outside its own lock, and not at
+all once detached.
 
 ## Pts math
 
