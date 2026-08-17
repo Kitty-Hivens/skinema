@@ -6,10 +6,12 @@ package dev.hivens.skinema.core
  * the only truth, so when sound is present video follows it, never the
  * reverse (ROADMAP.md section 3).
  *
- * Pause and resume only track the flag: stopping the device freezes
- * [positionFrames], which freezes media time by construction. Underruns
- * behave the same way -- the position stalls, video stalls with it, and
- * sync survives. Thread-safe: the audio thread re-anchors on seek while
+ * Pause needs no more than the flag while the device drives time: stopping
+ * it freezes [positionFrames], and media time with it. Detached from the
+ * device -- once the track has ended, or it has died -- the wall clock is
+ * the source and only [pause] can stop it, so it does. Underruns behave
+ * like a stop: the position stalls, video stalls with it, and sync
+ * survives. Thread-safe: the audio thread re-anchors on seek while
  * the video thread reads.
  */
 class AudioClock(
@@ -43,29 +45,93 @@ class AudioClock(
     override var isPaused = true
         private set
 
+    // True while media time comes from the wall rather than the device.
+    // Read without [lock] to decide whether the device may be consulted at
+    // all; only written under it, by [detachToWallTime] and [rebase].
+    @Volatile
+    private var deviceDetached = false
+
+    /**
+     * The device's position, or null when the clock is not driven by it.
+     *
+     * Never called under [lock], and never at all once detached. Both halves
+     * matter for the same reason: [positionFrames] goes into the audio
+     * backend, and a JavaSound line answers it under the same native monitor
+     * that its blocking write holds -- so on a device that has stopped
+     * draining the call parks for as long as the write does. Under the lock
+     * that dragged in every reader (the pacer, the decode thread, the
+     * subtitle thread, the consumer's render loop), and detaching to wall
+     * time was no escape while the readers still asked the line where it
+     * was. A player whose device died wedged whole instead of degrading to
+     * silence, which is the one thing this clock's failure hatch exists to
+     * prevent.
+     */
+    private fun sampleDevice(): Long? = if (deviceDetached) null else positionFrames()
+
     override fun start(atMediaNanos: Long) {
+        val frames = positionFrames()
         synchronized(lock) {
             baseMediaNanos = atMediaNanos
-            baseFrames = positionFrames()
+            baseFrames = frames
             floorNanos = Long.MIN_VALUE
+            pausedAt = atMediaNanos
+            reanchorDetached(atMediaNanos, running = true)
             isPaused = false
         }
     }
 
+    /**
+     * Freezes media time where it stands, which is what the interface
+     * promises, rather than trusting the device to stop.
+     *
+     * The flag alone used to be enough on the reasoning that pausing stops the
+     * line and its frame position with it. That holds when the pipeline is the
+     * one pausing. It does not when the timeline is stopped from the outside
+     * -- at the end of playback, say -- while the line is still draining what
+     * it was given: media time walked on with the device for the length of
+     * that buffer, landing a fifth of a second past the end of the file. Nor
+     * does it hold detached from the device, where the wall is the source and
+     * nothing else can stop it.
+     */
     override fun pause() {
-        isPaused = true
+        val frames = sampleDevice()
+        synchronized(lock) {
+            if (!isPaused) {
+                pausedAt = currentLocked(frames)
+                isPaused = true
+            }
+        }
     }
 
     override fun resume() {
-        isPaused = false
+        val frames = sampleDevice()
+        synchronized(lock) {
+            if (!isPaused) return
+            // Carry on from where the pause froze it, whichever source is
+            // driving: the device gets a fresh anchor, the wall a fresh start.
+            baseMediaNanos = pausedAt
+            baseFrames = frames ?: baseFrames
+            if (detachedPaused || detachedAtWall >= 0) {
+                detachedMedia = pausedAt
+                detachedAtWall = System.nanoTime()
+                detachedPaused = false
+            }
+            isPaused = false
+        }
     }
+
+    private var pausedAt = 0L
 
     /** Re-anchor after the sink was flushed; the audio thread owns this. */
     override fun seek(mediaNanos: Long) {
+        val frames = sampleDevice()
         synchronized(lock) {
             baseMediaNanos = mediaNanos
-            baseFrames = positionFrames()
+            baseFrames = frames ?: baseFrames
             floorNanos = Long.MIN_VALUE
+            reanchorDetached(mediaNanos, running = !isPaused)
+            // A seek moves the position whether or not time is running.
+            pausedAt = mediaNanos
         }
     }
 
@@ -80,13 +146,19 @@ class AudioClock(
      * which is never detached.
      */
     fun rebase(mediaNanos: Long, sampleRate: Int) {
+        // Unconditional: this IS the re-attach, and the line it re-attaches
+        // to is a fresh one that answers.
+        val frames = positionFrames()
         synchronized(lock) {
             baseMediaNanos = mediaNanos
-            baseFrames = positionFrames()
+            baseFrames = frames
             this.sampleRate = sampleRate
             floorNanos = Long.MIN_VALUE
+            pausedAt = mediaNanos
             detachedAtWall = -1L
             detachedMedia = 0L
+            detachedPaused = false
+            deviceDetached = false
         }
     }
 
@@ -98,13 +170,13 @@ class AudioClock(
      * around this call.
      */
     fun setTempo(tempo: Double) {
+        val frames = sampleDevice()
         synchronized(lock) {
             if (detachedAtWall >= 0) {
                 val wall = System.nanoTime()
                 detachedMedia += ((wall - detachedAtWall) * this.tempo).toLong()
                 detachedAtWall = wall
-            } else {
-                val frames = positionFrames()
+            } else if (frames != null) {
                 baseMediaNanos += framesToNanos(((frames - baseFrames) * this.tempo).toLong())
                 baseFrames = frames
             }
@@ -112,22 +184,51 @@ class AudioClock(
         }
     }
 
-    override fun mediaNanos(): Long = synchronized(lock) {
-        val raw = if (detachedAtWall >= 0) {
-            detachedMedia + ((System.nanoTime() - detachedAtWall) * tempo).toLong()
-        } else {
-            baseMediaNanos + framesToNanos(((positionFrames() - baseFrames) * tempo).toLong())
-        }
-        if (raw < floorNanos) {
-            floorNanos
-        } else {
-            floorNanos = raw
-            raw
+    /**
+     * What the clock reads right now, whatever it is currently driven by.
+     * [frames] is the device's position, sampled by the caller before it
+     * took [lock]; the detached branches ignore it.
+     */
+    private fun currentLocked(frames: Long?): Long = when {
+        isPaused -> pausedAt
+        detachedPaused -> detachedMedia
+        detachedAtWall >= 0 -> detachedMedia + ((System.nanoTime() - detachedAtWall) * tempo).toLong()
+        frames != null -> baseMediaNanos + framesToNanos(((frames - baseFrames) * tempo).toLong())
+        // The device re-attached between the caller's decision not to sample
+        // it and the lock. Hold where we were; the next reading takes it
+        // forward off a fresh anchor.
+        else -> maxOf(floorNanos, baseMediaNanos)
+    }
+
+    override fun mediaNanos(): Long {
+        val frames = sampleDevice()
+        return synchronized(lock) {
+            val raw = currentLocked(frames)
+            if (raw < floorNanos) {
+                floorNanos
+            } else {
+                floorNanos = raw
+                raw
+            }
         }
     }
 
     private var detachedAtWall = -1L
     private var detachedMedia = 0L
+    private var detachedPaused = false
+
+    /**
+     * Moves the wall-clock timeline to [mediaNanos] when we are running on it,
+     * so a start or a seek is honoured while detached instead of being
+     * shadowed by the frozen or accumulating value. A no-op on the attached
+     * path, where the frame anchor the caller just set is the answer.
+     */
+    private fun reanchorDetached(mediaNanos: Long, running: Boolean) {
+        if (detachedAtWall < 0 && !detachedPaused) return
+        detachedMedia = mediaNanos
+        detachedAtWall = if (running) System.nanoTime() else -1L
+        detachedPaused = !running
+    }
 
     // Tempo-scaled frame delta -> nanos without the scaledFrames * 1e9 overflow
     // that would bite past ~53 h at 48 kHz on one continuous anchor (quotient
@@ -142,11 +243,36 @@ class AudioClock(
      * on the wall clock from the current position; pause stops being
      * honoured -- acceptable for a failure mode that also lost the sound.
      */
-    fun detachToWallTime() {
+    fun detachToWallTime(readDevice: Boolean = true) {
+        // The two callers want opposite things. The audio thread reaches here
+        // at the orderly end of a track or a seek past the last sample, with
+        // a line that still answers, and needs the exact position. The
+        // watchdog reaches here because the line has STOPPED answering, and
+        // asking it would park this call behind the very write it came to
+        // free -- taking the pacer, the decode thread and the consumer's
+        // render loop with it, since they all read this clock. It settles for
+        // the last reading the clock returned, which is where a device that
+        // stopped advancing left it anyway.
+        val frames = if (readDevice) sampleDevice() else null
         synchronized(lock) {
-            val raw = baseMediaNanos + framesToNanos(((positionFrames() - baseFrames) * tempo).toLong())
-            detachedMedia = maxOf(raw, floorNanos)
-            detachedAtWall = System.nanoTime()
+            // Where the clock reads now, not where the device says: a seek
+            // may have placed it deliberately -- the end of a file, say --
+            // and recomputing from a position the device is still walking
+            // discarded that and drifted off it.
+            detachedMedia = maxOf(currentLocked(frames), floorNanos)
+            deviceDetached = true
+            // Detaching changes where time comes from, not whether it is
+            // running. Starting it unconditionally resurrected a clock that
+            // was deliberately stopped -- a paused player whose device then
+            // died walked on, and a finished one placed on its duration
+            // walked past it.
+            if (isPaused) {
+                detachedAtWall = -1L
+                detachedPaused = true
+            } else {
+                detachedAtWall = System.nanoTime()
+                detachedPaused = false
+            }
         }
     }
 }

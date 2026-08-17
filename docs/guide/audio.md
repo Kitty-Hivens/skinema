@@ -28,7 +28,9 @@ The practical consequences:
 - Seeks freeze the sound at the target, let the video land against
   standing time, then restart -- so audio and video arrive together
   instead of one chasing the other.
-- A loop waits for the audio side to restart time at the wrap.
+- A loop restarts both sides together, once the picture has played out
+  the file's own duration; the sound plays once per lap rather than
+  looping inside one.
 
 You do not manage any of this; it is why sound and picture stay in sync
 through seeks, pauses, rate changes and track switches. See

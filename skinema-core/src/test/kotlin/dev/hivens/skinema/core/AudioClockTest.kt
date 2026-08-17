@@ -9,6 +9,40 @@ class AudioClockTest {
     private var frames = 0L
     private val clock = AudioClock(48_000) { frames }
 
+    /**
+     * Detaching to wall time is the hatch for a device that has stopped
+     * answering, and reading the line is exactly what a caller cannot afford
+     * then: a JavaSound line answers its position under the same native
+     * monitor its blocking write holds, so the call parks for as long as the
+     * write does. Every reader of this clock -- the pacer, the decode thread,
+     * the subtitle thread, the consumer's render loop -- went in after it, so
+     * a player whose device died wedged whole instead of degrading to
+     * silence. Once detached, the line is not to be touched again.
+     */
+    @Test
+    fun `a detached clock never asks the device again`() {
+        var reads = 0
+        var position = 0L
+        val watched = AudioClock(48_000) { reads++; position }
+        watched.start(0)
+        position = 24_000
+        watched.mediaNanos()
+
+        watched.detachToWallTime(readDevice = false)
+        val before = reads
+        repeat(20) { watched.mediaNanos() }
+        watched.pause()
+        watched.resume()
+        watched.seek(2_000_000_000L)
+        watched.setTempo(2.0)
+        assertEquals(before, reads, "a detached clock read the line $reads times, was $before")
+
+        // Re-attaching is the one call that must read it: it anchors on the
+        // fresh line's own position.
+        watched.rebase(2_000_000_000L, 48_000)
+        assertTrue(reads > before, "the re-attach must read the fresh line")
+    }
+
     @Test
     fun `media time is consumed samples over the rate`() {
         clock.start(0)
@@ -122,5 +156,37 @@ class AudioClockTest {
             clock.mediaNanos() >= atDetach + 30_000_000L,
             "detached time must advance on the wall clock even with the device frozen",
         )
+    }
+
+    /**
+     * pause() is the interface's promise to freeze media time, and detached
+     * from the device it is the only thing that can: there is no frame
+     * position to stop. Without it a finished player kept counting past the
+     * end of its own file, without limit.
+     */
+    @Test
+    fun `pause freezes detached time, and resume picks it back up`() {
+        clock.start(0)
+        frames = 48_000
+        clock.detachToWallTime()
+        Thread.sleep(30)
+        clock.pause()
+        val frozen = clock.mediaNanos()
+        Thread.sleep(50)
+        assertEquals(frozen, clock.mediaNanos(), "paused time must not move, device or no device")
+
+        clock.resume()
+        Thread.sleep(50)
+        assertTrue(clock.mediaNanos() >= frozen + 30_000_000L, "resume returns to the wall clock")
+    }
+
+    @Test
+    fun `a seek is honoured while detached`() {
+        clock.start(0)
+        frames = 48_000
+        clock.detachToWallTime()
+        clock.pause()
+        clock.seek(7_000_000_000L)
+        assertEquals(7_000_000_000L, clock.mediaNanos(), "a seek must move detached time too")
     }
 }

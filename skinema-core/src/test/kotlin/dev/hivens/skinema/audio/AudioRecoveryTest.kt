@@ -138,6 +138,127 @@ class AudioRecoveryTest {
         }
     }
 
+    /**
+     * An outage lasts as long as it lasts -- a jack can come back in seconds
+     * or never -- so the wait between reopen attempts cannot be deaf. It was:
+     * every command that arrived during one went unread for the whole of it.
+     * A seek was the expensive case, because the video side holds every frame
+     * it has while a landing it was promised is still owed, so scrubbing
+     * during an outage froze the picture until the device came back.
+     */
+    @Test
+    fun `a seek during an outage is answered instead of waiting it out`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakeSink()
+        val pipeline = AudioPipeline(
+            sineWav(), sink, loop = true,
+            writeStallNanos = 200_000_000L,
+            recoveryIntervalMs = 30L,
+        )
+        try {
+            pipeline.clockFuture.get(5, TimeUnit.SECONDS) ?: error("the fake device should have opened a clock")
+            assertTrue(awaitTrue(2_000) { sink.framePosition() > 0 }, "sound must start playing")
+
+            sink.loseDevice()
+            assertTrue(awaitTrue(2_000) { !pipeline.hasSoundLeft }, "the watchdog must declare the device lost")
+
+            pipeline.seek(1_000_000_000L)
+            pipeline.videoLanded(1_000_000_000L)
+            assertTrue(
+                awaitTrue(2_000) { pipeline.pendingSeeks.get() == 0 },
+                "the seek must be answered while the device is away, still owed ${pipeline.pendingSeeks.get()}",
+            )
+        } finally {
+            sink.loseDevice()
+            pipeline.close()
+        }
+    }
+
+    /**
+     * A line whose position can only be read between writes -- which is what
+     * a real one is. `SourceDataLine.getLongFramePosition` and its blocking
+     * write take the same native monitor (verified in the JDK's own
+     * bytecode), so while a write is stuck inside the driver nothing can ask
+     * the line where it is. [FakeSink] answers freely and is blind to this.
+     */
+    private class MonitorSink : PcmSink {
+        @Volatile var present = true
+        private val monitor = Any()
+        private val frames = AtomicLong(0)
+        @Volatile private var closed = false
+
+        override fun open(sampleRate: Int) = synchronized(monitor) {
+            if (!present) throw IllegalStateException("device absent")
+            closed = false
+        }
+
+        override fun write(data: ByteArray, offset: Int, length: Int) = synchronized(monitor) {
+            // Parked while HOLDING the monitor, which is the whole point: a
+            // write stuck in the driver locks every other question out.
+            while (!present && !closed) Thread.sleep(10)
+            if (closed) return@synchronized
+            frames.addAndGet((length / BYTES_PER_FRAME).toLong())
+            Thread.sleep(2)
+        }
+
+        override fun framePosition(): Long = synchronized(monitor) { frames.get() }
+
+        override fun stop() = Unit
+        override fun start() = Unit
+        override fun flush() = Unit
+        override fun setVolume(volume: Float) = Unit
+
+        // close() must NOT take the monitor: it is the lever that frees the
+        // stuck write, exactly as JavaSound's flush is.
+        override fun close() {
+            closed = true
+        }
+
+        fun loseDevice() { present = false }
+    }
+
+    /**
+     * The rescue must not depend on the device answering. The watchdog used
+     * to poll the frame position to decide a write was stuck, and that read
+     * goes through the same monitor the write holds -- so on the dead device
+     * it exists for, the watchdog parked on the very lock it came to break.
+     * The clock was never detached, and every thread that reads it went down
+     * behind the one that was already stuck.
+     */
+    @Test
+    fun `a device that answers nothing is still declared lost`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = MonitorSink()
+        val pipeline = AudioPipeline(
+            sineWav(), sink, loop = true,
+            writeStallNanos = 200_000_000L,
+            recoveryIntervalMs = 30L,
+        )
+        try {
+            val clock = pipeline.clockFuture.get(5, TimeUnit.SECONDS)
+                ?: error("the fake device should have opened a clock")
+            assertTrue(awaitTrue(2_000) { sink.framePosition() > 0 }, "sound must start playing")
+
+            sink.loseDevice()
+            // Watched through a flag, not through the clock: reading the
+            // clock while the device is still attached goes to the line, so
+            // a watchdog that has itself parked there would park this thread
+            // too and the test would hang instead of failing.
+            assertTrue(
+                awaitTrue(3_000) { !pipeline.hasSoundLeft },
+                "the watchdog must declare the loss without asking the line where it is",
+            )
+            // Safe now: a detached clock does not touch the line.
+            val detachedAt = clock.mediaNanos()
+            assertTrue(
+                awaitTrue(2_000) { clock.mediaNanos() > detachedAt },
+                "media time must run on the wall clock once detached",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
     private companion object {
         const val BYTES_PER_FRAME = 4
     }

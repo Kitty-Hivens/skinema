@@ -20,6 +20,13 @@ class JavaSoundSink : PcmSink {
     // the pacer reads framePosition through it on every pace iteration.
     @Volatile
     private var line: SourceDataLine? = null
+
+    // Volatile: set from a consumer thread (setVolume goes straight to the
+    // sink, not through the audio thread's queue) and read by the audio
+    // thread every time it opens a line -- a track switch, a device
+    // reconnect. Without the edge a muted player came back at full volume
+    // on the new line.
+    @Volatile
     private var volume = 1f
 
     override fun open(sampleRate: Int) {
@@ -86,12 +93,20 @@ class JavaSoundSink : PcmSink {
     }
 
     override fun close() {
-        line?.let {
+        val closing = line
+        closing?.let {
             it.stop()
             it.flush()
             it.close()
         }
-        line = null
+        // Only drop the reference if it still points at the line just closed.
+        // The watchdog closes the line to free a stuck write, and the audio
+        // thread it frees goes straight into recovery -- which can have a
+        // fresh line open and anchored before this returns. Clearing the
+        // field unconditionally discarded that one: writes became no-ops, so
+        // nothing paced the decode any more, and the frame position the clock
+        // masters read zero for good.
+        if (line === closing) line = null
     }
 
     private companion object {

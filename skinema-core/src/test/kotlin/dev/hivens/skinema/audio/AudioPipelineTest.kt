@@ -61,8 +61,40 @@ class AudioPipelineTest {
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
             assertEquals(44_100 * 4, sink.totalBytes, "every sample reaches the sink")
             assertEquals(44_100, sink.sampleRate)
-            // FakePcmSink reports everything written as played.
-            assertEquals(1_000_000_000L, clock.mediaNanos())
+            // FakePcmSink reports everything written as played, so media time
+            // has reached the tone's end. Not equal to it, though: the sink is
+            // never fed again past this point, and a clock that stayed there
+            // would strand the video of any file whose audio is shorter. From
+            // the end of audio the timeline runs on the wall clock, so this
+            // reads at-or-past the tone and keeps moving. The upper bound is
+            // what still catches a clock that lost the sink entirely.
+            val atEnd = clock.mediaNanos()
+            assertTrue(
+                atEnd >= 1_000_000_000L && atEnd < 3_000_000_000L,
+                "media time should have reached the tone's 1s and then run on, got $atEnd",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * The end of audio must not become the end of time. A file whose audio
+     * track is shorter than its video -- an ordinary thing, any cut where the
+     * sound stops early -- froze the picture at that point and went on
+     * reporting Playing, because the sink stops being fed and the frame
+     * position it masters stops with it.
+     */
+    @Test
+    fun `media time keeps moving after the audio ends`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(tone(), sink, loop = false)
+        try {
+            val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a tone has audio")
+            assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
+            val first = clock.mediaNanos()
+            assertTrue(awaitTrue { clock.mediaNanos() > first }, "time must advance past the last sample")
         } finally {
             pipeline.close()
         }
@@ -79,6 +111,36 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(video, FakePcmSink(), loop = false)
         try {
             assertNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // A pipeline that resolved no clock has already left. It must say
+            // so: the video side reads this before handing it a seek, and one
+            // that advertised itself as live fed a landing counter nobody
+            // would ever lower.
+            assertFalse(pipeline.alive, "a pipeline with no audio to play must not advertise itself as live")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * A sink the caller handed in is the caller's device, socket or server
+     * connection, and the pipeline owns closing it. Both exits taken when the
+     * file turns out to have no audio sit before the try/finally that does
+     * that, so the most ordinary case there is -- asking for sound on a file
+     * without any -- leaked it for the life of the process.
+     */
+    @Test
+    fun `a file with no audio still closes the sink it was given`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("nosound.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+        )
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(video, sink, loop = false)
+        try {
+            assertNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a silent file resolves no clock")
+            assertTrue(awaitTrue { sink.closes > 0 }, "the sink must be closed, not abandoned")
         } finally {
             pipeline.close()
         }
@@ -176,6 +238,122 @@ class AudioPipelineTest {
             sink.positionFrames.set(44_100)
             assertTrue(awaitTrue { pipeline.isEnded }, "playback ends once the device played the tail")
         } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * The tail wait asks whether the device still holds sound -- not whether
+     * media time reached a timestamp. Those are different quantities and they
+     * do not meet: a chunk's pts comes off the container's grid (Matroska's is
+     * a millisecond, so the last chunk's nominal end lands tens of microseconds
+     * past the last sample that exists), while media time counts frames the
+     * device consumed. The wait could not finish on its own condition and ran
+     * to its stall deadline every time, and since the player holds the end of
+     * a lap open until this side speaks, half a second of that deadline showed
+     * as frozen picture at the end of every lap of any normally muxed file.
+     *
+     * Raw .flac carries a 1/44100 time base where the two happen to agree,
+     * which is why the fixture here is a container.
+     */
+    @Test
+    fun `the end of the track is declared as soon as the device has played it`() {
+        Fixtures.assumeDecodeEnvironment()
+        val media = Fixtures.generate(
+            dir.resolve("grid.mka"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "2", "-c:a", "flac",
+        )
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(media, sink, loop = false)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            val whole = 44_100 * 2 * 4
+            assertTrue(
+                awaitTrue { sink.totalBytes == whole },
+                "the file must be fully written, got ${sink.totalBytes} of $whole",
+            )
+            // The fake calls every written frame played, so at this instant
+            // the device holds nothing and there is nothing left to wait for.
+            val playedOutAt = System.nanoTime()
+            assertTrue(awaitTrue { pipeline.isEnded }, "playback must end")
+            val waited = (System.nanoTime() - playedOutAt) / 1_000_000
+            assertTrue(waited < 250, "the end must follow the last played sample, waited ${waited}ms")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * A flush throws away sound the line had accepted but not played, and
+     * the tail wait counts what it handed over -- so a seek has to restate
+     * that count against the device, or the line is owed frames that no
+     * longer exist anywhere and every wait for the rest of the file runs to
+     * its stall deadline. The same defect as the one above, reached from a
+     * seek rather than from a container's timestamp grid. Only a line that
+     * plays in real time drops anything on a flush, so only one shows it.
+     */
+    @Test
+    fun `a seek restates the tail count over what its flush threw away`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = PacedPcmSink(bufferFrames = 2_205)
+        val pipeline = AudioPipeline(tone("reanchor.flac"), sink, loop = false)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // Mid-playback, so the line is holding sound the flush will drop.
+            assertTrue(awaitTrue { sink.framePosition() > 4_410 }, "playback must be under way")
+            pipeline.seek(900_000_000L)
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            val landedAt = System.nanoTime()
+            assertTrue(awaitTrue { pipeline.isEnded }, "playback must end")
+            val waited = (System.nanoTime() - landedAt) / 1_000_000
+            // A tenth of a second of tone is left to play from here.
+            assertTrue(waited < 400, "the end must follow the last played sample, waited ${waited}ms")
+        } finally {
+            sink.release()
+            pipeline.close()
+        }
+    }
+
+    /**
+     * The other direction of the same accounting, and the one that costs
+     * sound rather than time: after a seek the line's position is whatever
+     * it had reached before the flush, so a count that forgot to settle
+     * against the device credits the whole of it as already played and calls
+     * the track finished on the spot. The lap then wraps over its own last
+     * half second.
+     */
+    @Test
+    fun `the tail wait outlasts the sound a seek left to play`() {
+        Fixtures.assumeDecodeEnvironment()
+        val media = Fixtures.generate(
+            dir.resolve("notearly.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "4", "-c:a", "flac",
+        )
+        // A second of line buffer, so the last second of the file is handed
+        // over in one go and what separates a correct wait from an early one
+        // is a whole second. With a buffer of a few frames the blocking write
+        // paces both cases identically and only the drain tells them apart.
+        val sink = PacedPcmSink(bufferFrames = 44_100)
+        val pipeline = AudioPipeline(media, sink, loop = false)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // Two seconds played before the seek: that is the credit a count
+            // which never settles against the device hands the line for sound
+            // it has not been given.
+            assertTrue(awaitTrue { sink.framePosition() > 88_200 }, "two seconds must play first")
+            pipeline.seek(3_000_000_000L)
+            pipeline.videoLanded()
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            val landedAt = System.nanoTime()
+            assertTrue(awaitTrue { pipeline.isEnded }, "playback must end")
+            val played = (System.nanoTime() - landedAt) / 1_000_000
+            // A second of tone is left from the seek. A stalled runner can
+            // only stretch that, never shorten it, so the bound holds from
+            // below whatever the machine is doing.
+            assertTrue(played > 600, "the end must wait for the sound, ended after ${played}ms")
+        } finally {
+            sink.release()
             pipeline.close()
         }
     }
