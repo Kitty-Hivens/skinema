@@ -12,6 +12,7 @@ import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.NoVideoStreamException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.libav.probeSubtitleFile
@@ -269,9 +270,23 @@ class VideoPlayer internal constructor(
     private var subtitlePipeline: SubtitlePipeline? = null
     private lateinit var clock: MediaClock
 
-    // When audio masters the clock, video never re-anchors it: seeks and
-    // loop wraps are anchored by the audio thread at its actual landing.
-    private var ownsClock = true
+    // Whether an audio clock ever took over: settled once, when the audio
+    // side reports what the file and the machine can actually do.
+    private var audioMastered = false
+
+    // Which side supplies media time -- the device or the wall -- not who
+    // may move it. Both sides re-anchor, each at a point where nothing is in
+    // flight: the audio thread at its own landing, the decode thread at a
+    // seek landing, a lap and the end of playback.
+    //
+    // Asked every time rather than settled once, because the audio side can
+    // leave mid-file -- a device that dies, a track switch onto a rate the
+    // machine refuses. A player that went on deferring to a thread that was
+    // no longer there stopped re-anchoring on its own seeks: the landing
+    // published against the old anchor, the picture stood on it, and the
+    // position ran away on the wall clock while state reported Playing.
+    private val ownsClock: Boolean
+        get() = !audioMastered || audioPipeline?.alive != true
 
     // The pts on screen. Written by the pacer's publish; the decode
     // thread reads it for the resume re-anchor, the loop-wrap park, and
@@ -435,10 +450,34 @@ class VideoPlayer internal constructor(
         subtitlePipeline?.setCanvasSize(width, height)
     }
 
-    /** Current media position in nanoseconds; zero until playback starts. */
+    /**
+     * Current media position in nanoseconds; zero until playback starts.
+     *
+     * Deliberately NOT clamped to [durationNanos]. It was, to stop a progress
+     * bar ticking a few milliseconds past its own end between the last sample
+     * and the decision to end -- but a container's declared duration is not a
+     * number libav guarantees in either direction, and a file that understates
+     * itself then pinned the position while the picture went on playing:
+     * measured 500 ms reported against 2900 ms of frames actually shown. A
+     * transient overshoot of tens of milliseconds is the smaller lie, and
+     * tying a second reported value to an untrustworthy first one is how one
+     * format's fix becomes another format's defect.
+     */
     fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
 
+    /**
+     * Set the moment close is asked for, and read wherever the decode thread
+     * would otherwise only notice a Close at the head of its queue. A seek's
+     * decode-forward run peeks that head, and any command it does not act on
+     * -- a pause, a rate change, a subtitle selection -- hid the Close behind
+     * it: close() then waited out its join timeout and returned while the
+     * thread carried on decoding, native session and all.
+     */
+    @Volatile
+    private var closing = false
+
     override fun close() {
+        closing = true
         commands.put(Command.Close)
         thread.join(5_000)
     }
@@ -464,7 +503,7 @@ class VideoPlayer internal constructor(
             }
         }
         clock = explicitClock ?: audioClock ?: PlaybackClock()
-        ownsClock = explicitClock != null || audioClock == null
+        audioMastered = explicitClock == null && audioClock != null
         // Tracks publish only over a LIVE pipeline (the no-device path
         // enumerated them too, but nothing would serve a switch), and
         // before the video open so the frameless branch sees them.
@@ -475,15 +514,32 @@ class VideoPlayer internal constructor(
         val decoder = try {
             frameSourceFactory(path)
         } catch (t: Throwable) {
-            if (audioClock != null) {
+            // Frameless is the answer to a file with nothing to show, and to
+            // nothing else. Every throw used to take this door when the file
+            // had sound: an undecodable video codec, a truncated stream with
+            // no dimensions, a hardware-decode request the machine could not
+            // honour -- all played on as audio-only with the cause dropped on
+            // the floor, while the constructor's own documentation promises
+            // Failed for the last of those. A consumer's fallback never ran
+            // because nothing ever told it to.
+            if (audioClock != null && t is NoVideoStreamException) {
                 // No video stream but the audio plays: frameless mode.
                 frameless = true
                 durationNanos = audioPipeline.durationNanos
                 tags = audioPipeline.tags
                 chapters = audioPipeline.chapters
                 coverArt = audioPipeline.coverArt
-                framelessLoop()
-                state = State.Closed
+                // Guarded like the framed path below is. A throw out of the
+                // frameless loop left the pipeline open and playing behind a
+                // decode thread that had died: close() then joined a thread
+                // that was already gone and returned, with the sound still
+                // running and the device still held.
+                try {
+                    framelessLoop()
+                    state = State.Closed
+                } catch (framelessFailure: Throwable) {
+                    state = State.Failed(framelessFailure)
+                }
             } else {
                 state = State.Failed(t)
             }
@@ -517,14 +573,49 @@ class VideoPlayer internal constructor(
         }
     }
 
+    /**
+     * Enters the finished state and stops the timeline with it.
+     *
+     * Position kept climbing past the end of the file otherwise -- past its
+     * duration, without limit -- because nothing told the clock the playback
+     * was over: a device that is no longer fed reports a frozen frame count,
+     * and one detached onto the wall clock reports the wall. A progress bar
+     * ran past its own end and never stopped.
+     */
+    private fun enterEnded() {
+        // Land on the duration rather than wherever the timeline happened to
+        // stop. The last frame's own display time is part of the file, so the
+        // clock stops a frame period short of the end and a progress bar never
+        // reaches it; a track that outlasts the picture overshoots instead,
+        // because the wall clock kept the last stretch. Both are the same
+        // wrongness -- the end of the file is the duration.
+        // Stopped first, then placed: the other order lets the timeline tick
+        // between the two calls and lands a microsecond past the end.
+        clock.pause()
+        durationNanos?.let { clock.seek(it) }
+        state = State.Ended
+    }
+
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
         state = State.Playing
         while (true) {
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
-            if (state is State.Playing && !loop && audioPipeline?.isEnded == true) {
-                state = State.Ended
+            if (state is State.Playing && audioPipeline?.isEnded == true) {
+                if (loop) {
+                    // Audio-only, so there is no picture to end the lap: this
+                    // side owns it. The landing handshake goes with the seek,
+                    // without which the sink stays muted from here on.
+                    if (audioPipeline.alive) {
+                        audioPipeline.seek(0)
+                        audioPipeline.videoLanded()
+                    }
+                    clock.seek(0)
+                    clock.resume()
+                } else {
+                    enterEnded()
+                }
             }
         }
     }
@@ -557,16 +648,56 @@ class VideoPlayer internal constructor(
                     if (!handle(c, decoder)) return
                     continue
                 }
+                // The file is over when BOTH streams are, whether the next
+                // thing is a lap or the end: a short clip over a long track
+                // still has sound to play, and a track that ran out first --
+                // or a device in the middle of an outage -- has nothing left
+                // to say about when the lap ends.
+                if (audioPipeline?.hasSoundLeft == true) {
+                    val c = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
+                    if (!handle(c, decoder)) return
+                    continue
+                }
                 eofPending = false
                 if (loop) {
-                    decoder.seekTo(0)
-                    if (ownsClock) {
-                        clock.seek(0)
-                    } else if (!awaitClockWrap(decoder)) {
-                        return
+                    when (awaitLapPlayedOut(decoder)) {
+                        LapWait.CLOSE -> return
+                        LapWait.LEFT_PLAYING -> {
+                            // A pause stopped the lap where it stood; the
+                            // decoder is still at the end of the stream, so
+                            // the EOF stands and whatever resumes play finds
+                            // it here.
+                            eofPending = true
+                            continue
+                        }
+                        LapWait.SUPERSEDED -> {
+                            // A seek landed while we waited: it repositioned
+                            // the decoder and voided the EOF on its way past.
+                            // Restoring the EOF here put it back on a decoder
+                            // that now sat wherever the user had asked, so the
+                            // picture stood on the landing frame until the
+                            // clock walked the rest of the lap out and wrapped
+                            // -- the seek honoured by the clock and by the
+                            // sound, and thrown away by the picture.
+                            continue
+                        }
+                        LapWait.PLAYED_OUT -> {}
                     }
+                    decoder.seekTo(0)
+                    // The picture owns the lap, so it restarts both sides --
+                    // including the landing handshake, without which the sound
+                    // stays muted from the second lap on.
+                    // Only a pipeline still on its feet: a seek into a dead
+                    // one raises a landing counter nobody will lower, and the
+                    // video side then treats every frame as still settling.
+                    audioPipeline?.takeIf { it.alive }?.let {
+                        it.seek(0)
+                        it.videoLanded()
+                    }
+                    clock.seek(0)
+                    clock.resume()
                 } else {
-                    state = State.Ended
+                    enterEnded()
                 }
                 continue
             }
@@ -639,6 +770,10 @@ class VideoPlayer internal constructor(
      * and burns the decoder past the real position (the picture then
      * stands until the clock walks there). While seeks are owed, the
      * fill must not chase and the pacer must not drop.
+     *
+     * A dead pipeline owes nothing, whatever its counter says: it zeroes
+     * that counter on its way out and can be handed a seek afterwards that
+     * nobody will ever perform. [ownsClock] carries that case.
      */
     private fun clockSettling(): Boolean =
         !ownsClock && (audioPipeline?.pendingSeeks?.get() ?: 0) > 0
@@ -663,8 +798,9 @@ class VideoPlayer internal constructor(
                 // sample-precise. Frameless players have no frame to anchor
                 // to and just resume.
                 if (audioPipeline != null && decoder != null) {
-                    audioPipeline.seek(lastPublishedPts)
-                    audioPipeline.videoLanded()
+                    val at = clock.mediaNanos()
+                    audioPipeline.seek(at)
+                    audioPipeline.videoLanded(at)
                 }
                 audioPipeline?.resume()
                 clock.resume()
@@ -703,11 +839,22 @@ class VideoPlayer internal constructor(
         }
     }
 
+    // Where the last landing put the picture, -1 when it landed on nothing
+    // (a seek past the end of the footage). Owned by the decode thread.
+    private var landedPts = -1L
+
     private fun handleSeek(targetNanos: Long, exact: Boolean, decoder: FrameSource?, preview: Boolean = true): Boolean {
+        // Reaching the end stops the clock; a seek is what revives the player
+        // from there, so it starts the clock again. Without this the landing
+        // publishes its frame, the state says Playing, and nothing moves ever
+        // again -- a stopped clock makes no frame due. A step backward pauses
+        // again on its own after landing, so this does not fight it.
+        if (state is State.Ended) clock.resume()
         seekInFlight = true
         intendedPositionNanos = targetNanos
         audioPipeline?.seek(targetNanos)
         subtitlePipeline?.seek(targetNanos)
+        landedPts = -1L
         val keepRunning = if (decoder != null) {
             performSeek(decoder, targetNanos, exact, preview)
         } else {
@@ -718,27 +865,41 @@ class VideoPlayer internal constructor(
         }
         // Sound stays frozen at the anchor until the landing is done;
         // released here even when the landing ended the stream.
-        audioPipeline?.videoLanded()
+        audioPipeline?.videoLanded(landedPts)
         return keepRunning
     }
 
+    private enum class LapWait { PLAYED_OUT, SUPERSEDED, LEFT_PLAYING, CLOSE }
+
     /**
-     * The audio side wraps the clock on ITS end-of-stream; video parks
-     * here after its own EOF until time restarts, staying responsive to
-     * commands. Commands are handled with the real decoder -- a seek
-     * handled decoder-less would re-anchor the audio and leave the video
-     * frozen on its last frame until the wrap. A landed seek repositioned
-     * the decoder, so it also ends the park. Returns false on Close.
+     * Holds the wrap until the lap has actually been watched.
+     *
+     * An empty queue means the last frame was PUBLISHED, not that its display
+     * time has passed. A file short enough to decode faster than it plays --
+     * a single frame, a truncated stream, a still handed to the player -- ran
+     * its whole lap between two clock readings, so the decode thread looped on
+     * itself at full speed and burned a core on content nothing was watching.
+     * The lap is over when the file's own time is up.
      */
-    private fun awaitClockWrap(decoder: FrameSource): Boolean {
-        val wrapped = lastPublishedPts / 2
-        while (state is State.Playing && lastPublishedPts > 0 && clock.mediaNanos() > wrapped) {
+    private fun awaitLapPlayedOut(decoder: FrameSource): LapWait {
+        val end = durationNanos ?: return LapWait.PLAYED_OUT
+        while (state is State.Playing && clock.mediaNanos() < end) {
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
             val seeked = cmd is Command.Seek || cmd is Command.SeekBy
-            if (!handle(cmd, decoder)) return false
-            if (seeked || state !is State.Playing) break
+            if (!handle(cmd, decoder)) return LapWait.CLOSE
+            // A seek that landed while we waited has already put the decoder
+            // and the clock where the user asked. Wrapping on top of it would
+            // throw that away and restart the lap from zero, so the wrap is
+            // off: the wrap has not repositioned anything yet, so there is
+            // nothing to preserve by going through with it.
+            if (seeked) return LapWait.SUPERSEDED
+            // A pause (or a step, which pauses) stops the lap where it is.
+            // Wrapping on top of that rewound the decoder to zero, restarted
+            // the sound and took the clock off pause -- a paused player whose
+            // position walked on and whose picture no longer matched it.
+            if (state !is State.Playing) return LapWait.LEFT_PLAYING
         }
-        return true
+        return if (state is State.Playing) LapWait.PLAYED_OUT else LapWait.LEFT_PLAYING
     }
 
     /**
@@ -777,6 +938,7 @@ class VideoPlayer internal constructor(
         while (true) {
             // Room tokens carry no payload and must not hide a queued
             // seek behind them.
+            if (closing) return false
             while (commands.peek() == Command.RoomFreed) commands.poll()
             val next = commands.peek()
             val superseded = when (next) {
@@ -819,7 +981,17 @@ class VideoPlayer internal constructor(
                     if (ownsClock) clock.seek(0)
                     finishSeek(State.Playing)
                 } else {
-                    finishSeek(State.Ended)
+                    // The end of the VIDEO stream, which is not the end of the
+                    // file: a clip laid over a longer track still has sound to
+                    // play. Ending here dropped the rest of that track and
+                    // snapped the picture back to the first frame, from an
+                    // ordinary drag of the timeline into the audio-only tail.
+                    // Hand it to the EOF path instead -- the one place that
+                    // knows a file is over when BOTH streams are, and that
+                    // ends through the same door so the timeline stops and
+                    // lands on the duration.
+                    finishSeek(State.Playing)
+                    eofPending = true
                 }
                 return true
             }
@@ -829,6 +1001,7 @@ class VideoPlayer internal constructor(
                 // leaving the audio at the requested target would play it
                 // up to a keyframe interval ahead of the picture.
                 if (ownsClock) clock.seek(f.ptsNanos)
+                landedPts = f.ptsNanos
                 intendedPositionNanos = f.ptsNanos
                 audioPipeline?.seek(f.ptsNanos)
                 subtitlePipeline?.seek(f.ptsNanos)
@@ -844,6 +1017,7 @@ class VideoPlayer internal constructor(
             }
             if (f.ptsNanos >= target) {
                 if (ownsClock) clock.seek(f.ptsNanos)
+                landedPts = f.ptsNanos
                 // Forced: the pacer publishes the landing immediately, even
                 // while the player resolves back to Paused.
                 enqueue(decoder, f, forced = true)
@@ -914,7 +1088,7 @@ class VideoPlayer internal constructor(
             clock.seek(pts)
         } else {
             audioPipeline?.seek(pts)
-            audioPipeline?.videoLanded()
+            audioPipeline?.videoLanded(pts)
         }
         subtitlePipeline?.seek(pts)
     }
@@ -962,7 +1136,15 @@ class VideoPlayer internal constructor(
             decoder.seekTo(shown)
             var f = decoder.nextFrame(convert = false)
             if (f != null && f.ptsNanos >= shown) {
-                decoder.seekTo(shown - 1)
+                // The shown frame IS a keyframe, so the seek landed on it and
+                // there is nothing before it in this run. Ask for the keyframe
+                // strictly before instead -- in the source's own units. A
+                // nanosecond earlier used to be the request, and every
+                // container rounds that straight back onto the same frame, so
+                // the run came out empty, the memo went unwritten and the step
+                // republished the frame already on screen. Not just after a
+                // scrub: a backstep could never cross a keyframe at all.
+                decoder.seekBefore(shown)
                 f = decoder.nextFrame(convert = false)
             }
             while (f != null && f.ptsNanos < shown) {
@@ -987,6 +1169,23 @@ class VideoPlayer internal constructor(
                 // The landing revived the audio thread; freeze it back.
                 audioPipeline?.pause()
                 clock.pause()
+            }
+        }
+        // Wait out the pacer's publish, the way a forward step does. The
+        // playhead a step measures from is [lastPublishedPts] -- the screen,
+        // written by the pacer -- while handleSeek returns as soon as the
+        // landing is QUEUED. A second press arriving in that window read the
+        // pre-step value and computed the same target again, so a burst of
+        // presses moved the picture one frame instead of one per press.
+        // Bounded: a landing that was superseded or dropped must not park the
+        // decode thread.
+        val landed = landedPts
+        if (landed >= 0) {
+            val deadline = System.nanoTime() + STEP_PUBLISH_WAIT_NANOS
+            while (!queue.isClosed && System.nanoTime() < deadline) {
+                val tick = queue.changeTick()
+                if (lastPublishedPts == landed || queue.peekHead() == null) break
+                queue.awaitChange(tick, PACE_RECHECK_NANOS)
             }
         }
         return keepRunning
@@ -1148,6 +1347,14 @@ class VideoPlayer internal constructor(
 
         /** The pacer's pause-hold re-check cadence. */
         const val IDLE_RECHECK_NANOS = 20_000_000L
+
+        /**
+         * How long a step waits for its own landing to reach the screen
+         * before carrying on regardless. Only a landing that was superseded
+         * or dropped ever spends it; the ordinary case is a forced frame the
+         * pacer publishes within microseconds.
+         */
+        const val STEP_PUBLISH_WAIT_NANOS = 500_000_000L
 
         /**
          * Slack absorbing a clock's own jitter when judging a backward
