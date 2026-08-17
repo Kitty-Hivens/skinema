@@ -1,6 +1,7 @@
 package dev.hivens.skinema.libav
 
 import dev.hivens.skinema.ass.Ass
+import dev.hivens.skinema.audio.JavaSoundSink
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -45,7 +46,7 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats")
+    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats", "audio")
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -65,7 +66,35 @@ object Fixtures {
         // The broad legacy/extended decode set (the formats feature): mpeg2
         // is its canonical member, present whenever the feature is on.
         "formats" -> libavHasDecoder("mpeg2video")
+        // Not a property of the bundle but of the machine: whether a real
+        // output line opens at all. Named here so a runner that is SUPPOSED
+        // to have sound fails loudly instead of skipping its way to green.
+        "audio" -> audioLineOpens
         else -> error("unknown capability '$cap'")
+    }
+
+    private val audioLineOpens: Boolean by lazy {
+        runCatching {
+            JavaSoundSink().use { it.open(48_000) }
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * A real audio output line. Opt-in exactly like hardware decode: a
+     * headless runner has no device, and a suite that quietly skips its
+     * hardware reads exactly like one that passed. Listed in
+     * SKINEMA_REQUIRE_CAPS its absence is a loud failure instead.
+     */
+    fun assumeAudioDevice() {
+        if (requires("audio")) {
+            check(capLoads("audio")) { "SKINEMA_REQUIRE_CAPS lists 'audio' but no output line would open here" }
+            return
+        }
+        assumeTrue(
+            System.getenv("SKINEMA_TEST_AUDIO") == "1" && capLoads("audio"),
+            "audio device acceptance is opt-in (SKINEMA_TEST_AUDIO=1) and needs a real output line",
+        )
     }
 
     fun assumeDecodeEnvironment() {
