@@ -2,4 +2,7 @@ build/
 .gradle/
 .kotlin/
 .idea/
+.claude/
 *.iml
+hs_err_pid*.log
+replay_pid*.log
