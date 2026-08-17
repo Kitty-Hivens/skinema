@@ -704,9 +704,15 @@ internal class AudioPipeline(
 
         val wasAwaiting = awaitingLanding
         sink.stop()
+        // Read the playhead between the freeze and the flush. The freeze is
+        // what makes the reading safe to take; the flush is what destroys
+        // the evidence, because a line that has dropped its queue can no
+        // longer say how much of it was played and reports the lot. Taken
+        // after it, this landed up to a whole line buffer ahead of the sound
+        // the listener was on, and the new track was cropped that far in.
+        val pos = theClock.mediaNanos()
         flushLine()
         pendingPcm = null
-        val pos = theClock.mediaNanos()
 
         val next = try {
             AudioDecoder.openOrNull(path, streamIndex)
@@ -789,8 +795,12 @@ internal class AudioPipeline(
         val theClock = checkNotNull(clock)
         val wasAwaiting = awaitingLanding
         sink.stop()
-        flushLine()
+        // Between the freeze and the flush, for the reason [switchTrack]
+        // gives -- and here the cost was the very thing this method exists
+        // to avoid: a re-anchor over the buffered tail, leaving a permanent
+        // A/V offset.
         val pos = theClock.mediaNanos()
+        flushLine()
 
         // Open-new-before-close-old: a stretcher that cannot build leaves
         // tempo, clock and stream untouched.
