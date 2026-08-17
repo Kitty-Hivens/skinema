@@ -34,6 +34,20 @@ interface FrameSource : AutoCloseable {
     fun seekTo(ptsNanos: Long)
 
     /**
+     * Repositions strictly BEFORE [ptsNanos] -- at the last keyframe that
+     * precedes it, never the one standing on it. What a step backward needs,
+     * and the one question [seekTo] cannot be asked in nanoseconds: a source
+     * that rounds the target onto a container's timestamp grid swallows any
+     * subtraction smaller than one of its own units, so `seekTo(pts - 1)`
+     * lands right back on the frame the caller is trying to get behind.
+     *
+     * Implementors over a container MUST override this and step one whole
+     * unit of their own time base. The default here is only correct for a
+     * source whose [seekTo] truncates rather than rounds.
+     */
+    fun seekBefore(ptsNanos: Long) = seekTo((ptsNanos - 1).coerceAtLeast(0))
+
+    /**
      * Container-reported total duration of one lap, or null when the
      * source cannot know it cheaply (animated webp declares none).
      */

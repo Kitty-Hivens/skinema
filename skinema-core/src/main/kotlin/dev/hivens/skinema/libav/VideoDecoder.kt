@@ -10,6 +10,7 @@ import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.foreign.ValueLayout.JAVA_SHORT
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One open video file: demux + decode + RGBA conversion, pull-style via
@@ -93,6 +94,16 @@ class VideoDecoder private constructor(
     private var swsFormat = Int.MIN_VALUE
     private var swsColorspace = Int.MIN_VALUE
     private var swsRange = Int.MIN_VALUE
+    /**
+     * Holds the buffers whose size is the current geometry's, so they can be
+     * released when it changes. The session arena cannot free one segment, and
+     * these were taken from it: a stream that switches resolution -- MPEG-TS,
+     * an adaptive segment boundary -- kept every buffer it had ever used for
+     * the life of the decoder, several megabytes a switch and no ceiling. That
+     * ends as a native out-of-memory, which arrives as a killed process rather
+     * than an exception something could catch.
+     */
+    private var swsArena = Arena.ofConfined()
     private var dstData = MemorySegment.NULL
     private var dstStride = MemorySegment.NULL
     private var rgbaNative = MemorySegment.NULL
@@ -112,6 +123,8 @@ class VideoDecoder private constructor(
     private var hdrColorspace = Int.MIN_VALUE
     private var hdrRange = Int.MIN_VALUE
     private var hdrTrc = Int.MIN_VALUE
+    /** The same, for the tone-mapping path's own geometry-sized buffers. */
+    private var hdrArena = Arena.ofConfined()
     private var hdrNative = MemorySegment.NULL
     private var hdrDstData = MemorySegment.NULL
     private var hdrDstStride = MemorySegment.NULL
@@ -182,13 +195,28 @@ class VideoDecoder private constructor(
     override fun seekTo(ptsNanos: Long) {
         // Re-apply the container start_time the timeline was normalized
         // against before handing the target to the demuxer.
-        val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
+        seekToUnit(nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen), toStart = ptsNanos == 0L)
+    }
+
+    /**
+     * One whole time-base unit earlier, which is the smallest step that
+     * actually moves the demuxer. [nanosToPts] rounds to the nearest unit, so
+     * a target expressed a nanosecond earlier maps to the very same unit --
+     * and AVSEEK_FLAG_BACKWARD then lands on the keyframe standing on it,
+     * which for a step backward is the frame it is trying to get behind.
+     */
+    override fun seekBefore(ptsNanos: Long) {
+        val unit = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen) - 1
+        seekToUnit(unit.coerceAtLeast(0), toStart = unit <= 0 || ptsNanos <= 0)
+    }
+
+    private fun seekToUnit(ts: Long, toStart: Boolean) {
         val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
         avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
         Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
-        restartStage = if (ptsNanos == 0L) 0 else 2
+        restartStage = if (toStart) 0 else 2
     }
 
     /**
@@ -234,14 +262,27 @@ class VideoDecoder private constructor(
      * consumer's own callbacks, and reopening a path it never had is not a
      * thing this can do.
      */
+    // Allocated once, not per reopen. A looping animated WebP takes this path
+    // on every lap, and a fresh scratch slot and path string each time is a
+    // slow leak out of an arena that only frees when the session does.
+    private val reopenScratch: MemorySegment by lazy { arena.allocate(ADDRESS) }
+    private val reopenPathNative: MemorySegment by lazy { arena.allocateFrom(reopenPath!!) }
+
     private fun reopenDemuxer(): Boolean {
         val path = reopenPath ?: return false
-        val ptrPtr = arena.allocate(ADDRESS)
+        val ptrPtr = reopenScratch
         ptrPtr.set(ADDRESS, 0, fmtCtx)
         Libav.avformatCloseInput(ptrPtr)
 
-        val ctxOut = arena.allocate(ADDRESS)
-        if (Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path)) < 0) {
+        // avformat_close_input freed the context; the field still points at
+        // it, and close() frees whatever it finds there. Drop the handle
+        // before anything can leave this function -- the throw below above
+        // all, which a deleted or unmounted file reaches on a format that
+        // takes this path every lap. Left dangling it was a double free, and
+        // a double free here takes the JVM down rather than raising.
+        fmtCtx = MemorySegment.NULL
+        val ctxOut = ptrPtr
+        if (Libav.avformatOpenInput(ctxOut, reopenPathNative) < 0) {
             // The old context is gone either way; a decoder that cannot
             // reopen its own file is finished, and saying so beats handing
             // back a silently empty stream.
@@ -376,18 +417,20 @@ class VideoDecoder private constructor(
         swsColorspace = Int.MIN_VALUE
         swsRange = Int.MIN_VALUE
 
+        swsArena.close()
+        swsArena = Arena.ofConfined()
         val bytes = width.toLong() * height * 4
         // swscale's packed-output writer emits whole SIMD blocks, rounding the
         // row width up to the block, so it spills past the last row for a width
         // that is not block-aligned (e.g. 1080). Pad the native destination so
         // the spill lands in slack, not the next heap allocation -- an unpadded
         // buffer corrupts the heap, surfacing as an abort far from here.
-        rgbaNative = arena.allocate(bytes + SWS_WRITE_PADDING)
+        rgbaNative = swsArena.allocate(bytes + SWS_WRITE_PADDING)
         rgbaHeap = ByteArray(bytes.toInt())
         // sws_scale takes plane arrays; RGBA is single-plane, slots 1..7 NULL/0.
-        dstData = arena.allocate(ADDRESS, 8)
+        dstData = swsArena.allocate(ADDRESS, 8)
         dstData.setAtIndex(ADDRESS, 0, rgbaNative)
-        dstStride = arena.allocate(JAVA_INT, 8)
+        dstStride = swsArena.allocate(JAVA_INT, 8)
         dstStride.setAtIndex(JAVA_INT, 0, width * 4)
     }
 
@@ -458,12 +501,14 @@ class VideoDecoder private constructor(
         hdrColorspace = colorspace
         hdrRange = range
         val pixels = width.toLong() * height
-        hdrNative = arena.allocate(pixels * 8 + SWS_WRITE_PADDING) // RGBA64 (4ch x 2B) + swscale block spill
+        hdrArena.close()
+        hdrArena = Arena.ofConfined()
+        hdrNative = hdrArena.allocate(pixels * 8 + SWS_WRITE_PADDING) // RGBA64 (4ch x 2B) + swscale block spill
         hdrShorts = ShortArray((pixels * 4).toInt())
         hdrOutHeap = ByteArray((pixels * 4).toInt())
-        hdrDstData = arena.allocate(ADDRESS, 8)
+        hdrDstData = hdrArena.allocate(ADDRESS, 8)
         hdrDstData.setAtIndex(ADDRESS, 0, hdrNative)
-        hdrDstStride = arena.allocate(JAVA_INT, 8)
+        hdrDstStride = hdrArena.allocate(JAVA_INT, 8)
         hdrDstStride.setAtIndex(JAVA_INT, 0, width * 8)
         toneMapper = ToneMapper(
             if (trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67) ToneMapper.HdrTransfer.HLG else ToneMapper.HdrTransfer.PQ,
@@ -494,7 +539,20 @@ class VideoDecoder private constructor(
         return RgbaFrame(width, height, currentPtsNanos(src), out)
     }
 
+    /**
+     * Idempotent, which AutoCloseable requires and this did not honour. The
+     * scaler contexts are released before the arena is touched and were not
+     * cleared, so a second call freed them again: a double free that aborts
+     * the JVM rather than throwing. The later frees are shielded by the arena
+     * refusing a closed session, which is why only the first two ever bit --
+     * and why the guard belongs here rather than on each of them.
+     */
+    private val closed = AtomicBoolean(false)
+
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        swsArena.close()
+        hdrArena.close()
         if (swsCtx != MemorySegment.NULL) Libav.swsFreeContext(swsCtx)
         if (hdrCtx != MemorySegment.NULL) Libav.swsFreeContext(hdrCtx)
         // The free functions take T** and null the pointer; one scratch slot.
@@ -688,21 +746,32 @@ class VideoDecoder private constructor(
         ): VideoDecoder {
             var codecCtx = MemorySegment.NULL
             var hwDevice = MemorySegment.NULL
+            // Declared out here so the catch can release them: every throw
+            // past their allocation -- the no-dimensions guard, the metadata
+            // readers, the duration arithmetic -- used to leak both.
+            var packet = MemorySegment.NULL
+            var frame = MemorySegment.NULL
             try {
                 Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info")
 
                 val decoderOut = arena.allocate(ADDRESS)
-                val streamIndex = Libav.checkAv(
-                    Libav.avFindBestStream(fmtCtx, LibavAbi.AVMEDIA_TYPE_VIDEO, decoderOut),
-                    "av_find_best_stream(video)",
-                )
+                val best = Libav.avFindBestStream(fmtCtx, LibavAbi.AVMEDIA_TYPE_VIDEO, decoderOut)
+                // No stream, or a stream nothing here can decode: both mean
+                // there is no picture to show, and the bundle carrying a
+                // deliberately narrow decoder set is a supported configuration
+                // -- such a file played its sound before and must keep doing
+                // so. Anything else negative is a genuine failure.
+                if (best == LibavAbi.AVERROR_STREAM_NOT_FOUND || best == LibavAbi.AVERROR_DECODER_NOT_FOUND) {
+                    throw NoVideoStreamException("$label carries no video this build can decode")
+                }
+                val streamIndex = Libav.checkAv(best, "av_find_best_stream(video)")
                 val stream = streamAt(fmtCtx, streamIndex)
                 if (stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION) and LibavAbi.AV_DISPOSITION_ATTACHED_PIC != 0) {
                     // The only "video" is the cover art (an mp3/flac with a
                     // picture): playing it would end the player at its one
                     // frame while the sound runs on. Refuse, so the player
                     // takes the frameless path; the cover ships as bytes.
-                    throw LibavException("the only video stream of $label is an attached picture")
+                    throw NoVideoStreamException("the only video stream of $label is an attached picture")
                 }
                 val timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
                 val timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
@@ -735,8 +804,8 @@ class VideoDecoder private constructor(
                 Libav.setNegotiatedHwFormat(hw.pixFmt)
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
-                val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
-                val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
+                frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                 if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
                     throw LibavException("av_packet_alloc/av_frame_alloc returned NULL")
                 }
@@ -774,6 +843,14 @@ class VideoDecoder private constructor(
                 if (codecCtx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, codecCtx)
                     Libav.avcodecFreeContext(ptrPtr)
+                }
+                if (packet != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, packet)
+                    Libav.avPacketFree(ptrPtr)
+                }
+                if (frame != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, frame)
+                    Libav.avFrameFree(ptrPtr)
                 }
                 // free_context released the codec's ref; release ours.
                 if (hwDevice != MemorySegment.NULL) {

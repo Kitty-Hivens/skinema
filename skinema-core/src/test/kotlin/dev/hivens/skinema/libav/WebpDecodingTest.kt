@@ -38,6 +38,31 @@ class WebpDecodingTest {
         "-c:v", "libwebp", "-lossless", "0", "-loop", "0", *extra,
     )
 
+    /**
+     * The reopen escalation frees the demuxer before it tries to replace it,
+     * so a replacement that cannot happen -- the file deleted, the medium
+     * gone -- left the decoder holding a freed pointer, and close() freed it
+     * a second time. A double free here does not raise, it takes the JVM
+     * down. Animated WebP is the format that reaches this path: its demuxer
+     * answers a seek, reports success and stays drained, so every lap goes
+     * through the reopen.
+     */
+    @Test
+    fun `a reopen that cannot happen still closes safely`() {
+        assumeWebpEnvironment()
+        val file = animated("vanishing.webp")
+        FrameSources.open(file).use { source ->
+            // Drain it, so the next read needs the restart escalation.
+            @Suppress("ControlFlowWithEmptyBody")
+            while (source.nextFrame() != null) { }
+            Files.delete(file)
+            source.seekTo(0)
+            assertFailsWith<LibavException> { source.nextFrame() }
+            // The close on the way out of `use` is the one that used to abort
+            // the process; reaching the end of this test IS the assertion.
+        }
+    }
+
     @Test
     fun `animated webp decodes every frame on the pts grid`() {
         assumeWebpEnvironment()
