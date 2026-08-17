@@ -1,18 +1,29 @@
 package dev.hivens.skinema.core
 
 /**
- * [MediaClock] driven by an audio sink's frame position: media time is
- * literally "how many samples the DAC has consumed". The DAC's pace is
- * the only truth, so when sound is present video follows it, never the
- * reverse (ROADMAP.md section 3).
+ * [MediaClock] driven by an audio sink's frame position: media time is how
+ * many samples the device says it has played, filled in with wall time
+ * between the moments it says anything new. The DAC's pace is the only
+ * truth, so when sound is present video follows it, never the reverse
+ * (ROADMAP.md section 3).
  *
- * Pause needs no more than the flag while the device drives time: stopping
- * it freezes [positionFrames], and media time with it. Detached from the
- * device -- once the track has ended, or it has died -- the wall clock is
- * the source and only [pause] can stop it, so it does. Underruns behave
- * like a stop: the position stalls, video stalls with it, and sync
- * survives. Thread-safe: the audio thread re-anchors on seek while
- * the video thread reads.
+ * The filling-in is not a detail. [positionFrames] refreshes once per
+ * device period and is a constant in between, and the backend behind it
+ * computes an estimate rather than reading hardware; the anchors are the
+ * device's and every one of them corrects the fill, but read raw the
+ * result is a staircase that paces video in bursts. See
+ * [interpolationLocked], and "What the device actually reports" in
+ * docs/internal/threading-and-clocks.md.
+ *
+ * Freezing therefore takes two things, not one: the pipeline stops the
+ * line AND says so through [setDeviceRunning], because a stopped line's
+ * position stands still and the fill must not walk on without it. Pause is
+ * the flag on top of that. Detached from the device -- once the track has
+ * ended, or it has died -- the wall clock is the source and only [pause]
+ * can stop it, so it does. An underrun reads as a device that stopped
+ * answering: time runs on for at most one period and then holds, video
+ * holds with it, and sync survives. Thread-safe: the audio thread
+ * re-anchors on seek while the video thread reads.
  */
 class AudioClock(
     initialSampleRate: Int,
@@ -68,12 +79,87 @@ class AudioClock(
      */
     private fun sampleDevice(): Long? = if (deviceDetached) null else positionFrames()
 
+    // The device answers in periods, not continuously. Its counter is exact
+    // the instant it refreshes and then stands still for a whole period while
+    // the DAC plays on -- measured here at 21.3 ms of stillness followed by a
+    // 21.3 ms jump, and the backend's own position is an arithmetic estimate
+    // rather than a hardware register (openjdk estimatePositionFromAvail), so
+    // there is no finer answer to ask for. Read raw, media time is a
+    // staircase: exact at each refresh and up to a period behind by the end
+    // of it. Video paced on that gets its frames due in bursts -- 60 fps
+    // content measured 48.4 distinct frames a second reaching the consumer,
+    // the rest overwritten in the mailbox before anything could take them.
+    //
+    // So the wall clock fills the gaps BETWEEN refreshes, which is what
+    // ffplay does (it never asks the device at all and interpolates from the
+    // last callback). The bound is the device's own last step: past one
+    // period of silence the reading is no longer evidence that anything is
+    // playing, and holding there is the right answer for an underrun, a
+    // stopped line and a dead device alike. Nothing here invents accuracy --
+    // the anchors are still the device's, and every one of them corrects
+    // whatever the interpolation guessed.
+    private var lastFrames = Long.MIN_VALUE
+    private var lastFramesWall = 0L
+    private var lastStepFrames = 0L
+
+    // Whether the line is consuming. Filling the gaps between refreshes is
+    // only honest while it is: a stopped line plays nothing, so every
+    // nanosecond added past the stop is invented. It matters because the
+    // pipeline freezes the line for whole seconds at a time -- a seek holds
+    // it until the picture lands, a track switch until the new decoder is
+    // cropped -- and reads the playhead in that window to re-anchor on. Time
+    // that crept forward there was time the re-anchor then took back, which
+    // is the one move the video side's invariants forbid.
+    private var deviceRunning = true
+
+    /**
+     * How far past its last answer the device has certainly gone, in media
+     * nanos. Zero on the refresh itself and whenever no step has been
+     * observed yet to size the bound with.
+     */
+    private fun interpolationLocked(frames: Long, wallNow: Long): Long {
+        if (frames != lastFrames) {
+            // Forward only: a re-anchor onto a fresh line restarts the count,
+            // and a backend reconciling around a flush can step back.
+            if (lastFrames != Long.MIN_VALUE && frames > lastFrames) lastStepFrames = frames - lastFrames
+            lastFrames = frames
+            lastFramesWall = wallNow
+            return 0L
+        }
+        if (!deviceRunning || lastStepFrames <= 0L) return 0L
+        val cap = minOf(framesToNanos((lastStepFrames * tempo).toLong()), MAX_INTERPOLATION_NANOS)
+        val elapsed = ((wallNow - lastFramesWall) * tempo).toLong()
+        return elapsed.coerceIn(0L, cap)
+    }
+
+    /** Forgets the device's cadence; every re-anchor starts a fresh one. */
+    private fun forgetCadence() {
+        lastFrames = Long.MIN_VALUE
+        lastStepFrames = 0L
+    }
+
+    /**
+     * Says whether the line is consuming right now. The pipeline stops and
+     * starts it for seeks, track switches, rate changes and pauses, and only
+     * the pipeline knows which of those is in force -- [isPaused] covers the
+     * player's pause and none of the rest.
+     */
+    fun setDeviceRunning(running: Boolean) {
+        synchronized(lock) {
+            // Restarting begins a fresh interval: the stop is not evidence
+            // that the device played through it.
+            if (running && !deviceRunning) lastFramesWall = System.nanoTime()
+            deviceRunning = running
+        }
+    }
+
     override fun start(atMediaNanos: Long) {
         val frames = positionFrames()
         synchronized(lock) {
             baseMediaNanos = atMediaNanos
             baseFrames = frames
             floorNanos = Long.MIN_VALUE
+            forgetCadence()
             pausedAt = atMediaNanos
             reanchorDetached(atMediaNanos, running = true)
             isPaused = false
@@ -95,9 +181,10 @@ class AudioClock(
      */
     override fun pause() {
         val frames = sampleDevice()
+        val wall = System.nanoTime()
         synchronized(lock) {
             if (!isPaused) {
-                pausedAt = currentLocked(frames)
+                pausedAt = currentLocked(frames, wall)
                 isPaused = true
             }
         }
@@ -111,6 +198,11 @@ class AudioClock(
             // driving: the device gets a fresh anchor, the wall a fresh start.
             baseMediaNanos = pausedAt
             baseFrames = frames ?: baseFrames
+            // The line stood still through the pause, so the cadence measured
+            // before it says nothing about now; carried over, the first
+            // reading after a resume would credit the whole pause as one
+            // period of playing.
+            forgetCadence()
             if (detachedPaused || detachedAtWall >= 0) {
                 detachedMedia = pausedAt
                 detachedAtWall = System.nanoTime()
@@ -129,6 +221,7 @@ class AudioClock(
             baseMediaNanos = mediaNanos
             baseFrames = frames ?: baseFrames
             floorNanos = Long.MIN_VALUE
+            forgetCadence()
             reanchorDetached(mediaNanos, running = !isPaused)
             // A seek moves the position whether or not time is running.
             pausedAt = mediaNanos
@@ -154,6 +247,7 @@ class AudioClock(
             baseFrames = frames
             this.sampleRate = sampleRate
             floorNanos = Long.MIN_VALUE
+            forgetCadence()
             pausedAt = mediaNanos
             detachedAtWall = -1L
             detachedMedia = 0L
@@ -189,11 +283,13 @@ class AudioClock(
      * [frames] is the device's position, sampled by the caller before it
      * took [lock]; the detached branches ignore it.
      */
-    private fun currentLocked(frames: Long?): Long = when {
+    private fun currentLocked(frames: Long?, wallNow: Long): Long = when {
         isPaused -> pausedAt
         detachedPaused -> detachedMedia
-        detachedAtWall >= 0 -> detachedMedia + ((System.nanoTime() - detachedAtWall) * tempo).toLong()
-        frames != null -> baseMediaNanos + framesToNanos(((frames - baseFrames) * tempo).toLong())
+        detachedAtWall >= 0 -> detachedMedia + ((wallNow - detachedAtWall) * tempo).toLong()
+        frames != null -> baseMediaNanos +
+            framesToNanos(((frames - baseFrames) * tempo).toLong()) +
+            interpolationLocked(frames, wallNow)
         // The device re-attached between the caller's decision not to sample
         // it and the lock. Hold where we were; the next reading takes it
         // forward off a fresh anchor.
@@ -202,8 +298,9 @@ class AudioClock(
 
     override fun mediaNanos(): Long {
         val frames = sampleDevice()
+        val wall = System.nanoTime()
         return synchronized(lock) {
-            val raw = currentLocked(frames)
+            val raw = currentLocked(frames, wall)
             if (raw < floorNanos) {
                 floorNanos
             } else {
@@ -254,12 +351,13 @@ class AudioClock(
         // the last reading the clock returned, which is where a device that
         // stopped advancing left it anyway.
         val frames = if (readDevice) sampleDevice() else null
+        val wall = System.nanoTime()
         synchronized(lock) {
             // Where the clock reads now, not where the device says: a seek
             // may have placed it deliberately -- the end of a file, say --
             // and recomputing from a position the device is still walking
             // discarded that and drifted off it.
-            detachedMedia = maxOf(currentLocked(frames), floorNanos)
+            detachedMedia = maxOf(currentLocked(frames, wall), floorNanos)
             deviceDetached = true
             // Detaching changes where time comes from, not whether it is
             // running. Starting it unconditionally resurrected a clock that
@@ -274,5 +372,22 @@ class AudioClock(
                 detachedPaused = false
             }
         }
+    }
+
+    private companion object {
+        /**
+         * Ceiling on filling the gap between two of the device's position
+         * refreshes, whatever its last step suggests.
+         *
+         * The step is the evidence and this is the sanity bound on it: a gap
+         * longer than any audio device's period is not a gap, it is a device
+         * that has stopped saying anything, and inventing time over that is
+         * how a stalled line would drift instead of freezing. The widest
+         * period in practice is one maximum ALSA/PipeWire quantum -- 2048
+         * frames, 42.7 ms at 48 kHz and 46.4 ms at 44.1 kHz -- and this
+         * clears it. Anything that answers more slowly keeps the residual
+         * staircase past this much, which is the safe way to be wrong.
+         */
+        const val MAX_INTERPOLATION_NANOS = 60_000_000L
     }
 }

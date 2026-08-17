@@ -144,6 +144,113 @@ class AudioClockTest {
         assertEquals(3_500_000_000L, clock.mediaNanos(), "rate persists across seeks")
     }
 
+    /**
+     * A device answers about its position once per period and says nothing in
+     * between -- measured on this machine as 21.3 ms of stillness followed by
+     * a 21.3 ms jump. Media time read straight off it is a staircase, and
+     * video paced on a staircase gets its frames due in bursts: 60 fps
+     * content delivered 48.4 distinct frames a second to a consumer, the rest
+     * overwritten in the mailbox before anything could take them.
+     *
+     * The four tests below fix the terms of the fix. The wall clock fills the
+     * gaps, and what bounds it is the device's own last step: past one period
+     * of silence the reading is no longer evidence that anything is playing.
+     */
+    @Test
+    fun `media time fills the gap between the device's position refreshes`() {
+        clock.start(0)
+        // Two refreshes are what it takes to know the cadence: 480 frames,
+        // 10 ms apart at this rate.
+        frames = 480
+        clock.mediaNanos()
+        frames = 960
+        val atRefresh = clock.mediaNanos()
+        assertEquals(20_000_000L, atRefresh)
+
+        Thread.sleep(5)
+        val between = clock.mediaNanos()
+        assertTrue(between > atRefresh, "media time stood still between two refreshes")
+        assertTrue(
+            between <= atRefresh + 10_000_000L,
+            "and it must not outrun the device's own step, gained ${between - atRefresh}ns",
+        )
+    }
+
+    @Test
+    fun `the gap fill stops at one device period`() {
+        clock.start(0)
+        frames = 480
+        clock.mediaNanos()
+        frames = 960
+        val atRefresh = clock.mediaNanos()
+
+        // Twenty periods of silence. A device that has stopped answering is
+        // an underrun, a stopped line or a dead one, and holding is the right
+        // answer to all three.
+        Thread.sleep(200)
+        assertEquals(
+            atRefresh + 10_000_000L,
+            clock.mediaNanos(),
+            "a device that stopped answering must not keep media time running",
+        )
+    }
+
+    @Test
+    fun `the gap fill has a ceiling no device period may raise`() {
+        clock.start(0)
+        // A "device" that answers once a second -- past anything a real line
+        // does, so the step alone is no longer a safe bound.
+        frames = 48_000
+        clock.mediaNanos()
+        frames = 96_000
+        val atRefresh = clock.mediaNanos()
+
+        Thread.sleep(200)
+        assertEquals(
+            atRefresh + 60_000_000L,
+            clock.mediaNanos(),
+            "the ceiling, not the step, has to bound an implausible period",
+        )
+    }
+
+    /**
+     * The pipeline stops the line for seeks, track switches and rate changes,
+     * and holds it stopped until the picture lands -- seconds, on a sparse
+     * keyframe run. It reads the playhead in that window to re-anchor on, so
+     * time that crept forward there is time the re-anchor then takes back:
+     * the one move the video side's invariants forbid.
+     */
+    @Test
+    fun `a stopped line stops the gap fill`() {
+        clock.start(0)
+        frames = 480
+        clock.mediaNanos()
+        frames = 960
+        val atRefresh = clock.mediaNanos()
+
+        clock.setDeviceRunning(false)
+        Thread.sleep(30)
+        assertEquals(atRefresh, clock.mediaNanos(), "a line that is not consuming plays nothing to count")
+    }
+
+    @Test
+    fun `restarting the line does not credit the stop as time the device played`() {
+        clock.start(0)
+        frames = 480
+        clock.mediaNanos()
+        frames = 960
+        val atRefresh = clock.mediaNanos()
+
+        clock.setDeviceRunning(false)
+        Thread.sleep(50)
+        clock.setDeviceRunning(true)
+        val gained = clock.mediaNanos() - atRefresh
+        assertTrue(
+            gained < 5_000_000L,
+            "the stop is not a period the device spent playing, gained ${gained}ns",
+        )
+    }
+
     @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)

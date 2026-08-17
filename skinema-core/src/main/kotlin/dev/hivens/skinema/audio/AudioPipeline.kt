@@ -413,7 +413,30 @@ internal class AudioPipeline(
      */
     private fun openLine(rate: Int) {
         sink.open(rate)
+        // open() starts the device by contract, so the clock may fill the
+        // gaps between its position refreshes again. Null on the very first
+        // open, which happens before the clock exists.
+        clock?.setDeviceRunning(true)
         anchorTail()
+    }
+
+    /**
+     * Freezes the line, and says so, because the two are one act. The clock
+     * fills the gaps between the device's position refreshes with wall time,
+     * and a line that is not consuming has no gaps to fill -- every
+     * nanosecond added past this call is sound that was never played. Every
+     * freeze here outlives its own statement: a seek's lasts until the
+     * picture lands, a switch's until the new decoder is cropped.
+     */
+    private fun freezeSink() {
+        sink.stop()
+        clock?.setDeviceRunning(false)
+    }
+
+    /** The other half of [freezeSink]. */
+    private fun runSink() {
+        sink.start()
+        clock?.setDeviceRunning(true)
     }
 
     /**
@@ -546,7 +569,7 @@ internal class AudioPipeline(
             theClock.rebase(resumeAt, sampleRate)
             // open() starts the device by contract; honour a pause, landing
             // or end-of-stream that began during the outage.
-            if (paused || awaitingLanding || isEnded) sink.stop()
+            if (paused || awaitingLanding || isEnded) freezeSink()
             deviceLost = false
             true
         }.getOrElse {
@@ -559,7 +582,7 @@ internal class AudioPipeline(
         Command.Close -> false
         Command.Pause -> {
             if (!paused) {
-                sink.stop()
+                freezeSink()
                 checkNotNull(clock).pause()
                 paused = true
             }
@@ -568,7 +591,7 @@ internal class AudioPipeline(
         Command.Resume -> {
             if (paused) {
                 // Mid-landing the sink must stay frozen; VideoLanded starts it.
-                if (!awaitingLanding) sink.start()
+                if (!awaitingLanding) runSink()
                 checkNotNull(clock).resume()
                 paused = false
             }
@@ -627,7 +650,7 @@ internal class AudioPipeline(
     private fun finishLanding(atNanos: Long) {
         awaitingLanding = false
         if (isEnded && atNanos >= 0) clock?.seek(atNanos)
-        if (!paused && !isEnded) sink.start()
+        if (!paused && !isEnded) runSink()
         if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
     }
 
@@ -642,7 +665,7 @@ internal class AudioPipeline(
      */
     private fun performSeek(targetNanos: Long) {
         val theClock = checkNotNull(clock)
-        sink.stop()
+        freezeSink()
         flushLine()
         if (DEBUG_SEEK) System.err.println("[audio-seek] target=${targetNanos / 1_000_000}ms posAtFlush=${sink.framePosition()}")
         pendingPcm = null
@@ -703,7 +726,7 @@ internal class AudioPipeline(
         if (tracks.none { it.streamIndex == streamIndex }) return
 
         val wasAwaiting = awaitingLanding
-        sink.stop()
+        freezeSink()
         // Read the playhead between the freeze and the flush. The freeze is
         // what makes the reading safe to take; the flush is what destroys
         // the evidence, because a line that has dropped its queue can no
@@ -720,7 +743,7 @@ internal class AudioPipeline(
             null
         }
         if (next == null) {
-            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            if (!wasAwaiting && !paused && !isEnded) runSink()
             return
         }
         val crop = cropAt(next, pos)
@@ -729,7 +752,7 @@ internal class AudioPipeline(
             // wrap the mastered clock mid-lap or strand a non-looping
             // player at a frozen anchor.
             runCatching { next.close() }
-            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            if (!wasAwaiting && !paused && !isEnded) runSink()
             return
         }
 
@@ -762,7 +785,7 @@ internal class AudioPipeline(
         // finished any more -- left set, the pump never feeds the fresh line
         // and the rebase below pins the mastered clock to a stopped device.
         isEnded = false
-        if (wasAwaiting || paused) sink.stop() // open() starts the device by contract
+        if (wasAwaiting || paused) freezeSink() // open() starts the device by contract
         theClock.rebase(crop.anchorNanos, crop.sampleRate)
         // The stretcher is rate-bound; the new track may run at another.
         val oldFilter = tempoFilter
@@ -794,7 +817,7 @@ internal class AudioPipeline(
         if (newTempo == tempo) return
         val theClock = checkNotNull(clock)
         val wasAwaiting = awaitingLanding
-        sink.stop()
+        freezeSink()
         // Between the freeze and the flush, for the reason [switchTrack]
         // gives -- and here the cost was the very thing this method exists
         // to avoid: a re-anchor over the buffered tail, leaving a permanent
@@ -810,7 +833,7 @@ internal class AudioPipeline(
             try {
                 TempoFilter(sampleRate, newTempo)
             } catch (_: Throwable) {
-                if (!wasAwaiting && !paused && !isEnded) sink.start()
+                if (!wasAwaiting && !paused && !isEnded) runSink()
                 return
             }
         }
@@ -828,7 +851,7 @@ internal class AudioPipeline(
             theClock.seek(crop.anchorNanos)
             pendingPcm = crop.remainder
         }
-        if (!wasAwaiting && !paused && !isEnded) sink.start()
+        if (!wasAwaiting && !paused && !isEnded) runSink()
         if (DEBUG_SEEK) {
             System.err.println("[audio-tempo] tempo=$newTempo anchored=${pos / 1_000_000}ms")
         }
