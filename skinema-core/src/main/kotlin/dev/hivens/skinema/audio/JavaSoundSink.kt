@@ -29,6 +29,19 @@ class JavaSoundSink : PcmSink {
     @Volatile
     private var volume = 1f
 
+    // What the line's own counter gained from sound that was never played.
+    //
+    // The backend derives the position from what the Java layer handed over
+    // minus what is still queued (openjdk PLATFORM_API_LinuxOS_ALSA_PCM.c,
+    // estimatePositionFromAvail). A flush drops the queue, and from then on
+    // it can no longer say how much of it reached the DAC, so it reports the
+    // whole of it as played: the count steps forward by the discarded tail,
+    // measured here at 130 and 177 ms on a 200 ms line. Left in, this
+    // interface's "frames played" would mean "frames handed over" across
+    // every seek -- and the mastered clock is anchored on it.
+    @Volatile
+    private var playedBias = 0L
+
     override fun open(sampleRate: Int) {
         // A reopen (track switch) drops the old line first; without this
         // the previous line keeps the device and its buffered tail.
@@ -56,6 +69,9 @@ class JavaSoundSink : PcmSink {
             open(format, (sampleRate / 5) * BYTES_PER_FRAME)
             start()
         }
+        // A fresh line counts from zero and owes nothing for the old one's
+        // discarded tails.
+        playedBias = 0L
         applyVolume()
     }
 
@@ -72,10 +88,18 @@ class JavaSoundSink : PcmSink {
     }
 
     override fun flush() {
-        line?.flush()
+        val l = line ?: return
+        // Read across the flush rather than compute the queue depth: the one
+        // number wanted is what the backend's own counter gained, and asking
+        // it twice is exact where an occupancy estimate would be a second
+        // guess on top of the first. Both callers freeze the line first, so
+        // nothing drains between the two readings.
+        val before = l.longFramePosition
+        l.flush()
+        playedBias += l.longFramePosition - before
     }
 
-    override fun framePosition(): Long = line?.longFramePosition ?: 0L
+    override fun framePosition(): Long = line?.let { it.longFramePosition - playedBias } ?: 0L
 
     override fun setVolume(volume: Float) {
         this.volume = volume.coerceIn(0f, 1f)

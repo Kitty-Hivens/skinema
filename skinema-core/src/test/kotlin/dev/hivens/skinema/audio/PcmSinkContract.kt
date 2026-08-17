@@ -122,6 +122,48 @@ abstract class PcmSinkContract {
     }
 
     @Test
+    fun `flush does not count discarded sound as played`() {
+        // A flush throws away sound the line had accepted but not played.
+        // What it must not do is credit that sound to the playhead: this
+        // counter is what the mastered clock is anchored on, and a seek --
+        // which is a flush -- would then place the timeline a buffer's
+        // length past where the listener actually was.
+        //
+        // A real line does exactly that if left alone. Its backend derives
+        // the position as handed-over minus still-queued, and a flush
+        // destroys the second term, so it reports the whole of the first.
+        newSink().use { sink ->
+            sink.open(sampleRate)
+            val quarter = frames(sampleRate / 4)
+            // Play some, THEN hand over more and stop straight away. Both
+            // halves are load-bearing: the playhead has to be moving or a
+            // sink that never plays anything passes, and the line has to be
+            // holding sound at the flush or there is nothing to discard.
+            // A single write followed by a wait satisfies neither -- the wait
+            // drains a real line's buffer dry, which is how this assertion
+            // first passed against the very sink it was written to catch.
+            sink.write(quarter, 0, quarter.size)
+            advance(sink, (sampleRate / 8).toLong())
+            sink.write(quarter, 0, quarter.size)
+
+            val playing = sink.framePosition()
+            assertTrue(playing > 0L, "the playhead must be moving before the flush means anything")
+
+            sink.stop()
+            val frozen = sink.framePosition()
+            sink.flush()
+            val gained = sink.framePosition() - frozen
+            // A tolerance, not equality: a real line's stop is asynchronous,
+            // the same slack the freeze test allows. The failure this catches
+            // is a whole line buffer, several times over it.
+            assertTrue(
+                gained <= (sampleRate / 20).toLong(),
+                "flush credited $gained frames of discarded sound as played",
+            )
+        }
+    }
+
+    @Test
     fun `the playhead never runs past what was written`() {
         // What separates a device-derived playhead from an extrapolation. The
         // pipeline's end-of-track accounting is a balance of frames written
