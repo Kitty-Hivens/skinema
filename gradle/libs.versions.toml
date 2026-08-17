@@ -1,10 +1,10 @@
 [versions]
-kotlin       = "2.4.0"
-compose      = "1.11.0"
+kotlin       = "2.4.10"
+compose      = "1.11.1"
 skiko        = "0.144.6"
 # Maven Central publishing (signing + Central Portal upload) -- the
 # libtray-proven recipe.
-mavenPublish = "0.36.0"
+mavenPublish = "0.37.0"
 
 [libraries]
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
