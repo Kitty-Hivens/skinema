@@ -270,4 +270,42 @@ class MismatchedStreamEndsTest {
             }
         }
     }
+
+    /**
+     * The same mismatch with the sound switched off. The lap was held open
+     * until the file's declared duration, and with the sound not playing
+     * there was nothing to hold it for: measured, a two-second picture under
+     * six seconds of audio took 6002 ms a lap and stood on its last frame for
+     * 4110 of them. What is left to wait out at the end of a lap is the
+     * picture's own tail, and the duration is only its upper bound.
+     */
+    @Test
+    fun `a silent player laps on its picture, not on the sound it is not playing`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(mismatched("silent-lap.mp4", "2", "6"), loop = true, audio = false).use { player ->
+            assertTrue(awaitTrue(8_000) { player.acquireFrame() != null }, "playback must start")
+
+            // Wrap to wrap, measured on the published pts falling back.
+            var lastPts = -1L
+            var previousWrap = 0L
+            var lapMs = -1L
+            val deadline = System.currentTimeMillis() + 20_000
+            while (System.currentTimeMillis() < deadline && lapMs < 0) {
+                player.acquireFrame()?.let { frame ->
+                    if (frame.ptsNanos < lastPts) {
+                        val now = System.nanoTime()
+                        if (previousWrap > 0) lapMs = (now - previousWrap) / 1_000_000
+                        previousWrap = now
+                    }
+                    lastPts = frame.ptsNanos
+                }
+                Thread.sleep(5)
+            }
+            assertTrue(lapMs > 0, "two laps must come round to measure one")
+            assertTrue(
+                lapMs < 3_500,
+                "a two-second picture took ${lapMs}ms a lap -- it is waiting out sound nobody is playing",
+            )
+        }
+    }
 }

@@ -299,6 +299,12 @@ class VideoPlayer internal constructor(
     @Volatile
     private var lastPublishWallNanos = 0L
 
+    // The gap between the last two published pts -- a measured frame period,
+    // not a guess, and the only thing that says how long the LAST frame of a
+    // lap is meant to stay up. Zero until two frames have been published.
+    @Volatile
+    private var lastPublishGapNanos = 0L
+
     // Decode ran out of stream but the pacer may still hold the tail;
     // the EOF actions (loop wrap, park, Ended) wait for that drain.
     private var eofPending = false
@@ -884,6 +890,29 @@ class VideoPlayer internal constructor(
     private enum class LapWait { PLAYED_OUT, SUPERSEDED, LEFT_PLAYING, CLOSE }
 
     /**
+     * When this lap's own time is up: the moment the last frame published
+     * stops being shown, never later than the file's declared duration.
+     *
+     * The duration alone was the answer, and it is the wrong one whenever the
+     * file's sound outlives its picture. By the time this runs the sound is
+     * finished either way -- the EOF path holds the lap open for it first --
+     * so what is left to wait out is the picture's own tail. Measured on two
+     * seconds of picture under six of sound, played silently: the lap took
+     * 6002 ms and the last frame stood on screen for 4110 of them, every lap.
+     *
+     * The bound stays because the lap must not close on a file that decodes
+     * faster than it plays: a single frame, a truncated stream, a still. A
+     * gap is only known once two frames have been published, and until then
+     * the duration is all there is.
+     */
+    private fun lapEndNanos(): Long? {
+        val declared = durationNanos ?: return null
+        val gap = lastPublishGapNanos
+        if (gap <= 0) return declared
+        return minOf(declared, lastPublishedPts + gap)
+    }
+
+    /**
      * Holds the wrap until the lap has actually been watched.
      *
      * An empty queue means the last frame was PUBLISHED, not that its display
@@ -894,7 +923,7 @@ class VideoPlayer internal constructor(
      * The lap is over when the file's own time is up.
      */
     private fun awaitLapPlayedOut(decoder: FrameSource): LapWait {
-        val end = durationNanos ?: return LapWait.PLAYED_OUT
+        val end = lapEndNanos() ?: return LapWait.PLAYED_OUT
         while (state is State.Playing && clock.mediaNanos() < end) {
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
             val seeked = cmd is Command.Seek || cmd is Command.SeekBy
@@ -1346,6 +1375,9 @@ class VideoPlayer internal constructor(
         slot.width = frame.width
         slot.height = frame.height
         slot.ptsNanos = frame.ptsNanos
+        // Forward gaps only: a seek landing or a wrap publishes backwards,
+        // and neither is a frame period.
+        if (frame.ptsNanos > lastPublishedPts) lastPublishGapNanos = frame.ptsNanos - lastPublishedPts
         lastPublishedPts = frame.ptsNanos
         lastPublishWallNanos = System.nanoTime()
         target.publish()
