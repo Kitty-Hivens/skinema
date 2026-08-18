@@ -10,12 +10,19 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Hardware-decode acceptance. A headless CI runner has no GPU, so the real
- * hw assertions are gated behind SKINEMA_TEST_HWACCEL=1 and run on a dev
- * box with a working device (VAAPI/NVDEC, D3D11VA, VideoToolbox) -- the
- * manual acceptance the ROADMAP's M11 entry calls for. Only the software
- * default is asserted unconditionally, so CI proves nothing GPU-shaped on a
- * platform this change cannot see (macOS always has VideoToolbox).
+ * Hardware-decode acceptance -- the manual acceptance the ROADMAP's M11 entry
+ * calls for, on a dev box with a working device (VAAPI/NVDEC, D3D11VA,
+ * VideoToolbox).
+ *
+ * Two switches, because they answer different questions.
+ * SKINEMA_TEST_HWACCEL=1 runs these at all; SKINEMA_REQUIRE_HWACCEL=1 says
+ * this machine decodes on the GPU, so falling back to software is a failure
+ * rather than a skip. Splitting them is not ceremony: a hosted macOS runner
+ * opens a VideoToolbox device and then decodes every frame on the CPU, so "a
+ * device opened" and "the GPU decoded" are separate facts and only the second
+ * is worth asserting. Running without the second switch still covers the
+ * device open, the negotiation and the fallback on a backend no other machine
+ * here has.
  */
 class VideoDecoderHwTest {
 
@@ -86,18 +93,34 @@ class VideoDecoderHwTest {
     }
 
     /**
-     * A device was opened, so frames must arrive on it. Asserted against the
-     * frame rather than against the request, because the request is what
-     * every other signal here reports: hardware decode was negotiated away on
-     * every open for two months -- the format the decoder aims for lived on
-     * the opening thread, and a frame-threaded decoder negotiates on a worker
-     * of its own, where a thread-scoped value is simply absent -- and nothing
-     * in the suite could tell, because nothing looked at a frame.
+     * Frames must arrive on the device the decoder opened -- checked against
+     * the frame, never against the request, because the request is what every
+     * other signal reports: hardware decode was negotiated away on every open
+     * for two months (the target lived on the opening thread, and a
+     * frame-threaded decoder negotiates on a worker of its own) and nothing in
+     * the suite could tell, because nothing looked at a frame.
+     *
+     * Whether the machine OWES an answer is a separate question from whether
+     * the tests may run, exactly as with the audio device: SKINEMA_TEST_HWACCEL
+     * runs them, SKINEMA_REQUIRE_HWACCEL says this machine has working
+     * hardware decode and a fallback is a failure. Both are needed because a
+     * device opening proves nothing: a hosted macOS runner opens a
+     * VideoToolbox device (surface 157) and then decodes every frame in
+     * software, which is the AUTO fallback working as promised.
      */
     private fun assertDecodedOnDevice(d: VideoDecoder, where: String) {
+        val required = System.getenv("SKINEMA_REQUIRE_HWACCEL") == "1"
         val surface = d.negotiatedSurfaceFormat()
-        if (surface == LibavAbi.AV_PIX_FMT_NONE) return
-        assertEquals(surface, d.lastFrameFormat(), "$where: a device is open, so frames must be its surfaces")
+        if (surface == LibavAbi.AV_PIX_FMT_NONE) {
+            assertFalse(required, "$where: SKINEMA_REQUIRE_HWACCEL is set but no device opened at all")
+            return
+        }
+        val onDevice = d.lastFrameFormat() == surface
+        if (required) {
+            assertEquals(surface, d.lastFrameFormat(), "$where: a device is open, so frames must be its surfaces")
+            return
+        }
+        assumeTrue(onDevice, "$where: a device opened but the hwaccel did not engage -- nothing on it to check")
     }
 
     @Test
