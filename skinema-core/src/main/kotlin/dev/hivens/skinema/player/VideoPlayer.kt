@@ -217,6 +217,11 @@ class VideoPlayer internal constructor(
      * opt-in (the `hardware` constructor parameter) and silently falls back
      * to software when no device or codec support is present, so this is
      * the only signal that it actually engaged.
+     *
+     * Read off the frames, not off the request: a device can open and the
+     * hwaccel still fail to initialise for the stream, and until a frame has
+     * come back there is nothing to read. So this can go true at the open and
+     * false again once decoding starts.
      */
     @Volatile
     var hardwareActive: Boolean = false
@@ -785,6 +790,11 @@ class VideoPlayer internal constructor(
 
     /** Converts the decoder's current frame into a queue cell. */
     private fun enqueue(decoder: FrameSource, raw: VideoDecoder.RgbaFrame, forced: Boolean) {
+        // Whether the GPU took this stream is only knowable once a frame has
+        // come back from it, and the open-time reading is the request. The
+        // answer only ever goes from hardware to software (a hwaccel that
+        // could not initialise), so one comparison per frame settles it.
+        if (hardwareActive && !decoder.hardwareActive()) hardwareActive = false
         // The seek path commits a preview and a landing back to back; at
         // depth 1 the landing must wait out the pacer's pop of the
         // preview (forced frames pop within microseconds). Normal fill

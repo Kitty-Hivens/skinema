@@ -130,6 +130,47 @@ class VideoDecoderHwTest {
     }
 
     @Test
+    fun `hardwareActive answers for the frames rather than for the request`() {
+        // Ungated on purpose: the property holds on any machine, with a
+        // device or without one, and it is the property whose absence let a
+        // GPU path that never engaged report that it had.
+        Fixtures.assumeDecodeEnvironment()
+        VideoDecoder.open(testsrc("truth.mp4"), HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "AUTO must decode")
+            val onDevice = d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE &&
+                d.lastFrameFormat() == d.negotiatedSurfaceFormat()
+            assertEquals(onDevice, d.hardwareActive(), "the report must match where the frame came from")
+        }
+    }
+
+    @Test
+    fun `a stream the device cannot decode falls back and stops claiming hardware`() {
+        assumeHwAcceptance()
+        // 4:4:4 H.264: the decoder advertises a VAAPI config, so a device
+        // opens, and then no consumer-grade driver can decode the profile --
+        // avcodec asks for a format again without the hardware entry and
+        // finishes on the CPU. AUTO promises exactly that fallback; what it
+        // must not do is go on calling itself hardware.
+        val video = Fixtures.generate(
+            dir.resolve("high444.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "1",
+            "-pix_fmt", "yuv444p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "the fallback must still decode")
+            assumeTrue(
+                d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE,
+                "no device opened for this stream -- nothing to fall back from",
+            )
+            assumeTrue(
+                d.lastFrameFormat() != d.negotiatedSurfaceFormat(),
+                "this device decodes 4:4:4 after all -- no fallback to observe",
+            )
+            assertFalse(d.hardwareActive(), "a decoder handed software frames is not on the GPU")
+        }
+    }
+
+    @Test
     fun `the downloaded picture is the software picture`() {
         assumeHwAcceptance()
         // A whole frame of colour bars, not one pixel of a flat colour: the

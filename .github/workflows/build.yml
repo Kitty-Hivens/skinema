@@ -23,8 +23,8 @@ jobs:
           # superset bundle exercises decode, subtitles, webp, the extended
           # formats and encode in one run, so the suite runs whole (the
           # per-tier bundles are gated at build time in natives.yml itself).
-          # Twenty-two where the default is eight, because no hosted runner has
-          # an audio device or a GPU: ten hardware suites (opt-in everywhere,
+          # Twenty-three where the default is eight, because no hosted runner
+          # has an audio device or a GPU: eleven hardware suites (opt-in everywhere,
           # six of them added when hardware decode turned out never to engage
           # -- the negotiation, the downloaded picture, and the player paths
           # that only exist on the GPU) and NINE that need a real output line -- the sink contract's
@@ -38,15 +38,15 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 22
+            maxSkipped: 23
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 22
+            maxSkipped: 23
           - os: windows-latest
             platform: windows-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 26
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -55,7 +55,7 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 26
           # Thirty-three, not the default eight, and every one of them named:
           # eleven hardware suites (opt-in, and no VAAPI encoder on a mac), one
           # subtitle test that looks for a Linux font path, and SEVEN that
@@ -90,12 +90,12 @@ jobs:
             platform: linux-musl-x64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 22
+            maxSkipped: 23
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 22
+            maxSkipped: 23
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
