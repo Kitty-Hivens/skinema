@@ -63,6 +63,25 @@ class AudioClock(
     private var deviceDetached = false
 
     /**
+     * Bumped by every re-anchor. A device reading is taken OUTSIDE [lock] --
+     * it has to be, the line answers under the same native monitor its
+     * blocking write holds -- and is then applied under the lock against an
+     * anchor that may have moved in between. It usually has not; when it has,
+     * the reading belongs to a line that no longer exists.
+     *
+     * A track switch and a device-loss recovery both reopen the line, so its
+     * counter restarts at zero while the reading in flight still carries the
+     * old one's total. Applied against the fresh anchor that is a leap of the
+     * whole elapsed playing time -- and [mediaNanos] writes what it returns
+     * into [floorNanos], so the leap is not transient but permanent: every
+     * honest reading afterwards is below the floor and the clock never comes
+     * back. Reading this before the sample and re-checking it under the lock
+     * is what tells the two apart.
+     */
+    @Volatile
+    private var anchorGeneration = 0L
+
+    /**
      * The device's position, or null when the clock is not driven by it.
      *
      * Never called under [lock], and never at all once detached. Both halves
@@ -156,6 +175,7 @@ class AudioClock(
     override fun start(atMediaNanos: Long) {
         val frames = positionFrames()
         synchronized(lock) {
+            anchorGeneration++
             baseMediaNanos = atMediaNanos
             baseFrames = frames
             floorNanos = Long.MIN_VALUE
@@ -180,24 +200,28 @@ class AudioClock(
      * nothing else can stop it.
      */
     override fun pause() {
+        val generation = anchorGeneration
         val frames = sampleDevice()
         val wall = System.nanoTime()
         synchronized(lock) {
             if (!isPaused) {
-                pausedAt = currentLocked(frames, wall)
+                pausedAt = currentLocked(frames.takeIf { anchorGeneration == generation }, wall)
                 isPaused = true
             }
         }
     }
 
     override fun resume() {
+        val generation = anchorGeneration
         val frames = sampleDevice()
         synchronized(lock) {
             if (!isPaused) return
             // Carry on from where the pause froze it, whichever source is
             // driving: the device gets a fresh anchor, the wall a fresh start.
+            val usable = frames.takeIf { anchorGeneration == generation }
+            anchorGeneration++
             baseMediaNanos = pausedAt
-            baseFrames = frames ?: baseFrames
+            baseFrames = usable ?: baseFrames
             // The line stood still through the pause, so the cadence measured
             // before it says nothing about now; carried over, the first
             // reading after a resume would credit the whole pause as one
@@ -216,10 +240,13 @@ class AudioClock(
 
     /** Re-anchor after the sink was flushed; the audio thread owns this. */
     override fun seek(mediaNanos: Long) {
+        val generation = anchorGeneration
         val frames = sampleDevice()
         synchronized(lock) {
+            val usable = frames.takeIf { anchorGeneration == generation }
+            anchorGeneration++
             baseMediaNanos = mediaNanos
-            baseFrames = frames ?: baseFrames
+            baseFrames = usable ?: baseFrames
             floorNanos = Long.MIN_VALUE
             forgetCadence()
             reanchorDetached(mediaNanos, running = !isPaused)
@@ -243,6 +270,7 @@ class AudioClock(
         // to is a fresh one that answers.
         val frames = positionFrames()
         synchronized(lock) {
+            anchorGeneration++
             baseMediaNanos = mediaNanos
             baseFrames = frames
             this.sampleRate = sampleRate
@@ -264,8 +292,11 @@ class AudioClock(
      * around this call.
      */
     fun setTempo(tempo: Double) {
+        val generation = anchorGeneration
         val frames = sampleDevice()
         synchronized(lock) {
+            @Suppress("NAME_SHADOWING")
+            val frames = frames.takeIf { anchorGeneration == generation }
             if (detachedAtWall >= 0) {
                 val wall = System.nanoTime()
                 detachedMedia += ((wall - detachedAtWall) * this.tempo).toLong()
@@ -297,10 +328,12 @@ class AudioClock(
     }
 
     override fun mediaNanos(): Long {
+        val generation = anchorGeneration
         val frames = sampleDevice()
         val wall = System.nanoTime()
         return synchronized(lock) {
-            val raw = currentLocked(frames, wall)
+            // A reading from before a re-anchor describes a line that is gone.
+            val raw = currentLocked(frames.takeIf { anchorGeneration == generation }, wall)
             if (raw < floorNanos) {
                 floorNanos
             } else {
@@ -350,9 +383,12 @@ class AudioClock(
         // render loop with it, since they all read this clock. It settles for
         // the last reading the clock returned, which is where a device that
         // stopped advancing left it anyway.
+        val generation = anchorGeneration
         val frames = if (readDevice) sampleDevice() else null
         val wall = System.nanoTime()
         synchronized(lock) {
+            @Suppress("NAME_SHADOWING")
+            val frames = frames.takeIf { anchorGeneration == generation }
             // Where the clock reads now, not where the device says: a seek
             // may have placed it deliberately -- the end of a file, say --
             // and recomputing from a position the device is still walking

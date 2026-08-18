@@ -195,10 +195,26 @@ internal class AudioPipeline(
         start()
     }
 
-    fun pause() = commands.put(Command.Pause)
-    fun resume() = commands.put(Command.Resume)
+    // Nobody is left to drain the queue once the thread has gone, and the
+    // player keeps announcing to it: the video side calls seek() and
+    // videoLanded() on every press without asking whether this side is still
+    // there, so a scrubbed timeline grew two nodes per press, unbounded, for
+    // as long as the file stayed open. The loop-wrap path already asked
+    // (VideoPlayer takeIf { it.alive }); these are the entry points that did
+    // not. Close is deliberately not guarded -- it is how the thread is told
+    // to go, and a second one costs one node.
+    fun pause() {
+        if (!alive) return
+        commands.put(Command.Pause)
+    }
+
+    fun resume() {
+        if (!alive) return
+        commands.put(Command.Resume)
+    }
 
     fun seek(ptsNanos: Long) {
+        if (!alive) return
         pendingSeeks.incrementAndGet()
         commands.put(Command.Seek(ptsNanos))
     }
@@ -220,13 +236,22 @@ internal class AudioPipeline(
     }
 
     /** Switches to another audio stream of the same file, in place. */
-    fun selectTrack(streamIndex: Int) = commands.put(Command.SwitchTrack(streamIndex))
+    fun selectTrack(streamIndex: Int) {
+        if (!alive) return
+        commands.put(Command.SwitchTrack(streamIndex))
+    }
 
     /** Playback rate, pitch preserved; the caller clamps to atempo's range. */
-    fun setTempo(tempo: Double) = commands.put(Command.SetTempo(tempo))
+    fun setTempo(tempo: Double) {
+        if (!alive) return
+        commands.put(Command.SetTempo(tempo))
+    }
 
     /** The video side finished its seek landing; sound may run again. */
-    fun videoLanded(atNanos: Long = -1L) = commands.put(Command.VideoLanded(atNanos))
+    fun videoLanded(atNanos: Long = -1L) {
+        if (!alive) return
+        commands.put(Command.VideoLanded(atNanos))
+    }
 
     fun setVolume(volume: Float) = sink.setVolume(volume)
 
@@ -429,8 +454,17 @@ internal class AudioPipeline(
      * picture lands, a switch's until the new decoder is cropped.
      */
     private fun freezeSink() {
-        sink.stop()
+        // Declared BEFORE the line stops, which is the opposite order to
+        // [runSink] and deliberately so. Between the two statements the line
+        // has already stopped while the clock still believes it is
+        // consuming, so any reader in that window fills the gap with wall
+        // time the device never played -- and the monotonic floor latches it,
+        // so the playhead the switch or the rate change then reads is ahead
+        // of the sound by as much as the fill's ceiling. Declaring first
+        // costs the mirror case: a reader in the window under-fills a line
+        // that is still draining, which the next device refresh corrects.
         clock?.setDeviceRunning(false)
+        sink.stop()
     }
 
     /** The other half of [freezeSink]. */

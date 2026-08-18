@@ -251,6 +251,65 @@ class AudioClockTest {
         )
     }
 
+    /**
+     * The device is asked OUTSIDE the lock -- it has to be, a JavaSound line
+     * answers under the same native monitor its blocking write holds -- and
+     * the answer is applied under the lock, against an anchor that may have
+     * moved in between. A track switch and a device-loss recovery both reopen
+     * the line, so its counter restarts at zero while a reading already in
+     * flight still carries the old one's total.
+     *
+     * Applied against the fresh anchor that is a leap of the whole elapsed
+     * playing time, and [AudioClock.mediaNanos] writes what it returns into
+     * its monotonic floor -- so the leap is permanent, not transient: every
+     * honest reading afterwards sits below the floor and the clock never
+     * comes back. Video then has nothing due until real media time climbs
+     * past it, which is the elapsed play time all over again.
+     */
+    @Test
+    fun `a device reading taken before a re-anchor is not applied after it`() {
+        val position = java.util.concurrent.atomic.AtomicLong(0)
+        val reader = java.util.concurrent.atomic.AtomicReference<Thread?>(null)
+        val sampled = java.util.concurrent.CountDownLatch(1)
+        val rebased = java.util.concurrent.CountDownLatch(1)
+        // The reading is captured and then parked, which is exactly the
+        // window between the sample and the lock.
+        val watched = AudioClock(48_000) {
+            val taken = position.get()
+            if (Thread.currentThread() === reader.get()) {
+                sampled.countDown()
+                rebased.await()
+            }
+            taken
+        }
+
+        watched.start(0)
+        position.set(48_000L * 60)
+        assertEquals(60_000_000_000L, watched.mediaNanos(), "a minute of playback on the current line")
+
+        var seen = -1L
+        val thread = Thread { seen = watched.mediaNanos() }
+        reader.set(thread)
+        thread.start()
+        assertTrue(sampled.await(5, java.util.concurrent.TimeUnit.SECONDS), "the reader must take its sample")
+
+        // The audio thread reopens the line and re-anchors on it: a fresh
+        // line counts from zero.
+        position.set(0)
+        watched.rebase(60_000_000_000L, 48_000)
+        rebased.countDown()
+        thread.join(5_000)
+
+        assertTrue(
+            seen in 59_000_000_000L..61_000_000_000L,
+            "the stale reading was applied to the new anchor and read ${seen / 1_000_000}ms",
+        )
+        assertTrue(
+            watched.mediaNanos() in 59_000_000_000L..61_000_000_000L,
+            "and it latched the floor at ${watched.mediaNanos() / 1_000_000}ms, where the clock now stays",
+        )
+    }
+
     @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)
