@@ -33,14 +33,28 @@ class AudioFormatMatrixTest {
     fun `a sine survives every audio codec`() {
         Fixtures.assumeDecodeEnvironment()
         val rate = 48_000
+        // encoder, decoder, container. The three differ: the CLI encodes what
+        // it was built with, the bundle decodes a narrower list of its own,
+        // and the container needs a demuxer that is a third list again --
+        // .wv has no demuxer in any tier, so wavpack rides matroska.
         val cases = listOf(
-            "flac" to "mka", "aac" to "m4a", "libopus" to "opus", "libmp3lame" to "mp3",
-            "libvorbis" to "ogg", "ac3" to "ac3", "eac3" to "eac3", "alac" to "m4a",
-            "pcm_s16le" to "wav", "pcm_s24le" to "wav", "pcm_f32le" to "wav", "wavpack" to "wv",
+            Triple("flac", "flac", "mka"),
+            Triple("aac", "aac", "m4a"),
+            Triple("libopus", "opus", "opus"),
+            Triple("libmp3lame", "mp3", "mp3"),
+            Triple("libvorbis", "vorbis", "ogg"),
+            Triple("ac3", "ac3", "ac3"),
+            Triple("eac3", "eac3", "eac3"),
+            Triple("alac", "alac", "m4a"),
+            Triple("pcm_s16le", "pcm_s16le", "wav"),
+            Triple("pcm_s24le", "pcm_s24le", "wav"),
+            Triple("pcm_f32le", "pcm_f32le", "wav"),
+            Triple("wavpack", "wavpack", "mka"),
         )
         val ran = mutableListOf<String>()
-        for ((codec, ext) in cases) {
+        for ((codec, decoderName, ext) in cases) {
             if (!Fixtures.hasCliEncoder(codec)) continue
+            if (!Fixtures.libraryHasDecoder(decoderName)) continue
             val out = dir.resolve("a-$codec.$ext")
             val built = runCatching {
                 Fixtures.generate(
@@ -51,7 +65,15 @@ class AudioFormatMatrixTest {
             if (built.isFailure) continue
             ran += codec
 
-            val decoder = assertNotNull(AudioDecoder.openOrNull(out), "$codec produced nothing openable")
+            runCatching { checkCodec(codec, out, rate) }
+                .onFailure { throw AssertionError("$codec: ${it.message}", it) }
+        }
+        assertTrue(ran.size >= 4, "too few audio codecs present to mean anything, ran $ran")
+    }
+
+    private fun checkCodec(codec: String, out: Path, rate: Int) {
+        run {
+            val decoder = assertNotNull(AudioDecoder.openOrNull(out), "produced nothing openable")
             decoder.use { d ->
                 var frames = 0L
                 var energy = 0.0
@@ -68,17 +90,16 @@ class AudioFormatMatrixTest {
                     }
                     frames += chunk.byteCount / 4
                 }
-                assertEquals(rate, seenRate, "$codec came back at the wrong sample rate")
+                assertEquals(rate, seenRate, "came back at the wrong sample rate")
                 // A second, give or take the codec's own priming and padding:
                 // vorbis trims, ac3 pads to its frame.
                 assertTrue(
                     abs(frames - rate) < rate / 10,
-                    "$codec decoded $frames frames for one second at $rate",
+                    "decoded $frames frames for one second at $rate",
                 )
                 val rms = sqrt(energy / (frames * 2))
-                assertTrue(rms > 100, "$codec decoded silence (rms $rms) where a sine was written")
+                assertTrue(rms > 100, "decoded silence (rms $rms) where a sine was written")
             }
         }
-        assertTrue(ran.size >= 4, "too few audio codecs present to mean anything, ran $ran")
     }
 }
