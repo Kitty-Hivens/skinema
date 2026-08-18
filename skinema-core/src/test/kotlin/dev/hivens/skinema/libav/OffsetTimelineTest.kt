@@ -24,17 +24,21 @@ class OffsetTimelineTest {
         dir.toFile().deleteRecursively()
     }
 
-    private fun offset(name: String, seconds: String, extra: List<String> = emptyList()): Path =
-        Fixtures.generate(
-            dir.resolve(name),
-            *(
-                listOf(
-                    "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", seconds,
-                    "-output_ts_offset", "10",
-                    "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "10",
-                ) + extra
-                ).toTypedArray(),
-        )
+    private fun offset(
+        name: String,
+        seconds: String,
+        offsetSeconds: String = "10",
+        extra: List<String> = emptyList(),
+    ): Path = Fixtures.generate(
+        dir.resolve(name),
+        *(
+            listOf(
+                "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", seconds,
+                "-output_ts_offset", offsetSeconds,
+                "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "10",
+            ) + extra
+            ).toTypedArray(),
+    )
 
     /**
      * FFmpeg computes a duration of its own only when the demuxer left one
@@ -46,11 +50,28 @@ class OffsetTimelineTest {
     @Test
     fun `every container reports the span it can actually play`() {
         Fixtures.assumeDecodeEnvironment()
-        val cases = listOf(
-            "mkv" to offset("off.mkv", "5"),
-            "mp4" to offset("off.mp4", "5"),
-            "ts" to offset("off.ts", "5"),
-        )
+        // Both sides of the rule. mkv and webm are the containers that
+        // declare a duration and no per-stream one, so the offset has to be
+        // taken out of it; mp4, mov and mpegts declare per-stream lengths and
+        // must be left exactly alone. A fix that helped the first pair by
+        // hurting the second would pass a test that only listed the first.
+        val cases = buildList {
+            add("mkv" to offset("off.mkv", "5"))
+            add("mp4" to offset("off.mp4", "5"))
+            add("mov" to offset("off.mov", "5"))
+            add("ts" to offset("off.ts", "5"))
+            if (Fixtures.hasCliEncoder("libvpx-vp9")) {
+                add("webm" to offset("off.webm", "5", extra = listOf("-c:v", "libvpx-vp9", "-b:v", "200k")))
+            }
+            // The control that actually exercises the rule's condition. The
+            // others above carry a duration SMALLER than their offset, so an
+            // arithmetic guard alone already leaves them alone and the case
+            // proves nothing. Six seconds of footage at a two-second offset
+            // is the shape where a rule that simply subtracted would take
+            // four seconds off a file that plays six.
+            add("mp4 long" to offset("long.mp4", "6", offsetSeconds = "2"))
+            add("mov long" to offset("long.mov", "6", offsetSeconds = "2"))
+        }
         for ((label, file) in cases) {
             VideoDecoder.open(file).use { d ->
                 val declared = assertNotNull(d.durationNanos(), "$label declared no duration")

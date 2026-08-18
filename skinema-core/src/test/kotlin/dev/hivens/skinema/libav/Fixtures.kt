@@ -183,6 +183,13 @@ object Fixtures {
      * is the environment's business (brew ships ffmpeg without
      * libaom/libwebp), not part of skinema's decode contract.
      */
+    /**
+     * Whether the fixture CLI has [encoder], for a test that sweeps several
+     * containers and wants to include one more when it can rather than skip
+     * the lot when it cannot.
+     */
+    fun hasCliEncoder(encoder: String): Boolean = encoder in encoders
+
     fun assumeEncoder(encoder: String) {
         assumeTrue(encoder in encoders, "CLI lacks encoder $encoder -- fixture impossible, skipping")
     }
