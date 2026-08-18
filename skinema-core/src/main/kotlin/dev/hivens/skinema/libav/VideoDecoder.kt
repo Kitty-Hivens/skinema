@@ -932,9 +932,30 @@ internal fun formatStartTimeNanos(fmtCtx: MemorySegment): Long {
  * Container-reported duration: the AVFormatContext value (microseconds)
  * when present, the stream's own (its time_base) as the fallback, null
  * when the container does not know. Unknowns appear as AV_NOPTS or
- * non-positive values depending on the demuxer; both read as null. This
- * is the playable SPAN and already excludes start_time, so it is NOT
- * normalized -- the zero-based position runs 0..span as-is.
+ * non-positive values depending on the demuxer; both read as null.
+ *
+ * The playable SPAN, so that the zero-based position runs 0..span. That is
+ * what the value usually already is, and for one family of containers it is
+ * not. FFmpeg only computes a duration of its own when the demuxer left one
+ * unset, and it computes `end_time - start_time` (libavformat/demux.c,
+ * update_stream_timings) -- a span by construction. A demuxer that DID set
+ * one is taken verbatim and start_time is never subtracted from it, and
+ * Matroska's is the last timestamp rather than the length: measured on a
+ * five-second clip muxed with a ten-second offset, mkv and webm declare
+ * 15 s where mp4 and mpegts declare 5.
+ *
+ * The tell is the per-stream duration. Where a container states one, it
+ * states a length in that stream's own time base, and the format-level value
+ * agrees with it; where none is stated -- matroska -- the format-level value
+ * came from the container verbatim and carries the offset with it.
+ *
+ * The residual: a matroska file whose Duration element really is a length
+ * (the spec's reading, and what mkvmerge writes) AND which also carries a
+ * nonzero start_time would be understated here by that offset. It is the
+ * cheaper way to be wrong. Overstating holds the end of every lap open until
+ * media time reaches a mark it never will -- ten seconds of frozen picture
+ * per lap, on the measurement above -- while understating ends the lap on
+ * time and costs a progress bar the last moments of its travel.
  */
 internal fun containerDurationNanos(
     fmtCtx: MemorySegment,
@@ -943,10 +964,24 @@ internal fun containerDurationNanos(
     timeBaseDen: Int,
 ): Long? {
     val container = fmtCtx.get(JAVA_LONG, LibavAbi.FormatContext.DURATION)
-    if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) return container * 1_000L
+    if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) {
+        val nanos = container * 1_000L
+        val start = formatStartTimeNanos(fmtCtx)
+        if (start > 0 && nanos > start && !anyStreamDeclaresDuration(fmtCtx)) return nanos - start
+        return nanos
+    }
     val own = stream.get(JAVA_LONG, LibavAbi.Stream.DURATION)
     if (own != LibavAbi.AV_NOPTS_VALUE && own > 0) return ptsToNanos(own, timeBaseNum, timeBaseDen)
     return null
+}
+
+/** Whether any stream states a length of its own -- see [containerDurationNanos]. */
+private fun anyStreamDeclaresDuration(fmtCtx: MemorySegment): Boolean {
+    for (i in 0 until fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)) {
+        val d = streamAt(fmtCtx, i).get(JAVA_LONG, LibavAbi.Stream.DURATION)
+        if (d != LibavAbi.AV_NOPTS_VALUE && d > 0) return true
+    }
+    return false
 }
 
 /** The stream at [index] of an opened format context. */
