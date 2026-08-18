@@ -64,7 +64,25 @@ class VideoDecoder private constructor(
     override fun rotationDegrees(): Int = rotationDegrees
     override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
     override fun videoSize(): Pair<Int, Int>? = videoSize
-    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE
+    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE && !hwFellBack
+
+    /**
+     * Whether a decoder that opened a device ended up decoding without it.
+     * avcodec asks for a format again with the hardware entry removed when
+     * the hwaccel cannot initialise for this stream -- an unsupported
+     * profile, a driver that refuses the geometry -- and decodes on the CPU
+     * from there. That fallback is legal ([HwAccel.AUTO] promises it); saying
+     * it is hardware is not, and a report derived from the REQUEST rather
+     * than from a frame is how a negotiation that never chose the GPU went
+     * unnoticed for two months.
+     */
+    @Volatile
+    private var hwFellBack = false
+
+    private fun noteHwEngagement() {
+        if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE || hwFellBack) return
+        if (frame.get(JAVA_INT, LibavAbi.Frame.FORMAT) != hwPixFmt) hwFellBack = true
+    }
 
     /** The GPU surface a device was opened for; AV_PIX_FMT_NONE for software. */
     internal fun negotiatedSurfaceFormat(): Int = hwPixFmt
@@ -155,6 +173,7 @@ class VideoDecoder private constructor(
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> {
                     noteFrameEnd()
+                    noteHwEngagement()
                     return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
                 }
                 LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
