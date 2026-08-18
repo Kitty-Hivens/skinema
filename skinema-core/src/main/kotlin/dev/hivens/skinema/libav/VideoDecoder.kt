@@ -195,7 +195,7 @@ class VideoDecoder private constructor(
     override fun seekTo(ptsNanos: Long) {
         // Re-apply the container start_time the timeline was normalized
         // against before handing the target to the demuxer.
-        seekToUnit(nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen), toStart = ptsNanos == 0L)
+        seekToUnit(nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen))
     }
 
     /**
@@ -207,23 +207,31 @@ class VideoDecoder private constructor(
      */
     override fun seekBefore(ptsNanos: Long) {
         val unit = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen) - 1
-        seekToUnit(unit.coerceAtLeast(0), toStart = unit <= 0 || ptsNanos <= 0)
+        seekToUnit(unit.coerceAtLeast(0))
     }
 
-    private fun seekToUnit(ts: Long, toStart: Boolean) {
+    private fun seekToUnit(ts: Long) {
         val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
         avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
         Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
-        restartStage = if (toStart) 0 else 2
+        restartStage = 0
     }
 
     /**
      * How far the restart escalation has gone for the seek in flight: 0 before
      * either escape, 1 after the byte rewind, 2 after the demuxer replacement.
-     * Parked at 2 outside a seek to the start, so an ordinary end of stream is
-     * an end of stream.
+     *
+     * Armed by every seek and disarmed by the first packet that follows one,
+     * which is what keeps an ordinary end of stream an end of stream: a seek
+     * that landed somewhere real reads something, and from that packet on a
+     * read that fails is the file running out. It used to be armed only by a
+     * seek to zero, on the same reasoning applied one step too early -- so
+     * the loop wrap worked and every other seek did not. Measured on animated
+     * WebP, whose demuxer answers a seek, reports success and stays drained:
+     * a scrub to any position but the beginning handed back nothing at all,
+     * for the rest of the session.
      */
     private var restartStage = 2
 
