@@ -98,7 +98,7 @@ jobs:
       # The audio suites are opt-in: they need a real output line, and asking
       # for one where there is none is how a suite skips its way to green.
       # Turned on where the step below can conjure a device.
-      SKINEMA_TEST_AUDIO: "${{ (runner.os == 'Linux' && matrix.libc != 'musl') && '1' || '' }}"
+      SKINEMA_TEST_AUDIO: "${{ (startsWith(matrix.os, 'ubuntu') && matrix.libc != 'musl') && '1' || '' }}"
     steps:
       - uses: actions/checkout@v7
 
