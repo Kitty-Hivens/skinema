@@ -63,6 +63,31 @@ class WebpDecodingTest {
         }
     }
 
+    /**
+     * The restart escalation used to be armed only by a seek to zero, so a
+     * looping player worked and a scrubbed one did not: this demuxer answers
+     * a seek, reports success and stays drained, and a seek anywhere but the
+     * beginning therefore handed back nothing at all -- for the rest of the
+     * session, since nothing else re-arms it.
+     */
+    @Test
+    fun `a scrub to any position keeps an animated webp playing`() {
+        assumeWebpEnvironment()
+        FrameSources.open(animated("scrubbed.webp")).use { source ->
+            assertTrue(source.nextFrame() != null, "playback must start before a scrub means anything")
+            source.seekTo(500_000_000L)
+            val after = generateSequence { source.nextFrame()?.ptsNanos }.take(3).toList()
+            assertTrue(after.isNotEmpty(), "a seek off zero left the demuxer drained")
+            // And again, because each escape is tried once per seek: a second
+            // scrub has to re-arm rather than inherit a spent escalation.
+            source.seekTo(200_000_000L)
+            assertTrue(
+                generateSequence { source.nextFrame()?.ptsNanos }.take(1).toList().isNotEmpty(),
+                "the second scrub found the escalation already spent",
+            )
+        }
+    }
+
     @Test
     fun `animated webp decodes every frame on the pts grid`() {
         assumeWebpEnvironment()

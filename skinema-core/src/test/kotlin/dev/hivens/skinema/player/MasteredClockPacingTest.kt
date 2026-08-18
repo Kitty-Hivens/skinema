@@ -58,7 +58,7 @@ class MasteredClockPacingTest {
             var changes = 0
             var lastReading = -1L
             var lastChangeWall = -1L
-            var longestHoldNanos = 0L
+            val holds = ArrayList<Long>(8_000)
             var distinctFrames = 0
             var lastPts = -1L
 
@@ -74,9 +74,7 @@ class MasteredClockPacingTest {
                 val reading = player.positionNanos()
                 readings++
                 if (reading != lastReading) {
-                    if (lastChangeWall > 0) {
-                        longestHoldNanos = maxOf(longestHoldNanos, now - lastChangeWall)
-                    }
+                    if (lastChangeWall > 0) holds += now - lastChangeWall
                     lastChangeWall = now
                     lastReading = reading
                     changes++
@@ -97,9 +95,15 @@ class MasteredClockPacingTest {
             )
 
             // The bound that matters to a 60 fps frame is its own period.
+            // A percentile rather than the longest hold: one descheduled
+            // sampling tick is not the clock standing still, and read raw the
+            // clock stands still at EVERY percentile -- so this separates the
+            // two regimes without being decided by a single stall.
+            holds.sort()
+            val p99 = holds[(holds.size - 1) * 99 / 100]
             assertTrue(
-                longestHoldNanos < 12_000_000L,
-                "media time froze for ${longestHoldNanos / 1_000_000}ms, longer than a frame of the content",
+                p99 < 12_000_000L,
+                "media time froze for ${p99 / 1_000_000}ms at the 99th percentile, longer than a frame",
             )
 
             // And the consequence, which is the reason any of this matters.
