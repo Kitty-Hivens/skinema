@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # On demand, for a branch that has no pull request yet: the matrix is the
+  # only thing that tests macOS and Windows, and waiting for a PR to find out
+  # whether they build is the wrong order. The natives and publish workflows
+  # already take this trigger.
+  workflow_dispatch:
 
 jobs:
   test:
