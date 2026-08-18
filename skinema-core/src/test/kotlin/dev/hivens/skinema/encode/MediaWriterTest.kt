@@ -2,9 +2,11 @@ package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.math.abs
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -197,5 +199,130 @@ class MediaWriterTest {
         val audioDec = AudioDecoder.openOrNull(out)
         assertNotNull(audioDec, "the muxed file must carry a decodable audio stream")
         audioDec.use { assertNotNull(it.nextChunk(), "the audio stream must decode at least one chunk") }
+    }
+
+    /**
+     * Every encoder takes its own input sample format, and planar float is
+     * only the most common one. Written in as a constant it opened aac,
+     * libmp3lame and libvorbis and refused everything else with a bare
+     * EINVAL out of avcodec_open2 -- libopus and flac among them, both named
+     * in AudioEncodeConfig's own documentation as examples of what to pass.
+     *
+     * Each encoder is skipped when the loaded library lacks it, so this
+     * asserts over whatever the runner actually carries.
+     */
+    @Test
+    fun `every audio encoder the library carries opens and decodes back`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        val rate = 48000
+        val candidates = listOf("aac", "libopus", "flac", "alac", "libmp3lame", "libvorbis")
+        val ran = mutableListOf<String>()
+        for (codec in candidates) {
+            if (!Fixtures.libraryHasEncoder(codec)) continue
+            ran += codec
+            val out = dir.resolve("audio-$codec.mkv")
+            MediaWriter.open(
+                out,
+                VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")),
+                AudioEncodeConfig(codec, rate),
+            ).use { writer ->
+                val chunk = ByteArray(rate / 10 * 4)
+                repeat(10) { i ->
+                    writer.writeFrame(solidGreen(64, 64), i * 1_000_000_000L / 10)
+                    writer.writeAudio(chunk)
+                }
+                writer.finish()
+            }
+            val decoded = AudioDecoder.openOrNull(out)
+            assertNotNull(decoded, "$codec produced no decodable audio stream")
+            decoded.use { assertNotNull(it.nextChunk(), "$codec produced a stream with no samples") }
+        }
+        // A run that silently matched nothing would pass on any code at all.
+        assertTrue(ran.size >= 2, "too few encoders present to mean anything, ran $ran")
+    }
+
+    @Test
+    fun `a rate the encoder cannot take is refused by name, not by errno`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        Fixtures.assumeLibraryEncoder("libopus")
+        // libopus takes 48/24/16/12/8 kHz and nothing else; 44100 is the
+        // rate a caller is most likely to arrive with.
+        val out = dir.resolve("badrate.mkv")
+        val failure = assertFailsWith<LibavException> {
+            MediaWriter.open(
+                out,
+                VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")),
+                AudioEncodeConfig("libopus", 44_100),
+            )
+        }
+        assertTrue(
+            failure.message?.contains("44100") == true && failure.message?.contains("48000") == true,
+            "the refusal must name the rate asked for and the rates on offer, said: ${failure.message}",
+        )
+    }
+
+    /**
+     * swscale converts RGB to YUV with its BT.601 default, and nothing said
+     * so in the file. A stream that declares no matrix is read as BT.709 at
+     * HD geometry -- by this decoder and by every other -- so every HD clip
+     * this writer produced came back with shifted colour: measured 18 of 255
+     * per channel, against 1 at 64x64 where the two conventions agree, which
+     * is why only small fixtures ever looked right.
+     */
+    @Test
+    fun `a colour survives the round trip at any geometry`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        for ((w, h) in listOf(64 to 64, 1280 to 720)) {
+            val r = 220
+            val g = 30
+            val b = 40
+            val out = dir.resolve("colour-${w}x$h.mkv")
+            MediaWriter.open(
+                out,
+                // crf 0: what comes back is the colour conversion's doing and
+                // not the encoder's.
+                VideoEncodeConfig("libx264", w, h, 10, options = mapOf("preset" to "ultrafast", "crf" to "0")),
+            ).use { writer ->
+                val frame = ByteArray(w * h * 4).also {
+                    for (i in 0 until w * h) {
+                        it[i * 4] = r.toByte()
+                        it[i * 4 + 1] = g.toByte()
+                        it[i * 4 + 2] = b.toByte()
+                        it[i * 4 + 3] = -1
+                    }
+                }
+                repeat(4) { i -> writer.writeFrame(frame, i * 100_000_000L) }
+                writer.finish()
+            }
+            VideoDecoder.open(out).use { d ->
+                val f = assertNotNull(d.nextFrame(), "${w}x$h decoded no frame")
+                val mid = ((f.height / 2) * f.width + f.width / 2) * 4
+                val got = Triple(
+                    f.rgba[mid].toInt() and 0xFF,
+                    f.rgba[mid + 1].toInt() and 0xFF,
+                    f.rgba[mid + 2].toInt() and 0xFF,
+                )
+                val err = maxOf(abs(got.first - r), maxOf(abs(got.second - g), abs(got.third - b)))
+                assertTrue(err <= 4, "${w}x$h came back as $got instead of ($r, $g, $b), off by $err")
+            }
+            // The round trip above holds even untagged, because this decoder
+            // guesses the same matrix from the geometry that the conversion
+            // used. Everything else reading the file has to be told.
+            val declared = probeStreamField(out, "color_space")
+            val expected = if (w >= 1280) "bt709" else "smpte170m"
+            assertEquals(expected, declared, "${w}x$h declares the wrong matrix")
+            assertEquals("tv", probeStreamField(out, "color_range"), "${w}x$h declares the wrong range")
+        }
+    }
+
+    /** One stream field as ffprobe reads it back out of the written file. */
+    private fun probeStreamField(file: Path, field: String): String {
+        val proc = ProcessBuilder(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=$field", "-of", "default=nw=1:nk=1", file.toString(),
+        ).redirectErrorStream(true).start()
+        val text = proc.inputStream.readAllBytes().decodeToString().trim()
+        proc.waitFor()
+        return text
     }
 }

@@ -4,6 +4,7 @@ import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.swsCoefficientsFor
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout.ADDRESS
@@ -259,6 +260,14 @@ class MediaWriter private constructor(
                     width, height, dstFormat, LibavAbi.SWS_BILINEAR,
                 )
                 if (swsCtx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
+                // The other half of the tag written on the encoder: the
+                // conversion has to USE the matrix the file will claim.
+                // RGBA is full range in, limited range out.
+                val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, width, height))
+                Libav.checkAv(
+                    Libav.swsSetColorspaceDetails(swsCtx, coefficients, 1, coefficients, 0, 0, SWS_UNIT, SWS_UNIT),
+                    "sws_setColorspaceDetails(encode)",
+                )
                 // Padded: swscale reads whole SIMD blocks, so it can read past
                 // the last row for a width that is not block-aligned; the slack
                 // keeps that read inside the allocation.
@@ -373,6 +382,22 @@ class MediaWriter private constructor(
         // SIMD blocks, so it can read one block past a non-block-aligned width.
         private const val SWS_READ_PADDING = 128L
 
+        /** 1.0 in swscale's 16.16 fixed point (brightness/contrast/saturation). */
+        private const val SWS_UNIT = 1 shl 16
+
+        /**
+         * The colour tag for footage of this geometry, on the same rule the
+         * decode side falls back to when a stream declares nothing -- so a
+         * player that reads the tag and one that guesses from the size reach
+         * the same answer.
+         */
+        private fun colourTag(width: Int, height: Int): String =
+            if (swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, width, height) == LibavAbi.SWS_CS_ITU709) {
+                "bt709"
+            } else {
+                "smpte170m"
+            }
+
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         private const val BYTES_PER_AUDIO_FRAME = 4
         private const val OUT_CHANNELS = 2
@@ -462,6 +487,28 @@ class MediaWriter private constructor(
                 vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE, video.fps)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE + 4, 1)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.GOP_SIZE, video.fps * 2)
+                // Say which matrix the pixels were converted with. Nothing
+                // did, and swscale converts RGB to YUV with its BT.601
+                // default -- so every HD file this writer produced came back
+                // wrong, because a stream that declares nothing is read as
+                // BT.709 at HD geometry by this decoder and by every other.
+                // Measured on a 1280x720 solid colour: 18 of 255 off per
+                // channel, against 1 at 64x64 where the two conventions
+                // happen to agree. Set through the option names rather than
+                // struct fields: these are public AVOptions, and an offset
+                // would be one more layout assumption. Before applyOptions,
+                // so a caller can still say otherwise.
+                val matrix = colourTag(video.width, video.height)
+                for ((key, value) in listOf(
+                    "colorspace" to matrix, "color_primaries" to matrix, "color_trc" to matrix,
+                    // swscale writes limited range below, so declare limited.
+                    "color_range" to "tv",
+                )) {
+                    Libav.checkAv(
+                        Libav.avOptSet(vCtx, arena.allocateFrom(key), arena.allocateFrom(value), 0),
+                        "av_opt_set($key=$value)",
+                    )
+                }
                 if (video.bitRate > 0) vc.set(JAVA_LONG, LibavAbi.CodecContext.BIT_RATE, video.bitRate)
                 if (globalHeader) vc.set(JAVA_INT, LibavAbi.CodecContext.FLAGS, vc.get(JAVA_INT, LibavAbi.CodecContext.FLAGS) or LibavAbi.AV_CODEC_FLAG_GLOBAL_HEADER)
                 applyOptions(arena, vCtx, video.options)
@@ -478,8 +525,25 @@ class MediaWriter private constructor(
                     aCtx = Libav.avcodecAllocContext3(aEncoder)
                     if (aCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3(audio) returned NULL")
                     val ac = aCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+                    // Every encoder takes its own input format, and planar
+                    // float is only the most common one -- libopus takes s16
+                    // or interleaved float, flac s16 or s32, alac the planar
+                    // integers. Written in as a constant, avcodec_open2
+                    // refused all three with a bare EINVAL, two of them named
+                    // in this class's own documentation as examples.
+                    val rates = supportedInts(arena, aEncoder, LibavAbi.AV_CODEC_CONFIG_SAMPLE_RATE)
+                    if (rates != null && audio.sampleRate !in rates) {
+                        throw LibavException(
+                            "'${audio.codecName}' does not encode at ${audio.sampleRate} Hz " +
+                                "(it takes ${rates.joinToString()})",
+                        )
+                    }
+                    val sampleFmt = pickSampleFormat(
+                        audio.codecName,
+                        supportedInts(arena, aEncoder, LibavAbi.AV_CODEC_CONFIG_SAMPLE_FORMAT),
+                    )
                     ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_RATE, audio.sampleRate)
-                    ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_FMT, LibavAbi.AV_SAMPLE_FMT_FLTP)
+                    ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_FMT, sampleFmt)
                     Libav.avChannelLayoutDefault(ac.asSlice(LibavAbi.CodecContext.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), OUT_CHANNELS)
                     // Pin the codec time_base to 1/sample_rate explicitly: the
                     // audio frame's pts is its running sample count and the
@@ -501,7 +565,7 @@ class MediaWriter private constructor(
                     val swrOut = arena.allocate(ADDRESS)
                     Libav.checkAv(
                         Libav.swrAllocSetOpts2(
-                            swrOut, outLayout, LibavAbi.AV_SAMPLE_FMT_FLTP, audio.sampleRate,
+                            swrOut, outLayout, sampleFmt, audio.sampleRate,
                             inLayout, LibavAbi.AV_SAMPLE_FMT_S16, audio.sampleRate,
                         ),
                         "swr_alloc_set_opts2(encode)",
@@ -511,7 +575,7 @@ class MediaWriter private constructor(
 
                     aFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                     if (aFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(audio) returned NULL")
-                    aFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, LibavAbi.AV_SAMPLE_FMT_FLTP)
+                    aFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, sampleFmt)
                     aFrame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, aFrameSize)
                     aFrame.set(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE, audio.sampleRate)
                     Libav.avChannelLayoutDefault(aFrame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), OUT_CHANNELS)
@@ -581,6 +645,47 @@ class MediaWriter private constructor(
                 throw t
             }
         }
+
+        /**
+         * The int values [codec] advertises for [config], or null when it
+         * accepts anything of that kind (which is what a NULL list means).
+         */
+        private fun supportedInts(arena: Arena, codec: MemorySegment, config: Int): IntArray? {
+            val listOut = arena.allocate(ADDRESS)
+            val countOut = arena.allocate(JAVA_INT)
+            Libav.checkAv(
+                Libav.avcodecGetSupportedConfig(MemorySegment.NULL, codec, config, listOut, countOut),
+                "avcodec_get_supported_config",
+            )
+            val list = listOut.get(ADDRESS, 0)
+            if (list == MemorySegment.NULL) return null
+            val count = countOut.get(JAVA_INT, 0)
+            if (count <= 0) return IntArray(0)
+            val sized = list.reinterpret(count.toLong() * JAVA_INT.byteSize())
+            return IntArray(count) { sized.getAtIndex(JAVA_INT, it.toLong()) }
+        }
+
+        /**
+         * The sample format to hand the encoder. Planar float leads because
+         * it is what the encoders that already worked here take, so nothing
+         * that plays today changes format; the rest of the order runs from
+         * the shapes an S16 input reaches without requantizing outward.
+         */
+        private fun pickSampleFormat(codecName: String, supported: IntArray?): Int {
+            if (supported == null) return LibavAbi.AV_SAMPLE_FMT_FLTP
+            for (candidate in SAMPLE_FORMAT_PREFERENCE) if (candidate in supported) return candidate
+            return supported.firstOrNull()
+                ?: throw LibavException("'$codecName' advertises no input sample format")
+        }
+
+        private val SAMPLE_FORMAT_PREFERENCE = intArrayOf(
+            LibavAbi.AV_SAMPLE_FMT_FLTP,
+            LibavAbi.AV_SAMPLE_FMT_FLT,
+            LibavAbi.AV_SAMPLE_FMT_S16,
+            LibavAbi.AV_SAMPLE_FMT_S16P,
+            LibavAbi.AV_SAMPLE_FMT_S32,
+            LibavAbi.AV_SAMPLE_FMT_S32P,
+        )
 
         private fun newStream(fmtCtx: MemorySegment, codecCtx: MemorySegment, tbDen: Int): MemorySegment {
             val stream = Libav.avformatNewStream(fmtCtx)

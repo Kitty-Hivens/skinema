@@ -281,9 +281,20 @@ object LibavAbi {
     const val AV_CODEC_ID_WEBVTT = 94226
     const val AV_CODEC_ID_ASS = 94230
     const val AV_SAMPLE_FMT_S16 = 1
+    const val AV_SAMPLE_FMT_S32 = 2
+    const val AV_SAMPLE_FMT_FLT = 3
+    const val AV_SAMPLE_FMT_S16P = 6
+    const val AV_SAMPLE_FMT_S32P = 7
 
     /** Planar 32-bit float -- the native AAC encoder's input format. */
     const val AV_SAMPLE_FMT_FLTP = 8
+
+    /**
+     * enum AVCodecConfig, for avcodec_get_supported_config. Each list is
+     * NULL when the codec accepts anything of that kind.
+     */
+    const val AV_CODEC_CONFIG_SAMPLE_RATE = 2
+    const val AV_CODEC_CONFIG_SAMPLE_FORMAT = 3
     const val AV_PIX_FMT_RGBA = 26
 
     /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */
