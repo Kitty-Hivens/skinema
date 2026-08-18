@@ -130,6 +130,41 @@ class VideoDecoderHwTest {
     }
 
     @Test
+    fun `the downloaded picture is the software picture`() {
+        assumeHwAcceptance()
+        // A whole frame of colour bars, not one pixel of a flat colour: the
+        // GPU hands back NV12 and the software decoder YUV420P, so the two
+        // reach RGBA through different swscale conversions, and a chroma or
+        // matrix mistake in that pair shows up in the picture rather than in
+        // any error. Bars keep the two apart cleanly -- large saturated areas
+        // a matrix error moves wholesale, and only seven chroma edges, which
+        // is where the paths legitimately differ. Measured 0.75 of 255 mean
+        // here against the ~18 a wrong matrix costs (the encode side measured
+        // that one), so the bar sits between them rather than beside either.
+        val video = Fixtures.generate(
+            dir.resolve("pattern.mp4"),
+            "-f", "lavfi", "-i", "smptebars=size=128x128:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        val software = VideoDecoder.open(video, HwAccel.OFF).use { it.nextFrame()!!.rgba.copyOf() }
+        val hardware = VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            val rgba = d.nextFrame()!!.rgba.copyOf()
+            assertDecodedOnDevice(d, "picture comparison")
+            rgba
+        }
+        assertEquals(software.size, hardware.size, "both paths must produce the same RGBA buffer")
+        var sum = 0L
+        var worst = 0
+        for (i in software.indices) {
+            val diff = kotlin.math.abs((software[i].toInt() and 0xFF) - (hardware[i].toInt() and 0xFF))
+            sum += diff
+            if (diff > worst) worst = diff
+        }
+        val mean = sum.toDouble() / software.size
+        assertTrue(mean < 4.0, "mean channel difference must be small, got $mean (worst $worst)")
+    }
+
+    @Test
     fun `REQUIRE either decodes on the GPU or fails closed`() {
         assumeHwAcceptance()
         val video = testsrc("require.mp4")
