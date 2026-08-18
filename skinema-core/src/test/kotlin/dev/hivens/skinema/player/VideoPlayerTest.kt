@@ -1067,11 +1067,17 @@ class VideoPlayerTest {
             )
             val anchor = player.positionNanos()
             // A quarter second of device frames covers half a second of
-            // media at tempo 2.
+            // media at tempo 2 -- as a band, not a point. This device steps
+            // once and then stands still, and the clock fills the gap after
+            // a step with wall time up to its ceiling; which thread reads
+            // first after the step decides how much of that is in this
+            // reading. A rate that never reached the pipeline lands 250 ms
+            // out, nowhere near the band.
             sink.positionFrames.addAndGet(11_025)
+            val due = anchor + 500_000_000L
             assertTrue(
-                awaitTrue { player.positionNanos() == anchor + 500_000_000L },
-                "the mastered clock must run at the tempo, got ${player.positionNanos()}",
+                awaitTrue { player.positionNanos() in due..(due + AudioClock.MAX_INTERPOLATION_NANOS) },
+                "the mastered clock must run at the tempo, got ${player.positionNanos()} against $due",
             )
         }
     }

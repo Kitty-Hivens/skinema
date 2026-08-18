@@ -1,5 +1,6 @@
 package dev.hivens.skinema.audio
 
+import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
@@ -578,9 +579,13 @@ class AudioPipelineTest {
                 "the seek must anchor, got ${clock.mediaNanos()}",
             )
             val anchor = clock.mediaNanos()
+            // A band, not a point, for the reason the player-level rate test
+            // gives: this device steps once and stops, and the clock fills
+            // the gap after a step with wall time up to its ceiling.
             sink.positionFrames.addAndGet(4_410)
+            val due = anchor + 200_000_000L
             assertTrue(
-                awaitTrue { clock.mediaNanos() == anchor + 200_000_000L },
+                awaitTrue { clock.mediaNanos() in due..(due + AudioClock.MAX_INTERPOLATION_NANOS) },
                 "100ms of device frames at tempo 2 must cover 200ms of media, got ${clock.mediaNanos()}",
             )
         } finally {
