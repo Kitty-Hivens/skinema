@@ -4,6 +4,7 @@ import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
+import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -456,6 +457,188 @@ class SubtitlePipelineTest {
             assertEquals(0, pipeline.pendingSeeks.get())
         } finally {
             pipeline.close()
+        }
+    }
+
+
+    /**
+     * A seek reaches this side BEFORE the clock does: the video landing is
+     * a keyframe jump plus a decode-forward run, seconds on sparse
+     * keyframes, and only then is the clock re-anchored. Gated on the clock
+     * alone, a backward seek read forward to the OLD position plus a whole
+     * horizon -- 85 seconds of packets for a jump from 60s back to 5s, fed
+     * through a decoder and a libass track the reposition had just flushed.
+     */
+    @Test
+    fun `a backward seek reads ahead of its target, not of the clock it left`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val path = fixture("stale-horizon.mkv", writeSrt("stale-horizon.srt"), "srt", 120)
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            frames.set(framesFor(60_000))
+            clock.seek(60_000_000_000L)
+            assertTrue(
+                awaitTrue { pipeline.lastDemuxedPtsNanos > 80_000_000_000L },
+                "the refill must first run ahead of the clock, at ${pipeline.lastDemuxedPtsNanos / 1_000_000}ms",
+            )
+
+            // The seek as the player issues it: announced here, with the
+            // clock still standing where the landing has not moved it from.
+            pipeline.seek(5_000_000_000L)
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            Thread.sleep(500)
+            val high = pipeline.lastDemuxedPtsNanos
+            assertTrue(
+                high < 45_000_000_000L,
+                "the target plus one horizon is 35s; read to ${high / 1_000_000_000}s",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * The bitmap schedule holds decoded pixels -- they convert once, at
+     * ingest -- so what it keeps behind the playhead is paid for in memory
+     * for nothing. It used to keep a minute of played-out windows, which on
+     * ordinary dialogue density is dozens of them; at 1080p rect sizes that
+     * is tens of megabytes of subtitles nobody can ever see again.
+     */
+    @Test
+    fun `the bitmap schedule does not keep windows the clock has passed`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeBitmapSubtitles()
+        val sup = dir.resolve("dense.sup")
+        // A window every two seconds, visible for one, over two minutes.
+        Files.write(sup, SupBuilder.buildMany(count = 60, periodMs = 2_000, visibleMs = 1_000))
+        val path = Fixtures.generate(
+            dir.resolve("dense.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", sup.toString(),
+            "-map", "0:v", "-map", "1", "-t", "120",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
+            "-c:s", "copy",
+        )
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        try {
+            var peak = 0L
+            for (secs in 1..90) {
+                frames.set(framesFor(secs * 1_000L))
+                Thread.sleep(15)
+                peak = maxOf(peak, pipeline.scheduledBitmapBytes)
+            }
+            // 32x16 RGBA per window. What the read-ahead horizon holds is
+            // deliberate -- 30s of it, so about fifteen windows here; the
+            // bound is what separates that from a schedule that also keeps
+            // its past, which measured at forty-six.
+            val windows = peak / (32 * 16 * 4)
+            assertTrue(windows > 0, "the schedule must actually hold something to bound")
+            assertTrue(
+                windows < 28,
+                "the schedule peaked at $windows windows -- it is keeping what the clock has passed",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * A pipeline that failed closed keeps its reference in the player, and
+     * the player announces every seek to whatever it is holding. Each one
+     * queued a command on a thread that had already exited and raised a
+     * counter nobody would ever lower, so a scrubbed timeline leaked one
+     * per press for as long as the file was open.
+     */
+    @Test
+    fun `a dead pipeline accepts no more work`() {
+        Fixtures.assumeDecodeEnvironment()
+        val path = fixture("deaf.mkv", writeSrt("deaf.srt"), "srt", 5)
+        clock.start(0)
+        val bogus = SubtitleTrack(
+            id = 0, streamIndex = 0, language = null, title = null,
+            codecName = "h264", isText = false, isDefault = false, isForced = false,
+        )
+        val pipeline = SubtitlePipeline(path, clock, bogus, null)
+        try {
+            assertTrue(awaitTrue { pipeline.isDead }, "the pipeline must fail closed")
+            // Past the flag, so this is the steady state and not the race.
+            Thread.sleep(50)
+            repeat(500) { pipeline.seek(it * 1_000_000L) }
+            pipeline.setCanvasSize(100, 100)
+            Thread.sleep(50)
+            assertEquals(0, pipeline.pendingSeeks.get(), "a dead pipeline took the seeks anyway")
+        } finally {
+            pipeline.close()
+        }
+    }
+}
+
+/**
+ * The track switch, which is a player gesture rather than a pipeline one:
+ * selecting another track spawns a fresh pipeline and lets the old one die
+ * asynchronously. Its own mailbox dies with it, so what the consumer holds
+ * is the OLD track's overlay until the newcomer publishes something -- and
+ * a newcomer with nothing at the playhead has nothing to publish, possibly
+ * for minutes. Measured against a track whose next cue was fifteen seconds
+ * out, the previous track's line simply never went away.
+ */
+class SubtitleTrackSwitchTest {
+
+    private val dir: java.nio.file.Path = Files.createTempDirectory("skinema-subs-switch")
+
+    @AfterTest
+    fun cleanup() {
+        dir.toFile().deleteRecursively()
+    }
+
+    private fun awaitTrue(deadlineMs: Long = 10_000, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + deadlineMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            Thread.sleep(5)
+        }
+        return condition()
+    }
+
+    @Test
+    fun `switching to a track with nothing at the playhead clears the old cue`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val a = dir.resolve("alpha.srt")
+        Files.writeString(a, "1\n00:00:01,000 --> 00:00:06,000\nAlpha line\n")
+        val b = dir.resolve("bravo.srt")
+        Files.writeString(b, "1\n00:00:20,000 --> 00:00:25,000\nBravo line\n")
+        val path = Fixtures.generate(
+            dir.resolve("two-tracks.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", a.toString(), "-i", b.toString(),
+            "-map", "0:v", "-map", "1", "-map", "2", "-t", "30",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
+            "-c:s", "srt",
+        )
+        VideoPlayer(path, loop = false, audio = false).use { player ->
+            assertTrue(awaitTrue { player.subtitleTracks.size == 2 }, "both tracks must surface")
+            val ids = player.subtitleTracks.map { it.id }
+            player.selectSubtitleTrack(ids[0])
+            assertTrue(
+                awaitTrue(8_000) {
+                    player.acquireFrame()
+                    player.acquireSubtitles()?.patches?.isNotEmpty() == true
+                },
+                "the first track's cue must render before the switch means anything",
+            )
+
+            player.selectSubtitleTrack(ids[1])
+            assertTrue(
+                awaitTrue(3_000) {
+                    player.acquireFrame()
+                    player.acquireSubtitles()?.patches?.isEmpty() == true
+                },
+                "the new track has nothing here, so the old track's line must go",
+            )
         }
     }
 }

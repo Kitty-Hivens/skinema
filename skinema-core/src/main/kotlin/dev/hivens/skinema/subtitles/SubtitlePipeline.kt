@@ -111,10 +111,23 @@ internal class SubtitlePipeline(
         val startNanos: Long,
         var endNanos: Long,
         val patches: List<SubtitlePatch>,
-    )
+    ) {
+        /** Decoded pixels this window is holding; the schedule's weight. */
+        val byteCount: Long = patches.sumOf { it.rgba.size.toLong() }
+    }
 
     private val bitmapEvents = ArrayDeque<BitmapEvent>()
     private var shownBitmapStart = Long.MIN_VALUE
+
+    /**
+     * Decoded bitmap the display schedule is holding, in bytes -- the
+     * retention discipline's observable, the way [lastDemuxedPtsNanos] is
+     * the horizon's. Pixels convert once at decode time, so a schedule
+     * that keeps its past is the largest allocation this pipeline makes.
+     */
+    @Volatile
+    internal var scheduledBitmapBytes = 0L
+        private set
 
     // Converted text codecs re-number ReadOrder from a flushable decoder
     // counter; only native ASS/SSA packets carry stable ones.
@@ -129,12 +142,23 @@ internal class SubtitlePipeline(
     fun acquire(): SubtitleOverlay? = buffer.acquire()
 
     fun seek(ptsNanos: Long) {
+        // Nobody is left to read it. The player keeps this reference after
+        // the thread fails closed -- a track that would not open, a corrupt
+        // stream -- and goes on announcing every seek to it, so a scrubbed
+        // timeline grew a command per press, forever, and [pendingSeeks]
+        // with it. A dead pipeline is deselected as far as the player's own
+        // [dev.hivens.skinema.player.VideoPlayer.activeSubtitleTrack] is
+        // concerned; it should be silent here too.
+        if (isDead) return
         pendingSeeks.incrementAndGet()
         commands.put(Command.Seek(ptsNanos))
     }
 
     /** The subtitle render size; the surface posts its displayed rect. */
-    fun setCanvasSize(width: Int, height: Int) = commands.put(Command.SetCanvasSize(width, height))
+    fun setCanvasSize(width: Int, height: Int) {
+        if (isDead) return
+        commands.put(Command.SetCanvasSize(width, height))
+    }
 
     /** Mid-play teardown: no join -- a blocked read must not hitch a frame. */
     fun closeAsync() {
@@ -152,13 +176,26 @@ internal class SubtitlePipeline(
     private fun run() {
         arena = Arena.ofConfined()
         try {
+            // Clear first, before anything slow. A track switch replaces the
+            // pipeline and the consumer keeps drawing the overlay it holds
+            // until a newer one arrives -- so until this one had something of
+            // its own to show, the PREVIOUS track's cue stayed on screen. If
+            // the new track has nothing at the playhead it has nothing to
+            // show for minutes, and measured against a track whose next cue
+            // was fifteen seconds out, the old line simply never went away.
+            // The open below is the slow part (demux probe, libass, fonts),
+            // which is why this comes before it and not after.
+            runCatching { publishPatches(emptyList()) }
             open()
             pump()
         } catch (t: Throwable) {
             Debug.trace("subtitle pipeline failed", t)
         } finally {
-            pendingSeeks.set(0)
+            // Dead first, then zeroed: a seek racing this way in sees the
+            // flag and adds nothing, where the other order let it raise a
+            // counter that had already been settled.
             isDead = true
+            pendingSeeks.set(0)
             // The mailbox is single-producer: the clear that hides a dead
             // or deselected track must come from this thread.
             runCatching { publishPatches(emptyList()) }.onFailure { Debug.trace("subtitle clear on teardown", it) }
@@ -304,7 +341,8 @@ internal class SubtitlePipeline(
      */
     private fun refill(packet: MemorySegment, subtitle: MemorySegment, got: MemorySegment, nowNanos: Long) {
         if (eofReached) return
-        while (lastDemuxedPtsNanos < nowNanos + HORIZON_NANOS) {
+        val gate = demuxNowNanos(nowNanos)
+        while (lastDemuxedPtsNanos < gate + HORIZON_NANOS) {
             if (Libav.avReadFrame(fmtCtx, packet) < 0) {
                 eofReached = true
                 return
@@ -326,6 +364,43 @@ internal class SubtitlePipeline(
             // or close must not wait out the whole replay.
             if (commands.peek() != null) return
         }
+    }
+
+    /**
+     * Where the demuxer should read ahead of: the reposition target while
+     * one is outstanding, the clock otherwise.
+     *
+     * The player announces a seek to this side BEFORE the clock reaches it
+     * -- the landing decodes forward to the target first, which is seconds
+     * on sparse keyframes. Gated on the clock alone, a backward seek then
+     * read forward to the OLD position plus a horizon: measured at 85
+     * seconds of packets for a jump from 60s back to 5s, all of it thrown
+     * at a libass track that was flushed on the way in.
+     */
+    private var repositionTargetNanos = Long.MIN_VALUE
+    private var repositionAtWall = 0L
+
+    private fun demuxNowNanos(clockNanos: Long): Long {
+        val target = repositionTargetNanos
+        if (target == Long.MIN_VALUE) return clockNanos
+        // The landing anchors within a frame of the target (a sample, with
+        // sound), so this is arrival.
+        if (clockNanos >= target - REGRESSION_NANOS && clockNanos <= target + REGRESSION_NANOS) {
+            repositionTargetNanos = Long.MIN_VALUE
+            return clockNanos
+        }
+        // Not every seek reaches its target: one past the last frame ends
+        // the file instead, and the clock is then placed on the duration.
+        // Bounded by the wall rather than by where the clock went, because
+        // every measure of "the clock is not heading here" misfires on a
+        // clock that is simply still running -- an owned one keeps ticking
+        // through the whole landing. Waiting costs only read-ahead, and
+        // giving up costs no more than gating on the clock always did.
+        if (System.nanoTime() - repositionAtWall > LANDING_PATIENCE_NANOS) {
+            repositionTargetNanos = Long.MIN_VALUE
+            return clockNanos
+        }
+        return target
     }
 
     private val timeBases = HashMap<Int, Pair<Int, Int>>()
@@ -397,7 +472,7 @@ internal class SubtitlePipeline(
 
         val numRects = subtitle.get(JAVA_INT, LibavAbi.Subtitle.NUM_RECTS)
         if (numRects == 0) {
-            bitmapEvents += BitmapEvent(startNanos, Long.MAX_VALUE, emptyList())
+            add(BitmapEvent(startNanos, Long.MAX_VALUE, emptyList()))
             return
         }
         val rects = subtitle.get(ADDRESS, LibavAbi.Subtitle.RECTS)
@@ -430,7 +505,12 @@ internal class SubtitlePipeline(
                 rgba = paletteToRgba(indices, linesize, width, height, palette)
             }
         }
-        bitmapEvents += BitmapEvent(startNanos, endNanos, patches)
+        add(BitmapEvent(startNanos, endNanos, patches))
+    }
+
+    private fun add(event: BitmapEvent) {
+        bitmapEvents += event
+        scheduledBitmapBytes += event.byteCount
     }
 
     /** Publishes the schedule's state whenever the active window changes. */
@@ -438,7 +518,7 @@ internal class SubtitlePipeline(
         while (bitmapEvents.size > 1) {
             val first = bitmapEvents.first()
             if (first.endNanos == Long.MAX_VALUE || first.endNanos >= nowNanos - EVICT_NANOS) break
-            bitmapEvents.removeFirst()
+            scheduledBitmapBytes -= bitmapEvents.removeFirst().byteCount
         }
         val active = bitmapEvents.lastOrNull { it.startNanos <= nowNanos && nowNanos < it.endNanos }
         val key = active?.startNanos ?: Long.MIN_VALUE
@@ -530,9 +610,12 @@ internal class SubtitlePipeline(
         // sentinel forces the next tick to re-publish whatever state the
         // landing derives, a clear included.
         bitmapEvents.clear()
+        scheduledBitmapBytes = 0L
         shownBitmapStart = Long.MAX_VALUE
         eofReached = false
         lastDemuxedPtsNanos = Long.MIN_VALUE
+        repositionTargetNanos = targetNanos
+        repositionAtWall = System.nanoTime()
     }
 
     private fun publishPatches(patches: List<AssPatch>) {
@@ -583,6 +666,15 @@ internal class SubtitlePipeline(
         /** A backward clock jump past this without a seek is a loop wrap. */
         const val REGRESSION_NANOS = 1_000_000_000L
 
+        /**
+         * How long the demux gate trusts a reposition target the clock has
+         * not reached. An exact seek's landing is a keyframe jump plus a
+         * decode-forward run, which is seconds on sparse-keyframe content;
+         * past that the seek did not go where it said and the clock is the
+         * better guide.
+         */
+        const val LANDING_PATIENCE_NANOS = 10_000_000_000L
+
         /** Render-tick cadence: brisk while time moves, lazy when it stands. */
         const val TICK_MOVING_MS = 15L
         const val TICK_IDLE_MS = 100L
@@ -590,8 +682,18 @@ internal class SubtitlePipeline(
         /** Cue length when neither the packet nor the subtitle knows. */
         const val DEFAULT_DURATION_MS = 10_000L
 
-        /** Closed bitmap windows this far behind the clock leave the schedule. */
-        const val EVICT_NANOS = 60_000_000_000L
+        /**
+         * Closed bitmap windows this far behind the clock leave the schedule.
+         *
+         * Twice the largest backward move that does NOT rebuild the schedule,
+         * because that is the whole reason to keep a closed window at all: a
+         * jump past [REGRESSION_NANOS] repositions and re-feeds, and anything
+         * smaller has to find its window still here. It used to be a minute,
+         * which is a minute of decoded RGBA held for nothing -- the pixels
+         * convert once at ingest, so a schedule peaked at 46 windows on
+         * ordinary dialogue density, 40 MiB of them at 1080p rect sizes.
+         */
+        const val EVICT_NANOS = 2 * REGRESSION_NANOS
 
         /** Attachment mimetypes the wild uses for fonts. */
         val FONT_MIMETYPES = setOf(
