@@ -9,6 +9,7 @@ import java.nio.file.Path
 import kotlin.math.abs
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -126,12 +127,20 @@ class MediaWriterTest {
         // truncated, which is the only window where this can go wrong.
         val out = dir.resolve("prior.wav")
         Files.writeString(out, "something the caller already had")
-        val before = Files.size(out)
+        val before = Files.readAllBytes(out)
         val threw = runCatching {
             MediaWriter.open(out, VideoEncodeConfig("libx264", 64, 64, 10, options = mapOf("preset" to "ultrafast")))
         }.isFailure
         assertTrue(threw, "a container that cannot carry the stream must fail the open")
-        assertTrue(before > 0 && !Files.exists(out), "a failed open must not leave a truncated file")
+        // Gone, or exactly as the caller left it. Which of the two depends on
+        // how far the open got before it refused, and that depends on the
+        // build: a library without a wav muxer cannot infer one from the
+        // extension and never opens the IO that truncates, so the file is
+        // simply untouched. What must never happen is the middle -- the file
+        // truncated by the IO and then abandoned.
+        if (Files.exists(out)) {
+            assertContentEquals(before, Files.readAllBytes(out), "a failed open truncated the caller's file")
+        }
     }
 
     /** AutoCloseable's guarantee, and the natives are freed by then. */
