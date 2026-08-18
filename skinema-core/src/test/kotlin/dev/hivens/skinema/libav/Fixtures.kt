@@ -217,6 +217,15 @@ object Fixtures {
     /** Whether the loaded libav exposes decoder [name] (avcodec_find_decoder_by_name). */
     private fun libavHasDecoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindDecoderByName)
 
+    /**
+     * The same question for a sweep over many codecs. What the fixture CLI
+     * can ENCODE and what the loaded library can DECODE are different sets --
+     * the shipped bundles carry a deliberately narrow decoder list, and a
+     * sweep gated on the CLI alone asserts against codecs the bundle was
+     * built without.
+     */
+    fun libraryHasDecoder(name: String): Boolean = libavHasDecoder(name)
+
     private fun libavResolves(name: String, find: (MemorySegment) -> MemorySegment): Boolean = runCatching {
         Arena.ofConfined().use { a -> find(a.allocateFrom(name)) != MemorySegment.NULL }
     }.getOrDefault(false)
