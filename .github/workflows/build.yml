@@ -67,14 +67,15 @@ jobs:
           # that do not depend on what the CLI was compiled with. Nine more on
           # top of those for the audio suites, as everywhere else, and three
           # for encoders Homebrew's ffmpeg does not carry.
-          # hwaccel on this row alone, as a measurement rather than a claim:
-          # hosted macOS runners are Apple Silicon and every such machine has
-          # a VideoToolbox media engine, but whether the virtual machine hands
-          # it through is not documented anywhere and no amount of reading
-          # settles it. Running the suite answers it. A runner without a usable
-          # device is a legal outcome the tests already cover -- AUTO decodes
-          # the same grid in software and REQUIRE fails closed -- so this asks
-          # a question without asserting the answer.
+          # hwaccel on this row alone. Hosted macOS runners are Apple Silicon,
+          # and the run says what the documentation does not: a VideoToolbox
+          # device OPENS here (surface 157) and then every frame comes back in
+          # software. So the GPU is not passed to the guest, and this row is
+          # not GPU coverage -- but it is the only machine in the matrix that
+          # exercises a device open, the format negotiation and the fallback
+          # on a second backend, which is worth more than skipping the lot.
+          # SKINEMA_REQUIRE_HWACCEL is deliberately NOT set: that one says the
+          # machine decodes on the GPU, and this one does not.
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
