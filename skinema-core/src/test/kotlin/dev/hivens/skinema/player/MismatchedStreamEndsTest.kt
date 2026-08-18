@@ -178,13 +178,23 @@ class MismatchedStreamEndsTest {
                     awaitTrue(1_000) { player.positionNanos() >= 3_400_000_000L },
                     "the sound's own end must not rewind the lap, at ${ms(player.positionNanos())}ms",
                 )
-                var seen = -1L
+                // The high-water mark, not the last frame acquired: the mailbox
+                // keeps only the freshest, so a consumer that misses a tick
+                // as the lap wraps reads the NEXT lap's opening frame, and a
+                // last-value check can then never come true again. That is
+                // what this caught on a slow runner -- the tail HAD played,
+                // and the reading had already moved past it.
+                //
+                // The budget stays inside one lap on purpose. Given a whole
+                // one, a seek that wrongly restarted the lap would reach this
+                // mark too, just from the other end.
+                var reached = -1L
                 assertTrue(
-                    awaitTrue(1_500) {
-                        player.acquireFrame()?.let { seen = it.ptsNanos }
-                        seen >= 3_900_000_000L
+                    awaitTrue(2_500) {
+                        player.acquireFrame()?.let { if (it.ptsNanos > reached) reached = it.ptsNanos }
+                        reached >= 3_800_000_000L
                     },
-                    "the lap must play out its last half-second, reached ${ms(seen)}ms",
+                    "the lap must play out its last half-second, reached ${ms(reached)}ms",
                 )
             } finally {
                 sink.release()
