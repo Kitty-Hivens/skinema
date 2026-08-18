@@ -355,13 +355,19 @@ object Libav {
      * emit, terminated by AV_PIX_FMT_NONE; returning a hardware-surface
      * format keeps decoding on the GPU, and falling through to the last
      * (software) entry is the graceful no-device answer. skinema's first
-     * upcall carrying real logic -- it runs on the decode thread,
-     * synchronously inside avcodec, so there is no concurrency to guard.
+     * upcall carrying real logic, called synchronously inside avcodec.
+     *
+     * The surface to aim for is read off the context, NOT off the calling
+     * thread. A frame-threaded decoder negotiates on one of its own worker
+     * threads, not on the thread that opened the file, so a thread-scoped
+     * target is simply absent when this runs -- and absent means the
+     * software entry, which is how hardware decode came to be negotiated
+     * away on every open while the device sat there ready.
      */
     @JvmStatic
-    @Suppress("unused", "UNUSED_PARAMETER")
+    @Suppress("unused")
     private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int {
-        val target = negotiatedHwFormat.get()
+        val target = negotiatedHwFormat(ctx)
         val list = formats.reinterpret(Long.MAX_VALUE)
         var i = 0L
         var last = LibavAbi.AV_PIX_FMT_NONE
@@ -379,14 +385,17 @@ object Libav {
         }
     }
 
-    // The surface format setupHwAccel negotiated for the device it opened.
-    // ThreadLocal because the setup and this get_format upcall run on the same
-    // decode thread; AV_PIX_FMT_NONE (software, the default) leaves
-    // chooseHwFormat returning the software entry.
-    private val negotiatedHwFormat = ThreadLocal.withInitial { LibavAbi.AV_PIX_FMT_NONE }
-
-    /** Set by the video decoder before decode so [chooseHwFormat] targets the opened device's surface. */
-    fun setNegotiatedHwFormat(pixFmt: Int) = negotiatedHwFormat.set(pixFmt)
+    /**
+     * The surface format the decoder that owns [ctx] opened a device for,
+     * parked in AVCodecContext.opaque by setupHwAccel. A NULL slot is a
+     * software decoder and yields AV_PIX_FMT_NONE, which leaves
+     * [chooseHwFormat] returning the software entry.
+     */
+    private fun negotiatedHwFormat(ctx: MemorySegment): Int {
+        val slot = ctx.reinterpret(LibavAbi.CodecContext.SIZEOF).get(ADDRESS, LibavAbi.CodecContext.OPAQUE)
+        if (slot == MemorySegment.NULL) return LibavAbi.AV_PIX_FMT_NONE
+        return slot.reinterpret(JAVA_INT.byteSize()).get(JAVA_INT, 0)
+    }
 
     private val getFormatStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().findStatic(

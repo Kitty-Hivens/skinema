@@ -735,7 +735,7 @@ README once the library is usable.
   beyond it). Sequence: M11 GPU decode, M12 software encode + mux, M13 GPU
   encode, M14 transcode/record; CPU decode is the existing engine.
 
-- **M11 -- hardware decode (code DONE; bundle CI-pending, 2026-06-22).**
+- **M11 -- hardware decode (DONE, 2026-06-22; negotiation corrected 2026-08-18).**
   VideoDecoder grew an opt-in GPU path behind `HwAccel` (OFF default / AUTO /
   REQUIRE), threaded through FrameSources and a VideoPlayer `hardware`
   parameter; `VideoPlayer.hardwareActive` (and `FrameSource.hardwareActive`)
@@ -752,17 +752,30 @@ README once the library is usable.
   (no device, unsupported codec, a per-frame software frame); REQUIRE fails
   closed. The convert=false drop-run reads pts/geometry off the raw frame
   with NO transfer, so seeks stay cheap on the hw path too. ABI:
-  AVCodecContext.get_format/hw_device_ctx and AVCodecHWConfig, from a re-run
-  of tools/layout-oracle.c. Validated end to end on real VAAPI (a dev box):
-  AUTO and REQUIRE engage, decode every frame, and stay pixel-faithful to
-  software -- the acceptance suite (VideoDecoderHwTest) is gated behind
-  SKINEMA_TEST_HWACCEL=1 so a GPU-less CI, and macOS's always-present
-  VideoToolbox, are not silently exercised on a path this change cannot see.
-  PENDING: the trimmed natives must enable the platform hwaccels
-  (build-natives.sh carries the flags, UNVALIDATED until a natives.yml run;
-  VAAPI adds a libva system dependency on Linux, like fontconfig) before a
-  SHIPPED bundle decodes on the GPU -- system-FFmpeg development already
-  does. NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are deferred.
+  AVCodecContext.get_format/hw_device_ctx/opaque and AVCodecHWConfig, from a
+  re-run of tools/layout-oracle.c. The acceptance suite (VideoDecoderHwTest)
+  is gated behind SKINEMA_TEST_HWACCEL=1 so a GPU-less CI, and macOS's
+  always-present VideoToolbox, are not silently exercised on a path this
+  change cannot see.
+
+  Corrected 2026-08-18, and the correction is the lesson: the surface to
+  negotiate for was scoped to the thread that opened the file, and a
+  frame-threaded decoder negotiates on a worker of its own, where a
+  thread-scoped value is absent -- so get_format fell through to the software
+  entry and the GPU was never used, on any platform, from the day this landed
+  beside `threads=auto`. Nothing caught it because every signal in reach --
+  `hardwareActive`, the pts grid, the pixels -- reports the REQUEST or a
+  result software decode produces identically; only the decoded frame's own
+  pixel format distinguishes the two, and nothing looked at it. The target now
+  rides AVCodecContext.opaque, which libav leaves alone and frame threading
+  copies into each worker context, and the suite asserts the frame's format
+  against the surface a device was opened for. Verified on a shipped bundle
+  (skinema-natives 9.0.1-1, full tier, linux-x64) against real VAAPI: frames
+  arrive as AV_PIX_FMT_VAAPI and download through av_hwframe_transfer_data,
+  which closes this milestone's bundle-pending note -- the trimmed natives do
+  carry the platform hwaccels (VAAPI adds a libva system dependency on Linux,
+  like fontconfig). NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are
+  deferred.
 
 - **M12 -- software encode + mux (video + audio DONE; bundle pending, 2026-06-22).**
   The push-side inverse of the decode pipeline. `MediaWriter`
