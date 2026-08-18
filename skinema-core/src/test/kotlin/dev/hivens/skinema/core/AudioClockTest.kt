@@ -310,6 +310,44 @@ class AudioClockTest {
         )
     }
 
+    /**
+     * Readings are sampled outside the lock by five threads, and taking the
+     * lock does not preserve the order they sampled in -- so an older reading
+     * can land after a newer one. It arrives carrying a FRESH wall time,
+     * because that is read after the sample returns, which is why nothing
+     * about the clock distinguishes it and only the count can.
+     *
+     * Accepted, it walks the cadence anchor backward, and the next honest
+     * reading measures its step from there: several periods where there was
+     * one. That step is the bound on how long the gap fill may run with the
+     * device saying nothing, so a corrupted one lets the wall clock invent
+     * several periods of media time on a device that has stalled.
+     */
+    @Test
+    fun `a reading that lands after a newer one does not widen the cadence`() {
+        clock.start(0)
+        // Three refreshes, 480 frames apart: one period is 10 ms here.
+        frames = 480
+        clock.mediaNanos()
+        frames = 960
+        clock.mediaNanos()
+        frames = 1_440
+        clock.mediaNanos()
+
+        // The straggler: sampled before the 1440 reading, landing after it.
+        frames = 960
+        clock.mediaNanos()
+
+        frames = 1_920
+        val atRefresh = clock.mediaNanos()
+        Thread.sleep(200)
+        assertEquals(
+            atRefresh + 10_000_000L,
+            clock.mediaNanos(),
+            "the straggler widened the step, so the fill ran for more than the one period it may",
+        )
+    }
+
     @Test
     fun `detachToWallTime keeps time moving without the device`() {
         clock.start(0)
