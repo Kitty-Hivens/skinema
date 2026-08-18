@@ -111,7 +111,13 @@ class AudioDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(audio flush)")
                 return
             }
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
+            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
+                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
+            ) {
+                // Empty packets are skipped, not sent: send_packet reads a
+                // NULL one as the flush signal and refuses a zero-length one
+                // carrying a data pointer with EINVAL. See VideoDecoder for
+                // the format that makes this ordinary rather than exotic.
                 Libav.avPacketUnref(packet)
                 continue
             }
