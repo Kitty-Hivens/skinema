@@ -537,8 +537,16 @@ class VideoPlayer internal constructor(
             // the floor, while the constructor's own documentation promises
             // Failed for the last of those. A consumer's fallback never ran
             // because nothing ever told it to.
-            if (audioClock != null && t is NoVideoStreamException) {
-                // No video stream but the audio plays: frameless mode.
+            // Frameless is for a file with nothing to SHOW, and whether the
+            // sound then plays is a separate question. It used to be asked
+            // here as one: with no output line the pipeline resolves a null
+            // clock, and an audio-only file on a machine without a device
+            // failed outright -- where the constructor's own documentation
+            // promises it degrades to silent playback on the wall clock and
+            // runs the usual lifecycle. Asking only for audio to have been
+            // REQUESTED separates the two.
+            if (audioPipeline != null && t is NoVideoStreamException) {
+                // No video stream: frameless mode, with or without sound.
                 frameless = true
                 durationNanos = audioPipeline.durationNanos
                 tags = audioPipeline.tags
@@ -550,6 +558,11 @@ class VideoPlayer internal constructor(
                 // that was already gone and returned, with the sound still
                 // running and the device still held.
                 try {
+                    // Nobody else starts it on this path. With sound the
+                    // pipeline's own clock is already running; without, this
+                    // wall clock is the only thing that moves and it would
+                    // otherwise sit at zero forever.
+                    if (ownsClock) clock.start(0)
                     framelessLoop()
                     state = State.Closed
                 } catch (framelessFailure: Throwable) {
@@ -611,24 +624,42 @@ class VideoPlayer internal constructor(
         state = State.Ended
     }
 
+    /**
+     * Whether this frameless lap is over.
+     *
+     * A live audio side says so itself, and that is the only mark worth
+     * having while it can still play. A side that has gone -- died, or never
+     * opened a device at all -- sets its ended flag together with the flag
+     * that says it is gone, and nothing ever clears either: read as the mark,
+     * that fired ten times a second forever, pinning the position near zero
+     * under a state that still said Playing. With no sound coming, the wall
+     * clock is the only thing moving and the file's own duration is where it
+     * stops.
+     */
+    private fun framelessLapDone(): Boolean {
+        val pipe = audioPipeline
+        if (pipe != null && pipe.alive) return pipe.isEnded
+        val end = durationNanos ?: return true
+        return clock.mediaNanos() >= end
+    }
+
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
         state = State.Playing
         while (true) {
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
-            if (state is State.Playing && audioPipeline?.isEnded == true) {
-                // A level test on a flag nothing clears once the audio thread
-                // has gone: it sets ended and not-alive together on its way
-                // out. Wrapping on that fired ten times a second forever,
-                // pinning the position near zero under a state that still
-                // said Playing. A lap needs a side that can still play one.
-                if (loop && audioPipeline.alive) {
+            if (state is State.Playing && framelessLapDone()) {
+                val pipe = audioPipeline
+                if (loop) {
                     // Audio-only, so there is no picture to end the lap: this
                     // side owns it. The landing handshake goes with the seek,
-                    // without which the sink stays muted from here on.
-                    audioPipeline.seek(0)
-                    audioPipeline.videoLanded()
+                    // without which the sink stays muted from here on -- and
+                    // only for a side still able to answer one.
+                    if (pipe != null && pipe.alive) {
+                        pipe.seek(0)
+                        pipe.videoLanded()
+                    }
                     clock.seek(0)
                     clock.resume()
                 } else {
