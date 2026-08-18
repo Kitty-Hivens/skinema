@@ -389,6 +389,11 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 export CC=clang CXX=clang++ LD=clang AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib STRIP=llvm-strip
                 : "${VPX_TARGET:=arm64-win64-gcc}"
             fi
+            # High bit depth is not on by default, and without it this
+            # decoder refuses ten- and twelve-bit VP9 outright rather than
+            # falling back -- the player now only prefers libvpx for the
+            # eight-bit formats it is preferred FOR, but a bundle that can
+            # read the deep ones is better than one that cannot.
             # Decode-only: skinema reads vp8/vp9 through ffmpeg's libvpx decoders
             # and never encodes them. Smaller, and it drops libvpx's only C++ (the
             # encoder's ratectrl_rtc), which on CLANGARM64 would otherwise reach
@@ -396,6 +401,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
                 --enable-vp9 --disable-vp8-encoder --disable-vp9-encoder \
+                --enable-vp9-highbitdepth \
                 --disable-shared --enable-static \
                 ${VPX_TARGET:+--target=$VPX_TARGET} \
                 || { echo "=== libvpx config.log tail ==="; tail -40 config.log 2>/dev/null; exit 1; }
