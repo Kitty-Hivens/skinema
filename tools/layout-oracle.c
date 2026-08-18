@@ -187,6 +187,7 @@ int main(void) {
     P(offsetof(AVCodecContext, pix_fmt));
     P(offsetof(AVCodecContext, sw_pix_fmt));
     P(offsetof(AVCodecContext, hw_device_ctx));
+    P(offsetof(AVCodecContext, opaque));
     P(offsetof(AVCodecContext, hw_frames_ctx));
     P(offsetof(AVCodecContext, get_format));
     P(offsetof(AVCodecContext, coded_width));

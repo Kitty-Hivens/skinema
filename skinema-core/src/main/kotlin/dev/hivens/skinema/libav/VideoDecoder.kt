@@ -66,6 +66,17 @@ class VideoDecoder private constructor(
     override fun videoSize(): Pair<Int, Int>? = videoSize
     override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE
 
+    /** The GPU surface a device was opened for; AV_PIX_FMT_NONE for software. */
+    internal fun negotiatedSurfaceFormat(): Int = hwPixFmt
+
+    /**
+     * What the last decoded frame actually arrived in. The pair with
+     * [negotiatedSurfaceFormat] is the only proof the negotiation took: a
+     * decoder that loses it decodes in software and says nothing, because
+     * every other signal is read off the request rather than off a frame.
+     */
+    internal fun lastFrameFormat(): Int = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
+
     class RgbaFrame internal constructor(
         val width: Int,
         val height: Int,
@@ -710,6 +721,14 @@ class VideoDecoder private constructor(
                 // releases it); we keep the original to unref at close.
                 ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, Libav.avBufferRef(device))
                 ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
+                // The surface to negotiate for, travelling with the context so
+                // the upcall finds it whichever thread avcodec calls it on.
+                // Written before avcodec_open2, which is where frame threading
+                // clones the context for its workers. Freed with the session
+                // arena, which outlives avcodec_free_context.
+                val target = arena.allocate(JAVA_INT)
+                target.set(JAVA_INT, 0, hwPixFmt)
+                ctx.set(ADDRESS, LibavAbi.CodecContext.OPAQUE, target)
                 return HwSetup(hwPixFmt, device)
             }
             if (hardware == HwAccel.REQUIRE) {
@@ -833,10 +852,6 @@ class VideoDecoder private constructor(
                     setupHwAccel(arena, codecCtx, decoder, hardware)
                 }
                 hwDevice = hw.deviceCtx
-                // Tell the get_format upcall which surface this device backs, so
-                // it returns exactly that rather than the first hardware format
-                // avcodec happens to offer (#2).
-                Libav.setNegotiatedHwFormat(hw.pixFmt)
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
                 packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)

@@ -85,6 +85,50 @@ class VideoDecoderHwTest {
         }
     }
 
+    /**
+     * A device was opened, so frames must arrive on it. Asserted against the
+     * frame rather than against the request, because the request is what
+     * every other signal here reports: hardware decode was negotiated away on
+     * every open for two months -- the format the decoder aims for lived on
+     * the opening thread, and a frame-threaded decoder negotiates on a worker
+     * of its own, where a thread-scoped value is simply absent -- and nothing
+     * in the suite could tell, because nothing looked at a frame.
+     */
+    private fun assertDecodedOnDevice(d: VideoDecoder, where: String) {
+        val surface = d.negotiatedSurfaceFormat()
+        if (surface == LibavAbi.AV_PIX_FMT_NONE) return
+        assertEquals(surface, d.lastFrameFormat(), "$where: a device is open, so frames must be its surfaces")
+    }
+
+    @Test
+    fun `an opened device decodes onto its own surfaces`() {
+        assumeHwAcceptance()
+        VideoDecoder.open(testsrc("surface.mp4"), HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "AUTO must decode")
+            assertDecodedOnDevice(d, "AUTO")
+        }
+    }
+
+    @Test
+    fun `a second decoder does not take the first one's surface`() {
+        assumeHwAcceptance()
+        val video = testsrc("shared.mp4")
+        VideoDecoder.open(video, HwAccel.AUTO).use { hw ->
+            // A software decoder opened between the first one's open and its
+            // first decode -- a thumbnailer beside a player, or two opens in a
+            // row on one thread. Nothing about it belongs to the hw decoder.
+            VideoDecoder.open(video, HwAccel.OFF).use { software ->
+                assertTrue(software.nextFrame() != null, "the software decoder must decode")
+                assertEquals(
+                    LibavAbi.AV_PIX_FMT_NONE, software.negotiatedSurfaceFormat(),
+                    "OFF opens no device",
+                )
+            }
+            assertTrue(hw.nextFrame() != null, "the hw decoder must still decode")
+            assertDecodedOnDevice(hw, "AUTO beside a software decoder")
+        }
+    }
+
     @Test
     fun `REQUIRE either decodes on the GPU or fails closed`() {
         assumeHwAcceptance()
@@ -98,7 +142,11 @@ class VideoDecoderHwTest {
         }
         decoder.use { d ->
             assertTrue(d.hardwareActive(), "a REQUIRE decoder that opened must be on the GPU")
-            assertEquals(10, generateSequence { d.nextFrame()?.ptsNanos }.count(), "hw decode must yield every frame")
+            assertTrue(d.nextFrame() != null, "hw decode must yield a first frame")
+            // Read while a frame is still held: end of stream releases it, and
+            // its format goes with it.
+            assertDecodedOnDevice(d, "REQUIRE")
+            assertEquals(9, generateSequence { d.nextFrame()?.ptsNanos }.count(), "hw decode must yield every frame")
             println("[hw-test] REQUIRE engaged hardware decode, 10 frames")
         }
     }

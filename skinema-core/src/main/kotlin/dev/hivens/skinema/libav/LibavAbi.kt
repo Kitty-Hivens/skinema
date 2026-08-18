@@ -157,6 +157,13 @@ object LibavAbi {
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
 
+        /**
+         * void* reserved for the caller, untouched by libav and carried into
+         * every worker context frame threading clones -- which is what makes
+         * it the only place a per-decoder fact reaches [GET_FORMAT].
+         */
+        const val OPAQUE = 48L
+
         /** AVBufferRef* to the AVHWFramesContext the encoder pulls GPU surfaces from (M13). */
         const val HW_FRAMES_CTX = 552L
 
