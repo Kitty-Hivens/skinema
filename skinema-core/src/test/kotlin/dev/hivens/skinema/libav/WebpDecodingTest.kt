@@ -50,6 +50,15 @@ class WebpDecodingTest {
     @Test
     fun `a reopen that cannot happen still closes safely`() {
         assumeWebpEnvironment()
+        // The scenario is built by deleting the file out from under an open
+        // decoder, and Windows refuses that: a file mapped by a running
+        // process cannot be unlinked, so there is no way to reach the failing
+        // reopen from here. The double free this guards is not
+        // platform-specific; the other two platforms exercise it.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            Os.current() != Os.WINDOWS,
+            "an open file cannot be deleted on Windows, so the failing reopen cannot be staged",
+        )
         val file = animated("vanishing.webp")
         FrameSources.open(file).use { source ->
             // Drain it, so the next read needs the restart escalation.
