@@ -138,9 +138,23 @@ class AudioClock(
      */
     private fun interpolationLocked(frames: Long, wallNow: Long): Long {
         if (frames != lastFrames) {
-            // Forward only: a re-anchor onto a fresh line restarts the count,
-            // and a backend reconciling around a flush can step back.
-            if (lastFrames != Long.MIN_VALUE && frames > lastFrames) lastStepFrames = frames - lastFrames
+            // Forward only, and the cadence anchor moves only forward with
+            // it. The reading was sampled outside the lock by one of five
+            // threads and taking the lock does not preserve the order they
+            // sampled in, so an older one can land after a newer -- carrying
+            // a fresh wall time, since that is read after the sample returns,
+            // which is why the clock rather than the count is no guide here.
+            // Accepted, it walks the anchor BACK and the next honest reading
+            // measures its step from there: several periods instead of one,
+            // and that step is the bound on how long the gap fill may run
+            // without the device. Measured at 55 ms of invented time where
+            // one period allows 21. A backend reconciling non-monotonically
+            // around a flush lands in the same branch and wants the same
+            // answer.
+            if (lastFrames != Long.MIN_VALUE) {
+                if (frames < lastFrames) return 0L
+                lastStepFrames = frames - lastFrames
+            }
             lastFrames = frames
             lastFramesWall = wallNow
             return 0L

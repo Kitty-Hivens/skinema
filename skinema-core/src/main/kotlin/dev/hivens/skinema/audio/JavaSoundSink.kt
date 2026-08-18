@@ -39,8 +39,22 @@ class JavaSoundSink : PcmSink {
     // measured here at 130 and 177 ms on a 200 ms line. Left in, this
     // interface's "frames played" would mean "frames handed over" across
     // every seek -- and the mastered clock is anchored on it.
-    @Volatile
     private var playedBias = 0L
+
+    /**
+     * Holds the line and the bias together, because they are one fact and
+     * were read as two.
+     *
+     * A flush bumps the backend's own counter first -- it reports the
+     * discarded tail as played -- and only then stores the compensation. A
+     * reader that took the counter before the flush and the bias after it
+     * paired a post-flush count with a pre-flush correction and returned a
+     * position up to a whole line buffer too high: measured 180 ms, which the
+     * mastered clock then latched into its monotonic floor. The mirror case
+     * around [open] pairs a fresh line's counter with the old line's bias and
+     * returns a large NEGATIVE position.
+     */
+    private val positionLock = Any()
 
     override fun open(sampleRate: Int) {
         // A reopen (track switch) drops the old line first; without this
@@ -51,7 +65,7 @@ class JavaSoundSink : PcmSink {
             it.close()
         }
         val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
-        line = AudioSystem.getSourceDataLine(format).apply {
+        val fresh = AudioSystem.getSourceDataLine(format).apply {
             // A deliberately small buffer. The default can run to half a
             // second, and everything queued in it is past the point of no
             // return: it keeps sounding after stop() on some backends
@@ -69,9 +83,13 @@ class JavaSoundSink : PcmSink {
             open(format, (sampleRate / 5) * BYTES_PER_FRAME)
             start()
         }
-        // A fresh line counts from zero and owes nothing for the old one's
-        // discarded tails.
-        playedBias = 0L
+        // Published together, or a reader pairs the fresh line's counter --
+        // which restarts at zero -- with the bias the old line accumulated,
+        // and answers with a large negative position.
+        synchronized(positionLock) {
+            line = fresh
+            playedBias = 0L
+        }
         applyVolume()
     }
 
@@ -87,8 +105,8 @@ class JavaSoundSink : PcmSink {
         line?.start()
     }
 
-    override fun flush() {
-        val l = line ?: return
+    override fun flush() = synchronized(positionLock) {
+        val l = line ?: return@synchronized
         // Read across the flush rather than compute the queue depth: the one
         // number wanted is what the backend's own counter gained, and asking
         // it twice is exact where an occupancy estimate would be a second
@@ -99,7 +117,8 @@ class JavaSoundSink : PcmSink {
         playedBias += l.longFramePosition - before
     }
 
-    override fun framePosition(): Long = line?.let { it.longFramePosition - playedBias } ?: 0L
+    override fun framePosition(): Long =
+        synchronized(positionLock) { line?.let { it.longFramePosition - playedBias } ?: 0L }
 
     override fun setVolume(volume: Float) {
         this.volume = volume.coerceIn(0f, 1f)
@@ -130,7 +149,7 @@ class JavaSoundSink : PcmSink {
         // field unconditionally discarded that one: writes became no-ops, so
         // nothing paced the decode any more, and the frame position the clock
         // masters read zero for good.
-        if (line === closing) line = null
+        synchronized(positionLock) { if (line === closing) line = null }
     }
 
     private companion object {
