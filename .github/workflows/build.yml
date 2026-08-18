@@ -23,15 +23,23 @@ jobs:
           # superset bundle exercises decode, subtitles, webp, the extended
           # formats and encode in one run, so the suite runs whole (the
           # per-tier bundles are gated at build time in natives.yml itself).
+          # Thirteen where the default is eight: four hardware suites (opt-in
+          # everywhere) and NINE that need a real audio output line -- the sink
+          # contract's real-line row and the mastered clock's pacing test. A
+          # runner that gets a dummy device from the step below runs those and
+          # sits far under; one that does not still declares the gap.
           - os: ubuntu-latest
             platform: linux-x64
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           - os: windows-latest
             platform: windows-x64
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -40,7 +48,8 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
-          # Thirteen, not the default eight, and every one of them named:
+            maxSkipped: 13
+          # Twenty-two, not the default eight, and every one of them named:
           # five hardware suites (opt-in, and no VAAPI encoder on a mac), one
           # subtitle test that looks for a Linux font path, and SEVEN that
           # cannot build their fixture because Homebrew's ffmpeg carries
@@ -48,7 +57,9 @@ jobs:
           # means webp and AV1 decode have never been exercised on macOS --
           # invisible until the counter printed it. A ceiling here keeps the
           # gap declared and catches it widening; closing it needs fixtures
-          # that do not depend on what the CLI was compiled with.
+          # that do not depend on what the CLI was compiled with. Nine more on
+          # top of those, for the audio suites: a hosted mac has no output
+          # line, and no dummy driver to give it one.
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
@@ -63,10 +74,12 @@ jobs:
             platform: linux-musl-x64
             libc: musl
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             libc: musl
             caps: decode,subs,webp,encode,formats
+            maxSkipped: 13
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
@@ -82,6 +95,10 @@ jobs:
       # than a run. Platforms with a wider legitimate gap raise it in the
       # matrix and say why there.
       SKINEMA_MAX_SKIPPED: "${{ matrix.maxSkipped || 8 }}"
+      # The audio suites are opt-in: they need a real output line, and asking
+      # for one where there is none is how a suite skips its way to green.
+      # Turned on where the step below can conjure a device.
+      SKINEMA_TEST_AUDIO: "${{ (runner.os == 'Linux' && matrix.libc != 'musl') && '1' || '' }}"
     steps:
       - uses: actions/checkout@v7
 
@@ -103,6 +120,22 @@ jobs:
       # exercises the subtitle suites until the bundles carry their own
       # (Windows has no system libass -- its subs coverage starts with
       # the rebuilt bundles).
+      # ALSA's dummy driver is a real output line as far as JavaSound is
+      # concerned: it accepts a format, reports a frame position and consumes
+      # samples in real time, which is everything the sink contract and the
+      # pacing test ask of a device. Best effort -- a runner image without the
+      # module leaves the audio suites skipping, which the ceiling above
+      # already accounts for.
+      - name: Give the runner an audio device
+        if: runner.os == 'Linux' && matrix.libc != 'musl'
+        shell: bash
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y alsa-utils linux-modules-extra-$(uname -r) || true
+          sudo modprobe snd-dummy || true
+          aplay -l || echo "no playback device; the audio suites will skip"
+
       - name: Install ffmpeg CLI (fixtures), skiko's GL stack, libass
         if: matrix.libc != 'musl'
         shell: bash
