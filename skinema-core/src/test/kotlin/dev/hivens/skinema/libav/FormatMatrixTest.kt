@@ -72,6 +72,20 @@ class FormatMatrixTest {
             Case("mjpeg", "yuvj420p", "mkv", listOf("-q:v", "1")),
             Case("ffvhuff", "yuv420p", "mkv"),
             Case("png", "rgb24", "mkv"),
+            // Above eight bits, where the conversion has to scale as well as
+            // convert. The suite carried exactly one ten-bit fixture before
+            // this and nothing deeper.
+            Case("libx265", "yuv420p10le", "mkv", listOf("-x265-params", "lossless=1")),
+            Case("libx265", "yuv422p10le", "mkv", listOf("-x265-params", "lossless=1")),
+            Case("libx265", "yuv444p10le", "mkv", listOf("-x265-params", "lossless=1")),
+            Case("libx265", "yuv420p12le", "mkv", listOf("-x265-params", "lossless=1")),
+            Case("libvpx-vp9", "yuv420p10le", "webm", listOf("-lossless", "1")),
+            Case("libvpx-vp9", "yuv420p12le", "webm", listOf("-lossless", "1")),
+            Case("libaom-av1", "yuv420p10le", "mkv", listOf("-crf", "0", "-cpu-used", "8")),
+            Case("ffv1", "yuv444p16le", "mkv"),
+            // Planar RGB rather than YUV: no matrix to get wrong, which is
+            // what makes it worth having next to the ones that do.
+            Case("ffv1", "gbrp10le", "mkv"),
         )
 
         val ran = mutableListOf<String>()
