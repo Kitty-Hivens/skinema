@@ -116,9 +116,39 @@ object Libav {
     }
 
     private val lookups: Map<LibavLibrary, SymbolLookup> =
-        LibavLibrary.entries.associateWith { lib ->
-            SymbolLookup.libraryLookup(libraryPath(lib), Arena.global())
+        LibavLibrary.entries.associateWith { lib -> load(lib) }
+
+    /**
+     * Opens one pinned library, or refuses with the answer rather than with
+     * the symptom.
+     *
+     * Off a bundle the name goes to the system loader, which searches the
+     * usual directories -- and a store-based distribution (NixOS, Guix) has
+     * none of them: the libraries are installed, in a path nothing looks in.
+     * The bare failure names a missing file and says nothing about that, so
+     * the escape is named here instead (#23).
+     */
+    private fun load(lib: LibavLibrary): SymbolLookup {
+        val path = libraryPath(lib)
+        return try {
+            SymbolLookup.libraryLookup(path, Arena.global())
+        } catch (t: IllegalArgumentException) {
+            throw UnsatisfiedLinkError(loadFailureMessage(lib, path, libavDir)).apply { initCause(t) }
         }
+    }
+
+    /** Pulled out of [load] so both branches can be read -- and tested -- without a broken machine. */
+    internal fun loadFailureMessage(lib: LibavLibrary, path: String, dir: String?): String {
+        val where = if (dir != null) {
+            "the natives directory $dir does not carry it, or it will not open from there"
+        } else {
+            "the system library path holds no ${lib.baseName} of the pinned major ${lib.sonameMajor} " +
+                "-- install one, or, where libraries live outside the loader's search path (NixOS, " +
+                "Guix), point skinema.libav.dir or SKINEMA_LIBAV_DIR at a directory holding the whole " +
+                "av* set, or name that directory in LD_LIBRARY_PATH"
+        }
+        return "cannot load $path: $where"
+    }
 
     private fun fn(lib: LibavLibrary, name: String, descriptor: FunctionDescriptor): MethodHandle {
         val symbol = lookups.getValue(lib).find(name).orElseThrow {
