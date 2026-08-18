@@ -201,6 +201,12 @@ object Fixtures {
     /** Whether the loaded libav exposes encoder [name] (avcodec_find_encoder_by_name). */
     private fun libavHasEncoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindEncoderByName)
 
+    /**
+     * The same question asked of one encoder among several, for a test that
+     * sweeps whatever the runner carries rather than skipping wholesale.
+     */
+    fun libraryHasEncoder(name: String): Boolean = libavHasEncoder(name)
+
     /** Whether the loaded libav exposes decoder [name] (avcodec_find_decoder_by_name). */
     private fun libavHasDecoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindDecoderByName)
 

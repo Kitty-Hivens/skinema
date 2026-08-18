@@ -204,6 +204,7 @@ object Libav {
     private val hAvcodecSendPacket = fn(LibavLibrary.AVCODEC, "avcodec_send_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecReceiveFrame = fn(LibavLibrary.AVCODEC, "avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecFindEncoderByName = fn(LibavLibrary.AVCODEC, "avcodec_find_encoder_by_name", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvcodecGetSupportedConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_supported_config", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecSendFrame = fn(LibavLibrary.AVCODEC, "avcodec_send_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecReceivePacket = fn(LibavLibrary.AVCODEC, "avcodec_receive_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecParametersFromContext = fn(LibavLibrary.AVCODEC, "avcodec_parameters_from_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
@@ -469,6 +470,19 @@ object Libav {
     fun avFindBestStream(ctx: MemorySegment, mediaType: Int, decoderOut: MemorySegment): Int =
         hAvFindBestStream.invoke(ctx, mediaType, -1, -1, decoderOut, 0) as Int
     fun avReadFrame(ctx: MemorySegment, packet: MemorySegment): Int = hAvReadFrame.invoke(ctx, packet) as Int
+
+    /**
+     * The values a codec accepts for one kind of configuration (sample
+     * formats, sample rates). [outConfigs] receives the list pointer, which
+     * is NULL when everything is accepted, and [outNum] its length.
+     */
+    fun avcodecGetSupportedConfig(
+        avctx: MemorySegment,
+        codec: MemorySegment,
+        config: Int,
+        outConfigs: MemorySegment,
+        outNum: MemorySegment,
+    ): Int = hAvcodecGetSupportedConfig.invoke(avctx, codec, config, 0, outConfigs, outNum) as Int
     fun avSeekFrame(ctx: MemorySegment, streamIndex: Int, timestamp: Long, flags: Int): Int =
         hAvSeekFrame.invoke(ctx, streamIndex, timestamp, flags) as Int
     fun avformatCloseInput(ctxPtrPtr: MemorySegment) { hAvformatCloseInput.invoke(ctxPtrPtr) }
