@@ -135,13 +135,23 @@ class MediaWriter private constructor(
             flushEncoder(a.codecCtx, "avcodec_send_frame(audio flush)")
             drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
         }
-        Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer")
-        // Set last, not first. Set up front, a refusal anywhere above left the
-        // writer believing it had finished: the retry was a silent no-op and
-        // close() then produced a file with no trailer, which is the one
-        // outcome this class must never reach quietly.
+        // One attempt, ever, and the flag records the ATTEMPT rather than the
+        // outcome. av_write_trailer deinitialises the muxer whether it
+        // returns success or failure, so a second call reads private data the
+        // first one already freed -- and that arrives as a SIGSEGV, not as a
+        // return code, so neither checkAv nor the runCatching in close() can
+        // hold it. Recording the outcome instead left exactly that second
+        // call on the ordinary path: a trailer refused for a full disk, and
+        // then close() -- which every `use` block runs -- taking the process
+        // down with it.
+        if (!trailerWritten) {
+            trailerWritten = true
+            Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer")
+        }
+        // Still set last: a refusal above must leave finish() able to run its
+        // encoder drains again, which are retryable even when the trailer is
+        // not.
         finished = true
-        trailerWritten = true
     }
 
     /**
@@ -218,6 +228,12 @@ class MediaWriter private constructor(
         if (needsFileIo) {
             ptrPtr.set(ADDRESS, 0, fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB))
             Libav.avioClosep(ptrPtr)
+            // avio_closep nulls the scratch it was handed, not the field it
+            // was read from. avformat_free_context below dispatches into the
+            // muxer's own deinit, which is entitled to look at pb -- none of
+            // the muxers here do today, and none of them should be handed a
+            // freed pointer on the strength of that.
+            fmtCtx.set(ADDRESS, LibavAbi.FormatContext.PB, MemorySegment.NULL)
         }
         Libav.avformatFreeContext(fmtCtx)
         arena.close()
@@ -347,8 +363,19 @@ class MediaWriter private constructor(
         /** Samples left over at the end (a short final frame), or null when none. */
         fun remainingSamples(): Int? = (pcmLen / BYTES_PER_AUDIO_FRAME).takeIf { it > 0 }
 
-        /** Encodes [samples] (<= [frameSize]) frames off the front of the buffer. */
-        fun send(samples: Int) {
+        /**
+         * Encodes up to [frameSize] frames off the front of the buffer.
+         *
+         * Clamped rather than trusted: the staging buffer and the encoder's
+         * frame are both allocated for exactly [frameSize], and the count
+         * reaching here is whatever the caller's buffer held -- which after a
+         * drain that threw mid-loop is more than one frame's worth. The
+         * overrun was stopped only by the bounds check on a DIFFERENT buffer
+         * happening to come first, which is an accident rather than an
+         * invariant.
+         */
+        fun send(requested: Int) {
+            val samples = minOf(requested, frameSize)
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(audio)")
             val bytes = samples * BYTES_PER_AUDIO_FRAME
             MemorySegment.copy(pcm, 0, inNative, JAVA_BYTE, 0, bytes)

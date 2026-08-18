@@ -390,7 +390,16 @@ class VideoPlayer internal constructor(
      * switches. A player on an explicit consumer clock owns its own time
      * and ignores this.
      */
-    fun setRate(rate: Float) = commands.put(Command.SetRate(rate.coerceIn(0.5f, 4f)))
+    fun setRate(rate: Float) {
+        // NaN is not a rate, and coerceIn does not stop it: every comparison
+        // with NaN is false, so both bounds fall through and the clamp this
+        // method documents returns NaN unchanged. It then reaches the tempo
+        // and the clock, where it poisons the arithmetic -- measured as a
+        // picture frozen on one frame with the position pinned and state
+        // still reporting Playing, recoverable only by setting a real rate.
+        if (rate.isNaN()) return
+        commands.put(Command.SetRate(rate.coerceIn(0.5f, 4f)))
+    }
 
     /**
      * Switches the sound to another of [audioTracks], in place: the
@@ -603,14 +612,17 @@ class VideoPlayer internal constructor(
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
             if (state is State.Playing && audioPipeline?.isEnded == true) {
-                if (loop) {
+                // A level test on a flag nothing clears once the audio thread
+                // has gone: it sets ended and not-alive together on its way
+                // out. Wrapping on that fired ten times a second forever,
+                // pinning the position near zero under a state that still
+                // said Playing. A lap needs a side that can still play one.
+                if (loop && audioPipeline.alive) {
                     // Audio-only, so there is no picture to end the lap: this
                     // side owns it. The landing handshake goes with the seek,
                     // without which the sink stays muted from here on.
-                    if (audioPipeline.alive) {
-                        audioPipeline.seek(0)
-                        audioPipeline.videoLanded()
-                    }
+                    audioPipeline.seek(0)
+                    audioPipeline.videoLanded()
                     clock.seek(0)
                     clock.resume()
                 } else {
@@ -992,6 +1004,17 @@ class VideoPlayer internal constructor(
                     // lands on the duration.
                     finishSeek(State.Playing)
                     eofPending = true
+                    // Only the Playing arm of the decode loop ever consumes
+                    // that flag, and finishSeek restores whatever ran before
+                    // the burst -- so on a PAUSED player the seek went
+                    // nowhere at all: the queue was cleared, no landing
+                    // replaced it, and the position still read where the
+                    // press had left from, until a resume drove it straight
+                    // to Ended. With nothing left to play, say so now.
+                    if (state !is State.Playing && audioPipeline?.hasSoundLeft != true) {
+                        eofPending = false
+                        enterEnded()
+                    }
                 }
                 return true
             }

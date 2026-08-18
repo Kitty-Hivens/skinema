@@ -133,6 +133,27 @@ internal class SubtitlePipeline(
     // counter; only native ASS/SSA packets carry stable ones.
     private val convertedCodec = track.codecName != "ass" && track.codecName != "ssa"
 
+    /**
+     * Where the demuxer should read ahead of: the reposition target while
+     * one is outstanding, the clock otherwise.
+     *
+     * The player announces a seek to this side BEFORE the clock reaches it
+     * -- the landing decodes forward to the target first, which is seconds
+     * on sparse keyframes. Gated on the clock alone, a backward seek then
+     * read forward to the OLD position plus a horizon: measured at 85
+     * seconds of packets for a jump from 60s back to 5s, all of it thrown
+     * at a libass track that was flushed on the way in.
+     */
+    private var repositionTargetNanos = Long.MIN_VALUE
+    private var repositionAtWall = 0L
+
+    private val timeBases = HashMap<Int, Pair<Int, Int>>()
+
+    // Declared above the thread, and that is load-bearing: Kotlin runs
+    // initializers in declaration order, so a field declared after the
+    // `start()` below is still null when the thread it started reads it.
+    // The audio pipeline was bitten by exactly this and moved its own thread
+    // last; these three are read from the subs thread's very first refill.
     private val thread = Thread(::run, "skinema-subs").apply {
         isDaemon = true
         start()
@@ -366,20 +387,6 @@ internal class SubtitlePipeline(
         }
     }
 
-    /**
-     * Where the demuxer should read ahead of: the reposition target while
-     * one is outstanding, the clock otherwise.
-     *
-     * The player announces a seek to this side BEFORE the clock reaches it
-     * -- the landing decodes forward to the target first, which is seconds
-     * on sparse keyframes. Gated on the clock alone, a backward seek then
-     * read forward to the OLD position plus a horizon: measured at 85
-     * seconds of packets for a jump from 60s back to 5s, all of it thrown
-     * at a libass track that was flushed on the way in.
-     */
-    private var repositionTargetNanos = Long.MIN_VALUE
-    private var repositionAtWall = 0L
-
     private fun demuxNowNanos(clockNanos: Long): Long {
         val target = repositionTargetNanos
         if (target == Long.MIN_VALUE) return clockNanos
@@ -402,8 +409,6 @@ internal class SubtitlePipeline(
         }
         return target
     }
-
-    private val timeBases = HashMap<Int, Pair<Int, Int>>()
 
     private fun timeBaseOf(streamIndex: Int): Pair<Int, Int> = timeBases.getOrPut(streamIndex) {
         val stream = streamAt(fmtCtx, streamIndex)

@@ -417,14 +417,6 @@ class VideoDecoder private constructor(
         if (swsCtx == MemorySegment.NULL) {
             throw LibavException("sws_getContext refused ${width}x$height format=$format")
         }
-        swsWidth = width
-        swsHeight = height
-        swsFormat = format
-        // A fresh context starts from swscale's defaults; force the next
-        // ensureColorspaceDetails to reapply the stream's own values.
-        swsColorspace = Int.MIN_VALUE
-        swsRange = Int.MIN_VALUE
-
         swsArena.close()
         swsArena = Arena.ofConfined()
         val bytes = width.toLong() * height * 4
@@ -440,6 +432,18 @@ class VideoDecoder private constructor(
         dstData.setAtIndex(ADDRESS, 0, rgbaNative)
         dstStride = swsArena.allocate(JAVA_INT, 8)
         dstStride.setAtIndex(JAVA_INT, 0, width * 4)
+        // Cached LAST, once everything it describes exists. Published first,
+        // an OutOfMemoryError on the heap buffer above -- 33 MB at 4K, 132 at
+        // 8K -- left the cache saying "this context matches" while dstData
+        // still pointed into an arena that had just been closed, so every
+        // later frame took the early return and died on sws_scale instead.
+        swsWidth = width
+        swsHeight = height
+        swsFormat = format
+        // A fresh context starts from swscale's defaults; force the next
+        // ensureColorspaceDetails to reapply the stream's own values.
+        swsColorspace = Int.MIN_VALUE
+        swsRange = Int.MIN_VALUE
     }
 
     /**
@@ -502,12 +506,6 @@ class VideoDecoder private constructor(
             return fallBackFromHdr("sws_setColorspaceDetails(RGBA64) refused")
         }
         hdrCtx = ctx
-        hdrWidth = width
-        hdrHeight = height
-        hdrFormat = format
-        hdrTrc = trc
-        hdrColorspace = colorspace
-        hdrRange = range
         val pixels = width.toLong() * height
         hdrArena.close()
         hdrArena = Arena.ofConfined()
@@ -521,6 +519,13 @@ class VideoDecoder private constructor(
         toneMapper = ToneMapper(
             if (trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67) ToneMapper.HdrTransfer.HLG else ToneMapper.HdrTransfer.PQ,
         )
+        // Cached last, for the reason ensureSws gives.
+        hdrWidth = width
+        hdrHeight = height
+        hdrFormat = format
+        hdrTrc = trc
+        hdrColorspace = colorspace
+        hdrRange = range
         return true
     }
 
@@ -900,14 +905,23 @@ internal fun swsCoefficientsFor(colorspace: Int, width: Int, height: Int): Int =
  * matrices exist in theory, never in the consumer's files (ROADMAP
  * section 8).
  */
+private const val DISPLAY_MATRIX_BYTES = 9L * Int.SIZE_BYTES
+
 internal fun displayRotationDegrees(codecpar: MemorySegment): Int {
     val sideData = codecpar.get(ADDRESS, LibavAbi.CodecParameters.CODED_SIDE_DATA)
     val count = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.NB_CODED_SIDE_DATA)
     if (sideData == MemorySegment.NULL || count == 0) return 0
     val entry = Libav.avPacketSideDataGet(sideData, count, LibavAbi.AV_PKT_DATA_DISPLAYMATRIX)
     if (entry == MemorySegment.NULL) return 0
-    val matrix = entry.reinterpret(LibavAbi.PacketSideData.SIZEOF).get(ADDRESS, LibavAbi.PacketSideData.DATA)
+    val sized = entry.reinterpret(LibavAbi.PacketSideData.SIZEOF)
+    val matrix = sized.get(ADDRESS, LibavAbi.PacketSideData.DATA)
     if (matrix == MemorySegment.NULL) return 0
+    // av_display_rotation_get takes int32_t[9] and reads all thirty-six
+    // bytes unconditionally. The pointer arrives from the container with no
+    // length attached and reinterpret does not give it one, so a truncated
+    // or hostile entry reads past whatever FFmpeg allocated. FFmpeg guards
+    // its own callers the same way (libavutil/dump.c).
+    if (sized.get(JAVA_LONG, LibavAbi.PacketSideData.SIZE) < DISPLAY_MATRIX_BYTES) return 0
     val ccw = Libav.avDisplayRotationGet(matrix)
     if (ccw.isNaN()) return 0
     val quarters = Math.round(-ccw / 90.0).toInt()

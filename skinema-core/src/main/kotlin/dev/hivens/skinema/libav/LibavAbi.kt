@@ -109,6 +109,9 @@ object LibavAbi {
 
     object PacketSideData {
         const val DATA = 0L
+
+        /** size_t; av_display_rotation_get reads 9 int32 and checks nothing. */
+        const val SIZE = 8L
         const val SIZEOF = 24L
     }
 
