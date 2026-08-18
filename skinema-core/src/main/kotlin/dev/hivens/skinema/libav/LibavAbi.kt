@@ -100,6 +100,9 @@ object LibavAbi {
         const val EXTRADATA_SIZE = 24L
         const val CODED_SIDE_DATA = 32L
         const val NB_CODED_SIDE_DATA = 40L
+
+        /** enum AVPixelFormat for video, AVSampleFormat for audio. */
+        const val FORMAT = 44L
         const val WIDTH = 72L
         const val HEIGHT = 76L
         const val CH_LAYOUT = 128L
@@ -336,6 +339,7 @@ object LibavAbi {
 
     // -- M12 encode + mux --
     const val AV_PIX_FMT_YUV420P = 0
+    const val AV_PIX_FMT_YUVA420P = 33
 
     /** AVOutputFormat.flags: NOFILE skips avio_open; GLOBALHEADER moves extradata into the header. */
     const val AVFMT_NOFILE = 1

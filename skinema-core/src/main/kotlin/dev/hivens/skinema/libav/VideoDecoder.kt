@@ -631,6 +631,18 @@ class VideoDecoder private constructor(
                 LibavAbi.AV_CODEC_ID_VP9 -> "libvpx-vp9"
                 else -> return defaultDecoder
             }
+            // libvpx is preferred for ONE reason -- the webm alpha
+            // side-channel, which the native decoders drop -- and that is an
+            // eight-bit yuva420p feature. Past those two formats the
+            // preference only costs: libvpx decodes ten and twelve bits only
+            // when it was configured with --enable-vp9-highbitdepth, the
+            // shipped bundle was not, and forcing it there refused the stream
+            // outright where FFmpeg's own decoder, compiled in beside it,
+            // reads it. Ten-bit VP9 did not play at all.
+            val format = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.FORMAT)
+            if (format != LibavAbi.AV_PIX_FMT_YUV420P && format != LibavAbi.AV_PIX_FMT_YUVA420P) {
+                return defaultDecoder
+            }
             val libvpx = Libav.avcodecFindDecoderByName(arena.allocateFrom(libvpxName))
             return if (libvpx == MemorySegment.NULL) defaultDecoder else libvpx
         }
