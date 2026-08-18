@@ -67,9 +67,18 @@ jobs:
           # that do not depend on what the CLI was compiled with. Nine more on
           # top of those for the audio suites, as everywhere else, and three
           # for encoders Homebrew's ffmpeg does not carry.
+          # hwaccel on this row alone, as a measurement rather than a claim:
+          # hosted macOS runners are Apple Silicon and every such machine has
+          # a VideoToolbox media engine, but whether the virtual machine hands
+          # it through is not documented anywhere and no amount of reading
+          # settles it. Running the suite answers it. A runner without a usable
+          # device is a legal outcome the tests already cover -- AUTO decodes
+          # the same grid in software and REQUIRE fails closed -- so this asks
+          # a question without asserting the answer.
           - os: macos-14
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
+            hwaccel: "1"
             maxSkipped: 33
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
@@ -102,6 +111,8 @@ jobs:
       # than a run. Platforms with a wider legitimate gap raise it in the
       # matrix and say why there.
       SKINEMA_MAX_SKIPPED: "${{ matrix.maxSkipped || 8 }}"
+      # Empty everywhere but the row that opted in above.
+      SKINEMA_TEST_HWACCEL: "${{ matrix.hwaccel }}"
     steps:
       - uses: actions/checkout@v7
 
