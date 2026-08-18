@@ -335,7 +335,17 @@ class VideoDecoder private constructor(
                 return
             }
             restartStage = 2
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
+            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
+                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
+            ) {
+            // An empty packet is not a packet. avcodec_send_packet takes a
+            // NULL one as the flush signal and refuses a zero-length one that
+            // still carries a data pointer -- EINVAL, which this loop turned
+            // into a decode failure. Formats emit them: Theora writes one per
+            // repeated frame, so nine of the ten packets of a static clip are
+            // empty and playback died on the second. FFmpeg reports one frame
+            // for that file and so do we now, by skipping them the way a
+            // packet from another stream is skipped.
                 Libav.avPacketUnref(packet)
                 continue
             }
