@@ -374,7 +374,7 @@ class AudioClock(
         }
     }
 
-    private companion object {
+    internal companion object {
         /**
          * Ceiling on filling the gap between two of the device's position
          * refreshes, whatever its last step suggests.
@@ -388,6 +388,6 @@ class AudioClock(
          * clears it. Anything that answers more slowly keeps the residual
          * staircase past this much, which is the safe way to be wrong.
          */
-        const val MAX_INTERPOLATION_NANOS = 60_000_000L
+        internal const val MAX_INTERPOLATION_NANOS = 60_000_000L
     }
 }
