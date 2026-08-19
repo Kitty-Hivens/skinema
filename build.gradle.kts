@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.maven.publish) apply false
+    alias(libs.plugins.kover)
 }
 
 // Releases pass -PappVersion=<tag> (tag first, then publish -- the
@@ -42,7 +43,17 @@ allprojects {
 
 // CI logs carry only the console; without the message a failed assertion
 // is a bare file:line, on every module that ever fails.
+// Coverage rides every module that carries Kotlin, so the aggregate below can
+// pick the ones worth reporting on. What it is FOR is the zero column: a
+// hardware-decode path was negotiated away on every open for two months and
+// the suite stayed green, because a test that never reaches a line cannot
+// fail on it. A percentage is not the deliverable; "no test has ever executed
+// this" is.
 subprojects {
+    plugins.withId("org.jetbrains.kotlin.jvm") {
+        apply(plugin = "org.jetbrains.kotlinx.kover")
+    }
+
     tasks.withType<Test>().configureEach {
         testLogging {
             events("failed")
@@ -179,4 +190,25 @@ tasks.register("publishLibraries") {
         ":skinema-skiko:publishToMavenCentral",
         ":skinema-compose:publishToMavenCentral",
     )
+}
+
+// The library modules only. skinema-demo is a harness (its own code is not the
+// product) and skinema-natives carries no Kotlin at all.
+dependencies {
+    kover(project(":skinema-core"))
+    kover(project(":skinema-skiko"))
+    kover(project(":skinema-compose"))
+}
+
+kover {
+    reports {
+        filters {
+            excludes {
+                // The FFM binding surface is one declaration per libav symbol,
+                // executed only when that symbol is called; counting it as
+                // covered code drowns the signal from the logic around it.
+                classes("dev.hivens.skinema.libav.LibavAbi*")
+            }
+        }
+    }
 }
