@@ -102,6 +102,11 @@ jobs:
           # stays community-tier until one does; treat the platform table as
           # saying seven tested of eight.
     runs-on: ${{ matrix.os }}
+    # Rows finish in three to six minutes. The ceiling is here because a
+    # hosted runner's apt-get has hung on the ffmpeg install twice, and the
+    # default six-hour limit turns that into a job that reads as "still
+    # running" for the rest of the day rather than a failure anyone can see.
+    timeout-minutes: 30
     env:
       # The capabilities CI holds mandatory on this platform: a bundle
       # that cannot load one fails the build instead of silently skipping
