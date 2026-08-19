@@ -359,10 +359,10 @@ class VideoPlayer internal constructor(
     fun acquireFrame(): FrameSlot? = buffer?.acquire()
 
     /** Freezes playback; the surface keeps showing the last frame. */
-    fun pause() = commands.put(Command.Pause)
+    fun pause() = submit(Command.Pause)
 
     /** Continues from where [pause] froze, without a frame jump. */
-    fun resume() = commands.put(Command.Resume)
+    fun resume() = submit(Command.Resume)
 
     /**
      * Jumps to [ptsNanos]; revives an [State.Ended] player.
@@ -377,7 +377,7 @@ class VideoPlayer internal constructor(
      * exact for timeline scrubbing.
      */
     fun seek(ptsNanos: Long, exact: Boolean = true) =
-        commands.put(Command.Seek(ptsNanos.coerceAtLeast(0), exact))
+        submit(Command.Seek(ptsNanos.coerceAtLeast(0), exact))
 
     /**
      * Seeks [deltaNanos] relative to the intended playhead -- the right
@@ -389,7 +389,7 @@ class VideoPlayer internal constructor(
      * accumulate against the position actually landed.
      */
     fun seekBy(deltaNanos: Long, exact: Boolean = true) =
-        commands.put(Command.SeekBy(deltaNanos, exact))
+        submit(Command.SeekBy(deltaNanos, exact))
 
     /**
      * Advances exactly one frame and leaves the player paused on it --
@@ -397,7 +397,7 @@ class VideoPlayer internal constructor(
      * the end of the stream the last frame stays. Time (sound included)
      * re-anchors to the stepped frame, so [resume] continues from it.
      */
-    fun stepForward() = commands.put(Command.StepForward)
+    fun stepForward() = submit(Command.StepForward)
 
     /**
      * Steps back to the previous frame, paused on it. The previous
@@ -407,7 +407,7 @@ class VideoPlayer internal constructor(
      * advertised through [State.Seeking] on sparse ones. Repeated
      * backsteps reuse the discovered run and pay one run, not two.
      */
-    fun stepBackward() = commands.put(Command.StepBackward)
+    fun stepBackward() = submit(Command.StepBackward)
 
     /** Linear 0..1 volume; no-op for silent playback. */
     fun setVolume(volume: Float) {
@@ -435,7 +435,7 @@ class VideoPlayer internal constructor(
         // picture frozen on one frame with the position pinned and state
         // still reporting Playing, recoverable only by setting a real rate.
         if (rate.isNaN()) return
-        commands.put(Command.SetRate(rate.coerceIn(0.5f, 4f)))
+        submit(Command.SetRate(rate.coerceIn(0.5f, 4f)))
     }
 
     /**
@@ -472,7 +472,7 @@ class VideoPlayer internal constructor(
      * that fails to open degrades to no subtitles -- playback never
      * notices either way.
      */
-    fun selectSubtitleTrack(id: Int?) = commands.put(Command.SelectSubtitles(id))
+    fun selectSubtitleTrack(id: Int?) = submit(Command.SelectSubtitles(id))
 
     /** Id of the subtitle track on screen; null when off or failed. */
     val activeSubtitleTrack: Int?
@@ -538,6 +538,21 @@ class VideoPlayer internal constructor(
      */
     @Volatile
     private var closing = false
+
+    /**
+     * Queues a command, unless there is nobody left to take it.
+     *
+     * The queue is unbounded and the decode thread is its only consumer, so a
+     * consumer holding a Failed or Closed player behind a live timeline added
+     * one node per press, for as long as it kept pressing. Both pipelines
+     * were given this guard when the same leak was found in them; the player
+     * itself never got it. A thread dying immediately after the check costs
+     * one node, which is the difference between a leak and a straggler.
+     */
+    private fun submit(command: Command) {
+        if (closing || !thread.isAlive) return
+        commands.put(command)
+    }
 
     override fun close() {
         closing = true
@@ -622,18 +637,36 @@ class VideoPlayer internal constructor(
             audioPipeline?.close()
             return
         }
-        durationNanos = decoder.durationNanos()
-        tags = decoder.tags()
-        chapters = decoder.chapters()
-        coverArt = decoder.coverArt()
-        rotationDegrees = decoder.rotationDegrees()
-        hardwareActive = decoder.hardwareActive()
-        synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
-        val pacer = Thread(::paceLoop, "skinema-pace").apply {
-            isDaemon = true
-            start()
+        // close() can have come and gone while this was opening -- the wait
+        // for the audio clock alone holds it for up to five seconds -- and
+        // nothing here looked. So a player closed during the open announced
+        // itself Playing and started a pacer AFTER close() had returned, and
+        // the caller was told none of it.
+        if (closing) {
+            runCatching { decoder.close() }
+            runCatching { audioPipeline?.close() }
+            runCatching { subtitlePipeline?.close() }
+            state = State.Closed
+            return
         }
+        // Everything below is inside the guard, including reading the file's
+        // own metadata and starting the pacer. Outside it, a throw there --
+        // or a thread that will not start -- leaked the decode session and
+        // the audio pipeline for good and pinned the state at Opening, with
+        // close() joining a thread that had already unwound.
+        var pacer: Thread? = null
         try {
+            durationNanos = decoder.durationNanos()
+            tags = decoder.tags()
+            chapters = decoder.chapters()
+            coverArt = decoder.coverArt()
+            rotationDegrees = decoder.rotationDegrees()
+            hardwareActive = decoder.hardwareActive()
+            synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
+            pacer = Thread(::paceLoop, "skinema-pace").apply {
+                isDaemon = true
+                start()
+            }
             if (ownsClock) clock.start(0)
             state = State.Playing
             decodeLoop(decoder)
@@ -642,7 +675,7 @@ class VideoPlayer internal constructor(
             state = State.Failed(t)
         } finally {
             queue.close()
-            pacer.join(1_000)
+            pacer?.join(1_000)
             runCatching { decoder.close() }
             runCatching { audioPipeline?.close() }
             runCatching { subtitlePipeline?.close() }
