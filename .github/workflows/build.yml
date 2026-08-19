@@ -151,7 +151,18 @@ jobs:
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            Linux)   sudo apt-get update && sudo apt-get install -y ffmpeg libgl1 libegl1 libfontconfig1 libx11-6 libass9 libva2 ;;
+            Linux)
+              # Every wait here is bounded, because none of them were and the
+              # x64 runner hung on this step three dispatches running: the
+              # image's unattended-upgrade holds the dpkg lock, and apt waits
+              # for it forever by default. The lock timeout turns that into a
+              # wait that ends, and the retries cover a mirror that stalls.
+              sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
+                -o Acquire::http::Timeout=30 update
+              sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
+                -o Acquire::http::Timeout=30 install -y \
+                ffmpeg libgl1 libegl1 libfontconfig1 libx11-6 libass9 libva2
+              ;;
             Windows) choco install -y ffmpeg ;;
             macOS)   brew install ffmpeg libass ;;
           esac
