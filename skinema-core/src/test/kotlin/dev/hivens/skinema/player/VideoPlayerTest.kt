@@ -1326,6 +1326,58 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `a seek burst carries the subtitles to the final target`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // What a consumer scrubbing a timeline sees: the text has to match
+        // where the presses stopped, not where one of them was overtaken.
+        //
+        // The line that retargets the subtitle side inside the supersede had
+        // never executed -- that branch runs in other tests, always without a
+        // pipeline attached -- and covering it is how this test started. It
+        // does NOT guard that line: removing it still passes, because the
+        // pipeline repairs itself from a clock that moved under it. So the
+        // line is promptness rather than correctness, and what is asserted
+        // here is the property, which no other test covers.
+        val srt = dir.resolve("burst.srt")
+        // One cue, and it sits where the burst ends rather than where it
+        // starts, so text on screen means the subtitle side followed the
+        // final target and not a superseded one.
+        Files.writeString(srt, "1\n00:00:04,000 --> 00:00:08,000\nFinal\n")
+        val video = Fixtures.generate(
+            dir.resolve("burst.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-map", "0:v", "-map", "1", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+        )
+        VideoPlayer(video, loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val id = player.subtitleTracks.single().id
+            player.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == id }, "the selection must land")
+            player.pause()
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "the pause must land")
+
+            // Rapid enough that later presses supersede a landing in flight.
+            for (step in 1..10) player.seek(step * 500_000_000L)
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 5_000_000_000L },
+                "the final target must land, pos=${player.positionNanos()}",
+            )
+            var patched = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { patched = patched || it.patches.isNotEmpty() }
+                    patched
+                },
+                "the cue covering the final target must reach the overlay",
+            )
+        }
+    }
+
+    @Test
     fun `the canvas size a consumer announces reaches the rasterizer`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeSubtitleRendering()
