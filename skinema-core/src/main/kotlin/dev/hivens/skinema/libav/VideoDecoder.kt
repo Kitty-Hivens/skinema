@@ -1113,7 +1113,30 @@ internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena, startTimeNan
 }
 
 /** Codec ids whose subtitle decoders emit ASS event lines (text path). */
-private val TEXT_SUBTITLE_CODECS = setOf(
+/**
+ * Whether a subtitle codec produces text or a picture.
+ *
+ * Asked of the library, because a list of ours is a list of the codecs
+ * somebody remembered. Everything outside it fell to the bitmap branch,
+ * whose decoders emit ASS rects that branch skips -- so microdvd, sami,
+ * plain text, TTML and the rest selected cleanly, reported themselves
+ * active, ran a demux thread and drew nothing at all, with no error
+ * anywhere. The descriptor answers for every codec, including the ones
+ * added after this was written.
+ *
+ * The old list survives as the fallback for an id the library does not
+ * describe, which is not a case that should arise.
+ */
+internal fun isTextSubtitleCodec(codecId: Int): Boolean {
+    val descriptor = Libav.avcodecDescriptorGet(codecId)
+    if (descriptor == MemorySegment.NULL) return codecId in FALLBACK_TEXT_SUBTITLE_CODECS
+    val props = descriptor.reinterpret(LibavAbi.CodecDescriptor.SIZEOF)
+        .get(JAVA_INT, LibavAbi.CodecDescriptor.PROPS)
+    if (props and LibavAbi.AV_CODEC_PROP_BITMAP_SUB != 0) return false
+    return props and LibavAbi.AV_CODEC_PROP_TEXT_SUB != 0
+}
+
+private val FALLBACK_TEXT_SUBTITLE_CODECS = setOf(
     LibavAbi.AV_CODEC_ID_ASS,
     LibavAbi.AV_CODEC_ID_SSA,
     LibavAbi.AV_CODEC_ID_SUBRIP,
@@ -1176,7 +1199,7 @@ internal fun enumerateSubtitleTracks(
             language = dictValue(metadata, languageKey),
             title = dictValue(metadata, titleKey),
             codecName = Libav.avcodecGetName(codecId).reinterpret(Long.MAX_VALUE).getString(0),
-            isText = codecId in TEXT_SUBTITLE_CODECS,
+            isText = isTextSubtitleCodec(codecId),
             isDefault = disposition and LibavAbi.AV_DISPOSITION_DEFAULT != 0,
             isForced = disposition and LibavAbi.AV_DISPOSITION_FORCED != 0,
             externalPath = externalPath,

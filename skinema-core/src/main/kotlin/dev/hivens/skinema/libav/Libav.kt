@@ -255,6 +255,8 @@ object Libav {
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    private val hAvcodecDescriptorGet =
+        fn(LibavLibrary.AVCODEC, "avcodec_descriptor_get", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
     private val hAvPacketSideDataGet = fn(
         LibavLibrary.AVCODEC, "av_packet_side_data_get",
@@ -407,6 +409,14 @@ object Libav {
     fun avBufferRef(buf: MemorySegment): MemorySegment = hAvBufferRef.invoke(buf) as MemorySegment
     fun avBufferUnref(bufPtrPtr: MemorySegment) { hAvBufferUnref.invoke(bufPtrPtr) }
     fun avFrameCopyProps(dst: MemorySegment, src: MemorySegment): Int = hAvFrameCopyProps.invoke(dst, src) as Int
+
+    /**
+     * The library's own description of a codec, or NULL for an id it does not
+     * know. Its property bits say whether a subtitle codec is text or bitmap,
+     * which is a question that should never have been answered by a list.
+     */
+    fun avcodecDescriptorGet(codecId: Int): MemorySegment =
+        hAvcodecDescriptorGet.invoke(codecId) as MemorySegment
 
     /** const AVCodecHWConfig* at [index]; NULL past the last config. */
     fun avcodecGetHwConfig(codec: MemorySegment, index: Int): MemorySegment =

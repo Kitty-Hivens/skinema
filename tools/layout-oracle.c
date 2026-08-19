@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavcodec/codec_desc.h>
 #include <libavfilter/avfilter.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
@@ -96,6 +97,13 @@ int main(void) {
     P(AV_CODEC_ID_MOV_TEXT);
     P(AV_CODEC_ID_WEBVTT);
     P(AV_CODEC_ID_HDMV_PGS_SUBTITLE);
+    /* Whether a subtitle codec is text or bitmap is the library's answer, not
+       a list of ours: every codec carries it, including the ones nobody
+       remembered to enumerate. */
+    P(offsetof(AVCodecDescriptor, props));
+    P(sizeof(AVCodecDescriptor));
+    P(AV_CODEC_PROP_TEXT_SUB);
+    P(AV_CODEC_PROP_BITMAP_SUB);
     P(AV_CODEC_ID_DVD_SUBTITLE);
 
     P(AV_DISPOSITION_ATTACHED_PIC);
