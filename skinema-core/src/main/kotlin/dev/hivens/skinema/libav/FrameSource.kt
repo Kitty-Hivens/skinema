@@ -2,10 +2,11 @@ package dev.hivens.skinema.libav
 
 /**
  * A pull-style RGBA frame source. [VideoDecoder] is the libav-backed
- * implementation covering every format skinema opens; the one
- * format FFmpeg cannot (animated WebP). VideoPlayer paces whichever it
- * gets from [FrameSources] -- the pacing/mailbox layers never know which
- * demuxer feeds them.
+ * implementation and covers every format skinema opens, animated WebP
+ * included -- FFmpeg 9 decodes that itself, so the second implementation
+ * this interface once existed to abstract over is gone. VideoPlayer paces
+ * what it gets from [FrameSources]; the pacing and mailbox layers never
+ * know which demuxer feeds them.
  */
 interface FrameSource : AutoCloseable {
 
