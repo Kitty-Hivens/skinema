@@ -335,6 +335,49 @@ class MediaWriterTest {
         return text
     }
 
+    /**
+     * The container index is the one step of [MediaWriter.finish] that cannot
+     * be retried: av_write_trailer deinitialises the muxer whether it
+     * succeeded or not, so a second call reads memory the first one freed and
+     * arrives as a SIGSEGV rather than a return code. What a retry CAN do is
+     * tell the truth, and it used to report success -- the caller freed the
+     * disk, called finish() again, was told the encode had finished, and kept
+     * a file with no index that nothing opens.
+     *
+     * Staged through /dev/full, which accepts nothing and answers ENOSPC.
+     * The extension is what picks the muxer, so the writer is pointed at a
+     * symlink; the header and a second of 64x64 video fit inside avio's own
+     * buffer, so the device is not touched until the trailer flushes it --
+     * which is exactly the failure being staged.
+     */
+    @Test
+    fun `a finish that could not write the index says so again`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        val full = Path.of("/dev/full")
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            Files.exists(full),
+            "no /dev/full to refuse the write",
+        )
+        val out = dir.resolve("nospace.mkv")
+        Files.createSymbolicLink(out, full)
+        val w = 64
+        val h = 64
+        val writer = MediaWriter.open(out, VideoEncodeConfig("libx264", w, h, 10))
+        try {
+            val frame = solidGreen(w, h)
+            repeat(10) { i -> writer.writeFrame(frame, i * 100_000_000L) }
+            val first = assertFailsWith<LibavException>("the trailer must refuse on a full device") {
+                writer.finish()
+            }
+            val again = assertFailsWith<Throwable>("a retry must not report a success that never happened") {
+                writer.finish()
+            }
+            assertEquals(first, again, "the retry must report the failure it already had")
+        } finally {
+            writer.close()
+        }
+    }
+
     @Test
     fun `an encoder that will not take yuv420p is given what it does take`() {
         // qtrle accepts rgb24, argb, rgb555be and gray -- no yuv420p at all.
