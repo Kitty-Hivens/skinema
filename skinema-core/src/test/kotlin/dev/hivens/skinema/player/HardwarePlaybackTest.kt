@@ -78,14 +78,16 @@ class HardwarePlaybackTest {
         // off, and on this path that reads a GPU frame's header without
         // downloading it -- the cheap seek the hw path is supposed to keep.
         VideoPlayer(video("seek.mp4", "3"), loop = false, hardware = HwAccel.AUTO).use { player ->
-            assertTrue(awaitTrue { player.state is VideoPlayer.State.Playing }, "must start playing")
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             player.seek(2_000_000_000L)
-            val landed = awaitTrue {
-                player.acquireFrame()
-                player.state is VideoPlayer.State.Paused && player.positionNanos() >= 1_900_000_000L
-            }
-            assertTrue(landed, "seek must land, state=${player.state} pos=${player.positionNanos()}")
+            // The frame itself, not a position past a threshold: an exact
+            // landing keeps decoding forward toward its target, so a position
+            // that has merely passed the bar is still moving.
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 2_000_000_000L },
+                "the seek must land on its own frame, pos=${player.positionNanos()}",
+            )
         }
     }
 
@@ -93,20 +95,18 @@ class HardwarePlaybackTest {
     fun `a step backward crosses a keyframe on the hardware path`() {
         assumeHwAcceptance()
         VideoPlayer(video("step.mp4", "3"), loop = false, hardware = HwAccel.AUTO).use { player ->
-            assertTrue(awaitTrue { player.state is VideoPlayer.State.Playing }, "must start playing")
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             player.seek(1_500_000_000L)
             assertTrue(
-                awaitTrue { player.acquireFrame(); player.positionNanos() >= 1_400_000_000L },
-                "must land before stepping",
+                awaitTrue { player.acquireFrame()?.ptsNanos == 1_500_000_000L },
+                "must land on a known frame before stepping",
             )
-            val from = player.positionNanos()
             player.stepBackward()
-            val moved = awaitTrue {
-                player.acquireFrame()
-                player.positionNanos() < from
-            }
-            assertTrue(moved, "a backstep must move back, from=$from now=${player.positionNanos()}")
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 1_400_000_000L },
+                "a backstep must show the frame before it, pos=${player.positionNanos()}",
+            )
         }
     }
 }

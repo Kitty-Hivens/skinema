@@ -5,6 +5,10 @@ skiko        = "0.144.6"
 # Maven Central publishing (signing + Central Portal upload) -- the
 # libtray-proven recipe.
 mavenPublish = "0.37.0"
+# Coverage. Not a score to chase -- the question it answers is which code no
+# test has ever executed, which is how a whole GPU path stayed dead for two
+# months behind a green suite.
+kover        = "0.9.9"
 
 [libraries]
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
@@ -15,3 +19,4 @@ kotlin-jvm              = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotl
 kotlin-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose                 = { id = "org.jetbrains.compose", version.ref = "compose" }
 maven-publish           = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
+kover                   = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
