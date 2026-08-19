@@ -43,10 +43,26 @@ class FrameQueueTest {
         assertTrue(q.hasRoom)
         q.put(2)
         assertFalse(q.hasRoom)
-        q.dropHead()
+        assertTrue(q.dropHead(q.changeTick()))
         assertTrue(q.hasRoom)
-        q.dropHead()
+        assertTrue(q.dropHead(q.changeTick()))
         assertTrue(q.isEmpty)
+    }
+
+    @Test
+    fun `a drop refuses when the queue moved since the caller looked`() {
+        // The pacer decides to drop against a head it peeked, and deciding
+        // takes long enough for a seek to clear the queue and commit its
+        // landing underneath. Dropping unconditionally threw the landing away
+        // and left the picture on the pre-seek frame.
+        val q = FrameQueue(2)
+        q.put(1)
+        val tick = q.changeTick()
+        q.clear()
+        q.put(9, forced = true)
+        assertFalse(q.dropHead(tick), "a stale tick must not drop what replaced the frame it judged")
+        assertEquals(9L, q.peekHead()?.ptsNanos, "the landing must still be there")
+        assertTrue(q.dropHead(q.changeTick()), "a current tick still drops")
     }
 
     @Test

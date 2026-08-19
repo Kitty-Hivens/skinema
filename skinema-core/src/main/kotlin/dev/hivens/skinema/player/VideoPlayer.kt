@@ -1197,8 +1197,17 @@ class VideoPlayer internal constructor(
         // for the first pipeline, which did not exist when it was announced,
         // and for every switch after, which would otherwise drop back to
         // storage resolution mid-playback.
-        announcedCanvas?.let { (w, h) -> fresh.setCanvasSize(w, h) }
+        //
+        // Published BEFORE the announcement is read, which is the order that
+        // closes the gap rather than moves it. The consumer writes the size
+        // and then looks for a pipeline to hand it to; reading first meant
+        // both sides could look past each other -- this one takes the old
+        // value, that one finds no pipeline yet, and the new size is lost
+        // until something resizes the window. Publishing first leaves the
+        // consumer somewhere to put it, and re-stating a value that already
+        // arrived costs nothing.
         subtitlePipeline = fresh
+        announcedCanvas?.let { (w, h) -> fresh.setCanvasSize(w, h) }
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */
@@ -1440,8 +1449,11 @@ class VideoPlayer internal constructor(
                 continue
             }
             if (!shouldPublishLateFrame(-wait, System.nanoTime() - lastPublishWallNanos)) {
-                queue.dropHead()
-                commands.put(Command.RoomFreed)
+                // Against the tick read before the peek: what gets dropped has
+                // to be the frame that was judged, not whatever is at the head
+                // by now. A seek lands in this window and puts its own frame
+                // there.
+                if (queue.dropHead(tick)) commands.put(Command.RoomFreed)
                 continue
             }
             publishFromQueue()
