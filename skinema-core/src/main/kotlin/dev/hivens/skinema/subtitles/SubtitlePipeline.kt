@@ -302,11 +302,9 @@ internal class SubtitlePipeline(
                 .reinterpret(LibavAbi.CodecParameters.SIZEOF)
             if (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_TYPE) != LibavAbi.AVMEDIA_TYPE_ATTACHMENT) continue
             val metadata = stream.get(ADDRESS, LibavAbi.Stream.METADATA)
-            val mime = dictValue(metadata, mimeKey)?.lowercase()
+            val mime = dictValue(metadata, mimeKey)
             val name = dictValue(metadata, nameKey)
-            val fontLike = mime in FONT_MIMETYPES ||
-                name?.let { n -> FONT_SUFFIXES.any { n.endsWith(it, ignoreCase = true) } } == true
-            if (!fontLike) continue
+            if (!isFontAttachment(mime, name)) continue
             val size = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.EXTRADATA_SIZE)
             if (size <= 0) continue
             val data = codecpar.get(ADDRESS, LibavAbi.CodecParameters.EXTRADATA)
@@ -658,7 +656,7 @@ internal class SubtitlePipeline(
         arena.close()
     }
 
-    private companion object {
+    internal companion object {
         /** How far ahead of the clock the demuxer reads. */
         const val HORIZON_NANOS = 30_000_000_000L
 
@@ -699,6 +697,17 @@ internal class SubtitlePipeline(
          * ordinary dialogue density, 40 MiB of them at 1080p rect sizes.
          */
         const val EVICT_NANOS = 2 * REGRESSION_NANOS
+
+        /**
+         * Whether an attachment is a font to hand libass. Containers are
+         * inconsistent about which half says so -- some carry a mimetype and
+         * no useful filename, some the reverse -- so either answer counts.
+         * A cover image or a chapter thumbnail rides in the same attachment
+         * stream and must not.
+         */
+        fun isFontAttachment(mime: String?, name: String?): Boolean =
+            mime?.lowercase() in FONT_MIMETYPES ||
+                name?.let { n -> FONT_SUFFIXES.any { n.endsWith(it, ignoreCase = true) } } == true
 
         /** Attachment mimetypes the wild uses for fonts. */
         val FONT_MIMETYPES = setOf(

@@ -10,6 +10,7 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -640,5 +641,24 @@ class SubtitleTrackSwitchTest {
                 "the new track has nothing here, so the old track's line must go",
             )
         }
+    }
+
+    @Test
+    fun `the attachment rule takes fonts and leaves everything else`() {
+        // Either half may be the one that says so: containers disagree about
+        // whether the mimetype or the filename carries the truth, and anime
+        // releases in the wild use both. What must never pass is the cover
+        // art and the chapter thumbnails riding the same attachment stream.
+        assertTrue(SubtitlePipeline.isFontAttachment("font/ttf", null))
+        assertTrue(SubtitlePipeline.isFontAttachment("application/x-truetype-font", "whatever"))
+        assertTrue(SubtitlePipeline.isFontAttachment("APPLICATION/VND.MS-OPENTYPE", null))
+        assertTrue(SubtitlePipeline.isFontAttachment(null, "Typeset.OTF"))
+        assertTrue(SubtitlePipeline.isFontAttachment(null, "collection.ttc"))
+        assertTrue(SubtitlePipeline.isFontAttachment("application/octet-stream", "signs.ttf"))
+
+        assertFalse(SubtitlePipeline.isFontAttachment(null, null))
+        assertFalse(SubtitlePipeline.isFontAttachment("image/png", "cover.png"))
+        assertFalse(SubtitlePipeline.isFontAttachment("application/octet-stream", "notes.txt"))
+        assertFalse(SubtitlePipeline.isFontAttachment("", ""))
     }
 }
