@@ -300,6 +300,18 @@ class VideoPlayer internal constructor(
     private var lastPublishedPts = 0L
 
     /**
+     * Whether the lap now running has produced a single frame.
+     *
+     * A looping player whose source yields nothing wraps, reads EOF at once,
+     * wraps again -- and the wrap is not cheap: a source whose demuxer cannot
+     * seek is reopened from disk on every turn. Measured on a source with no
+     * frames at all: a full core, indefinitely, with the state reporting
+     * Playing. A lap that produced nothing cannot be looped, so it ends
+     * instead, which is what a file with no pictures deserves either way.
+     */
+    private var lapProducedFrames = false
+
+    /**
      * Set while the pacer is between taking a frame off the queue and
      * writing the playhead it just published.
      *
@@ -744,6 +756,14 @@ class VideoPlayer internal constructor(
                     continue
                 }
                 eofPending = false
+                if (loop && !lapProducedFrames) {
+                    // Nothing came of this lap, so the next one has nothing to
+                    // come of either -- and turning it costs a demuxer restart
+                    // for a source that cannot seek. Spinning on that is what
+                    // this used to do.
+                    enterEnded()
+                    continue
+                }
                 if (loop) {
                     when (awaitLapPlayedOut(decoder)) {
                         LapWait.CLOSE -> return
@@ -809,6 +829,7 @@ class VideoPlayer internal constructor(
 
     /** Converts the decoder's current frame into a queue cell. */
     private fun enqueue(decoder: FrameSource, raw: VideoDecoder.RgbaFrame, forced: Boolean) {
+        lapProducedFrames = true
         // Whether the GPU took this stream is only knowable once a frame has
         // come back from it, and the open-time reading is the request. The
         // answer only ever goes from hardware to software (a hwaccel that
@@ -1336,6 +1357,7 @@ class VideoPlayer internal constructor(
      * treats every frame as still settling.
      */
     private fun restartLap(decoder: FrameSource, resume: Boolean) {
+        lapProducedFrames = false
         decoder.seekTo(0)
         audioPipeline?.takeIf { it.alive }?.let {
             it.seek(0)

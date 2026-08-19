@@ -64,7 +64,11 @@ class ScriptedFrameSource(
 
     override fun convertLast(target: ByteArray?): VideoDecoder.RgbaFrame = fill(target, lastIndex)
 
+    /** Seeks asked for; a lap that turns without producing anything shows up here. */
+    val seekCount = AtomicInteger(0)
+
     override fun seekTo(ptsNanos: Long) {
+        seekCount.incrementAndGet()
         // At-or-before on the keyframe grid; also reopens a drained
         // stream, per the FrameSource contract.
         val frame = (ptsNanos / periodNanos).toInt()

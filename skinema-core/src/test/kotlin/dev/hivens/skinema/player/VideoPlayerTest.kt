@@ -1518,4 +1518,21 @@ class VideoPlayerTest {
             assertIs<VideoPlayer.State.Playing>(player.state)
         }
     }
+
+    @Test
+    fun `a looping source that yields nothing ends instead of turning forever`() {
+        // Measured before this was guarded: a full core, indefinitely, with
+        // the state reporting Playing. Each turn is a seek, and for a source
+        // whose demuxer cannot seek it is a reopen from disk.
+        val source = ScriptedFrameSource(frameCount = 0)
+        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null) { source }.use { player ->
+            assertTrue(
+                awaitTrue(3_000) { player.state is VideoPlayer.State.Ended },
+                "a lap with no frames must end, state was ${player.state}",
+            )
+            val turns = source.seekCount.get()
+            Thread.sleep(200)
+            assertEquals(turns, source.seekCount.get(), "nothing may keep turning the lap after it ended")
+        }
+    }
 }
