@@ -537,15 +537,23 @@ class AudioPipelineTest {
             // there is none of, and the recovery path gets one back.
             assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
             assertFalse(pipeline.isEnded, "a refused rate is not the end of the audio")
-            // Let the device consume again before asking for more sound. A
-            // pinned playhead is a device that plays nothing, and a pipeline
-            // that kept writing into one would be the defect, not the fix.
-            val played = sink.totalBytes
-            sink.positionFrames.set(44_100L * 3)
+            // Counted from the flush the switch performed on its way in, and
+            // nothing flushes the line again, so every byte here was written
+            // after the refusal -- by the recovery.
+            //
+            // The total is no good for that: nothing throttles this sink, so
+            // the pipeline hands it a whole track in one burst, and a total
+            // sampled once the recovery is visible may already be the burst's
+            // final value. Then no further byte ever arrives -- the playhead
+            // is pinned, so the tail wait parks for the length of the tail --
+            // and moving the playhead does not start a writer that was never
+            // waiting on it. That read the wrong way round on a runner quick
+            // enough to finish the burst first.
             assertTrue(
-                awaitTrue { sink.totalBytes > played },
-                "sound must reach the device again once it starts consuming",
+                awaitTrue { sink.bytesSinceLastFlush > 0 },
+                "the recovered line must be fed again",
             )
+            assertEquals(0, sink.writesWhileStopped, "recovery must not write into the frozen line")
         } finally {
             pipeline.close()
         }

@@ -341,6 +341,16 @@ internal class AudioPipeline(
                 if (!handle(cmd)) return
                 cmd = commands.poll()
             }
+            // A command can lose the device. A track switch whose line refuses
+            // the new track's rate leaves that line stopped and hands the
+            // reopen to recovery -- and the check at the top of the loop ran
+            // before the command was read, while the writes below never ask.
+            // So the pump handed a chunk to a line it had just stopped itself:
+            // a stopped line never drains, and the start() that would revive it
+            // is on this very thread. On a real device that write either blocks
+            // for good or throws its way out of the pump and ends this side,
+            // which is the outcome the refusal path exists to avoid.
+            if (deviceLost) continue
             if (paused || isEnded || awaitingLanding) {
                 val idle = commands.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 if (!handle(idle)) return
