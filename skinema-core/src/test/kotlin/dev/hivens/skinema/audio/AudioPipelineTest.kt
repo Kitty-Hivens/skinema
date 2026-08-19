@@ -537,10 +537,14 @@ class AudioPipelineTest {
             // there is none of, and the recovery path gets one back.
             assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
             assertFalse(pipeline.isEnded, "a refused rate is not the end of the audio")
+            // Let the device consume again before asking for more sound. A
+            // pinned playhead is a device that plays nothing, and a pipeline
+            // that kept writing into one would be the defect, not the fix.
             val played = sink.totalBytes
+            sink.positionFrames.set(44_100L * 3)
             assertTrue(
                 awaitTrue { sink.totalBytes > played },
-                "sound must keep reaching the device after the refusal",
+                "sound must reach the device again once it starts consuming",
             )
         } finally {
             pipeline.close()
