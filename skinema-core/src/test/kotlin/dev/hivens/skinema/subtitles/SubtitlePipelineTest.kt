@@ -462,7 +462,6 @@ class SubtitlePipelineTest {
         }
     }
 
-
     /**
      * A seek reaches this side BEFORE the clock does: the video landing is
      * a keyframe jump plus a decode-forward run, seconds on sparse
@@ -576,6 +575,74 @@ class SubtitlePipelineTest {
             pipeline.close()
         }
     }
+
+    @Test
+    fun `the attachment rule takes fonts and leaves everything else`() {
+        // Either half may be the one that says so: containers disagree about
+        // whether the mimetype or the filename carries the truth, and anime
+        // releases in the wild use both. What must never pass is the cover
+        // art and the chapter thumbnails riding the same attachment stream.
+        assertTrue(SubtitlePipeline.isFontAttachment("font/ttf", null))
+        assertTrue(SubtitlePipeline.isFontAttachment("application/x-truetype-font", "whatever"))
+        assertTrue(SubtitlePipeline.isFontAttachment("APPLICATION/VND.MS-OPENTYPE", null))
+        assertTrue(SubtitlePipeline.isFontAttachment(null, "Typeset.OTF"))
+        assertTrue(SubtitlePipeline.isFontAttachment(null, "collection.ttc"))
+        assertTrue(SubtitlePipeline.isFontAttachment("application/octet-stream", "signs.ttf"))
+
+        assertFalse(SubtitlePipeline.isFontAttachment(null, null))
+        assertFalse(SubtitlePipeline.isFontAttachment("image/png", "cover.png"))
+        assertFalse(SubtitlePipeline.isFontAttachment("application/octet-stream", "notes.txt"))
+        assertFalse(SubtitlePipeline.isFontAttachment("", ""))
+    }
+
+    @Test
+    fun `a bitmap rect is sized from its geometry, or refused`() {
+        // The rect comes from a decoder, so a real file cannot reach the
+        // refusals -- which is exactly why the decision is held here rather
+        // than through a fixture. What it guards is the narrowing: the size
+        // is computed in Long and used as an Int, so a rect claiming an
+        // implausible geometry would pick its allocation out of a truncated
+        // number.
+        assertEquals(1920 * 1080, SubtitlePipeline.indexPlaneBytes(1920, 1080, 1920))
+        // Padded rows: the last one carries only its width.
+        assertEquals(2048 * 99 + 100, SubtitlePipeline.indexPlaneBytes(100, 100, 2048))
+
+        assertNull(SubtitlePipeline.indexPlaneBytes(0, 100, 100), "no width is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 0, 100), "no height is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100, 0), "no stride is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(-1, 100, 100))
+        // Beyond any subtitle, and beyond what an Int would carry honestly.
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100_000, 100_000), "an implausible plane is refused")
+        assertNull(SubtitlePipeline.indexPlaneBytes(Int.MAX_VALUE, Int.MAX_VALUE, Int.MAX_VALUE))
+    }
+
+    @Test
+    fun `a declared window is honoured however long it is`() {
+        // Measured against the real thing: an srt cue reading 20s to 35s
+        // reports a packet duration of 15000 ms, and the old ladder threw
+        // that away -- it treated anything at or past the ten-second default
+        // as "nobody knows" and left the cue open-ended, so a long title card
+        // cleared on the next event or never.
+        val start = 1_000_000_000L
+        assertEquals(
+            start + 15_000L * 1_000_000,
+            SubtitlePipeline.bitmapWindowEnd(start, 0, 0, 15_000),
+            "fifteen seconds is fifteen seconds",
+        )
+        assertEquals(
+            start + 10_000L * 1_000_000,
+            SubtitlePipeline.bitmapWindowEnd(start, 0, 0, 10_000),
+            "and so is exactly ten, which used to be the sentinel",
+        )
+        // The cue's own window wins over the packet's, when it has one.
+        assertEquals(
+            start + 400L * 1_000_000,
+            SubtitlePipeline.bitmapWindowEnd(start, 100, 500, 9_000),
+        )
+        // Nothing said: up until whatever comes next.
+        assertEquals(Long.MAX_VALUE, SubtitlePipeline.bitmapWindowEnd(start, 0, 0, null))
+        assertEquals(Long.MAX_VALUE, SubtitlePipeline.bitmapWindowEnd(start, 0, 0, 0))
+    }
 }
 
 /**
@@ -644,43 +711,4 @@ class SubtitleTrackSwitchTest {
         }
     }
 
-    @Test
-    fun `the attachment rule takes fonts and leaves everything else`() {
-        // Either half may be the one that says so: containers disagree about
-        // whether the mimetype or the filename carries the truth, and anime
-        // releases in the wild use both. What must never pass is the cover
-        // art and the chapter thumbnails riding the same attachment stream.
-        assertTrue(SubtitlePipeline.isFontAttachment("font/ttf", null))
-        assertTrue(SubtitlePipeline.isFontAttachment("application/x-truetype-font", "whatever"))
-        assertTrue(SubtitlePipeline.isFontAttachment("APPLICATION/VND.MS-OPENTYPE", null))
-        assertTrue(SubtitlePipeline.isFontAttachment(null, "Typeset.OTF"))
-        assertTrue(SubtitlePipeline.isFontAttachment(null, "collection.ttc"))
-        assertTrue(SubtitlePipeline.isFontAttachment("application/octet-stream", "signs.ttf"))
-
-        assertFalse(SubtitlePipeline.isFontAttachment(null, null))
-        assertFalse(SubtitlePipeline.isFontAttachment("image/png", "cover.png"))
-        assertFalse(SubtitlePipeline.isFontAttachment("application/octet-stream", "notes.txt"))
-        assertFalse(SubtitlePipeline.isFontAttachment("", ""))
-    }
-
-    @Test
-    fun `a bitmap rect is sized from its geometry, or refused`() {
-        // The rect comes from a decoder, so a real file cannot reach the
-        // refusals -- which is exactly why the decision is held here rather
-        // than through a fixture. What it guards is the narrowing: the size
-        // is computed in Long and used as an Int, so a rect claiming an
-        // implausible geometry would pick its allocation out of a truncated
-        // number.
-        assertEquals(1920 * 1080, SubtitlePipeline.indexPlaneBytes(1920, 1080, 1920))
-        // Padded rows: the last one carries only its width.
-        assertEquals(2048 * 99 + 100, SubtitlePipeline.indexPlaneBytes(100, 100, 2048))
-
-        assertNull(SubtitlePipeline.indexPlaneBytes(0, 100, 100), "no width is no rect")
-        assertNull(SubtitlePipeline.indexPlaneBytes(100, 0, 100), "no height is no rect")
-        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100, 0), "no stride is no rect")
-        assertNull(SubtitlePipeline.indexPlaneBytes(-1, 100, 100))
-        // Beyond any subtitle, and beyond what an Int would carry honestly.
-        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100_000, 100_000), "an implausible plane is refused")
-        assertNull(SubtitlePipeline.indexPlaneBytes(Int.MAX_VALUE, Int.MAX_VALUE, Int.MAX_VALUE))
-    }
 }
