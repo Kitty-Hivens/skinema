@@ -5,6 +5,7 @@ import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.audio.PacedPcmSink
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
+import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.libav.Fixtures
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -1608,5 +1609,59 @@ class VideoPlayerTest {
         closer.join(5_000)
         assertFalse(sawPlaying, "a player must not announce itself Playing after close() returned")
         assertTrue(player.state is VideoPlayer.State.Closed, "and must settle Closed, saw ${player.state}")
+    }
+
+    /**
+     * The pacer reads the clock, and with an explicit clock that is the
+     * caller's own code -- so the pacer can throw like any other thread here.
+     * It was the only one that did not catch, and its death was the quietest
+     * failure the player had: the decode thread's wait for a free cell ends
+     * only when the queue closes, and only the decode thread closes it, so
+     * the producer parked on a consumer that was already gone. close() then
+     * spent its whole budget joining a thread that was never coming back and
+     * returned having freed nothing -- decoder, native session and device all
+     * still open, and with sound, still playing.
+     *
+     * The seek is what reaches the park: normal fill checks for room before
+     * it decodes, while a seek commits a preview and a landing back to back
+     * and at depth 1 the landing must wait out the preview's pop.
+     */
+    @Test
+    fun `a pacer that dies fails the player instead of parking the decode thread`() {
+        val inner = PlaybackClock()
+        val clock = object : MediaClock {
+            override val isPaused: Boolean get() = inner.isPaused
+            override fun start(atMediaNanos: Long) = inner.start(atMediaNanos)
+            override fun pause() = inner.pause()
+            override fun resume() = inner.resume()
+            override fun seek(mediaNanos: Long) = inner.seek(mediaNanos)
+            override fun mediaNanos(): Long {
+                // Only the pacer's reading throws. The decode thread reads the
+                // same clock to judge lateness, and a throw there is a
+                // different failure with its own path.
+                if (Thread.currentThread().name == "skinema-pace") error("the clock is gone")
+                return inner.mediaNanos()
+            }
+        }
+        val source = ScriptedFrameSource(frameCount = 500)
+        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null) { source }
+        try {
+            assertTrue(
+                awaitTrue(5_000) { player.state is VideoPlayer.State.Failed },
+                "a dead pacer must reach the caller as Failed, saw ${player.state}",
+            )
+            // A caller does press on after the picture stops. A Failed
+            // player refuses the commands that could park its decode thread,
+            // so this is the press that used to reach the park and now does
+            // not -- and close() below is where that shows.
+            player.seek(1_000_000_000L)
+            val startedAt = System.nanoTime()
+            player.close()
+            val tookMs = (System.nanoTime() - startedAt) / 1_000_000
+            assertTrue(tookMs < 3_000, "close() must not spend its join budget on a parked thread, took ${tookMs}ms")
+            assertTrue(source.closed.get(), "close() must actually tear the decoder down")
+        } finally {
+            player.close()
+        }
     }
 }

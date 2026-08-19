@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.VideoDecoder
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -75,7 +76,12 @@ class ScriptedFrameSource(
         index = (frame / keyframeEvery * keyframeEvery).coerceIn(0, frameCount)
     }
 
-    override fun close() = Unit
+    /** Set by [close]; a teardown that never ran shows up here. */
+    val closed = AtomicBoolean(false)
+
+    override fun close() {
+        closed.set(true)
+    }
 
     private fun fill(target: ByteArray?, i: Int): VideoDecoder.RgbaFrame {
         convertCount.incrementAndGet()

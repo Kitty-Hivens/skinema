@@ -435,6 +435,17 @@ internal class AudioPipeline(
         try {
             sink.write(data, offset, length)
             queuedFrames += length / BYTES_PER_FRAME
+        } catch (t: Throwable) {
+            // The watchdog's whole rescue is to close the line out from under
+            // a write that will not return, and a backend is within its
+            // rights to throw rather than return from that. Left to travel,
+            // the throw reached run()'s handler and finished this side for
+            // good -- so the device came back to a [recover] that was never
+            // going to run, and the file stayed silent for the session.
+            // [deviceLost] is set before the close, so a throw with it
+            // standing is the rescue arriving, not a fault of its own.
+            if (!deviceLost) throw t
+            Debug.trace("audio write released by the device-loss rescue", t)
         } finally {
             writeInFlightSince = 0L
         }
