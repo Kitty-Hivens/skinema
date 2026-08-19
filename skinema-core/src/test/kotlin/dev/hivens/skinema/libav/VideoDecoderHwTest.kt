@@ -6,6 +6,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -226,6 +227,29 @@ class VideoDecoderHwTest {
         }
         val mean = sum.toDouble() / software.size
         assertTrue(mean < 4.0, "mean channel difference must be small, got $mean (worst $worst)")
+    }
+
+    @Test
+    fun `REQUIRE fails closed on a stream no device can decode`() {
+        assumeHwAcceptance()
+        // A machine WITH a working GPU still has to refuse here, and that is
+        // the half nothing exercised: where a device opens, the throw never
+        // fires, and where none opens the whole suite skips. A still image
+        // has no hardware config for any device type at all, so the refusal
+        // is reached without pretending the machine lacks a GPU.
+        val png = Fixtures.generate(
+            dir.resolve("still.png"),
+            "-f", "lavfi", "-i", "color=c=blue:size=64x64", "-frames:v", "1",
+        )
+        assertFailsWith<LibavException>("REQUIRE must refuse what no device can take") {
+            VideoDecoder.open(png, HwAccel.REQUIRE).close()
+        }
+        // And the same file decodes when nothing was required of it, so the
+        // refusal is about the request rather than the file being unreadable.
+        VideoDecoder.open(png, HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "AUTO must fall back and decode it")
+            assertFalse(d.hardwareActive(), "there is no device for this stream to be on")
+        }
     }
 
     @Test
