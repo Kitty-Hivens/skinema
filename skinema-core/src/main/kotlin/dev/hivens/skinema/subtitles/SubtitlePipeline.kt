@@ -433,6 +433,9 @@ internal class SubtitlePipeline(
                 ingestBitmapEvent(subtitle, timecodeMs * 1_000_000, durationMs)
                 return
             }
+            // Text needs a number here whatever happens; a picture can stay up
+            // until the next event, and does.
+            val textDurationMs = durationMs ?: DEFAULT_DURATION_MS
 
             val numRects = subtitle.get(JAVA_INT, LibavAbi.Subtitle.NUM_RECTS)
             if (numRects == 0) return
@@ -448,7 +451,7 @@ internal class SubtitlePipeline(
                 val bytes = event.reinterpret(Long.MAX_VALUE)
                 var length = 0
                 while (bytes.get(JAVA_BYTE, length.toLong()) != ZERO_BYTE) length++
-                Ass.processChunk(assTrack, event, length, timecodeMs, durationMs)
+                Ass.processChunk(assTrack, event, length, timecodeMs, textDurationMs)
             }
         } finally {
             Libav.avsubtitleFree(subtitle)
@@ -461,17 +464,13 @@ internal class SubtitlePipeline(
      * stays open until the NEXT event (the pgs idiom: content sets
      * follow each other and num_rects == 0 is the explicit clear).
      */
-    private fun ingestBitmapEvent(subtitle: MemorySegment, startNanos: Long, durationMs: Long) {
+    private fun ingestBitmapEvent(subtitle: MemorySegment, startNanos: Long, durationMs: Long?) {
         // The next event ends an open-ended predecessor either way.
         bitmapEvents.lastOrNull()?.takeIf { it.endNanos == Long.MAX_VALUE }?.endNanos = startNanos
 
         val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
         val end = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong()
-        val endNanos = when {
-            end > start -> startNanos + (end - start) * 1_000_000
-            durationMs in 1 until DEFAULT_DURATION_MS -> startNanos + durationMs * 1_000_000
-            else -> Long.MAX_VALUE
-        }
+        val endNanos = bitmapWindowEnd(startNanos, start, end, durationMs)
 
         val numRects = subtitle.get(JAVA_INT, LibavAbi.Subtitle.NUM_RECTS)
         if (numRects == 0) {
@@ -546,15 +545,23 @@ internal class SubtitlePipeline(
         buffer.publish()
     }
 
-    /** Packet duration, else the subtitle's own window, else 10s (circus). */
-    private fun packetDurationMs(packet: MemorySegment, subtitle: MemorySegment): Long {
+    /**
+     * How long this cue is meant to be up, or null when nothing says.
+     *
+     * Null rather than the default, because the two were the same value and
+     * a caller could not tell them apart: a cue genuinely declaring ten
+     * seconds or more read as "nobody knows" and became open-ended, so a
+     * title card held for fifteen seconds was cleared by the next event or
+     * not at all. The default belongs at the point that needs one.
+     */
+    private fun packetDurationMs(packet: MemorySegment, subtitle: MemorySegment): Long? {
         // A duration delta, not a timestamp -- start_time does not apply.
         val packetDuration = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION)
         if (packetDuration > 0) return ptsToNanos(packetDuration, timeBaseNum, timeBaseDen) / 1_000_000
         val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
         val end = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong()
         if (end > start) return end - start
-        return DEFAULT_DURATION_MS
+        return null
     }
 
     private fun handle(cmd: Command): Boolean = when (cmd) {
@@ -732,6 +739,28 @@ internal class SubtitlePipeline(
             val bytes = linesize.toLong() * (height - 1) + width
             if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
             return bytes.toInt()
+        }
+
+        /**
+         * When a bitmap cue stops being shown: its own declared window, else
+         * the packet's duration, else open-ended until the next event.
+         *
+         * The middle arm used to read `durationMs in 1 until DEFAULT`, to
+         * exclude the ten-second sentinel that meant "nobody knows" -- and it
+         * excluded every genuine window of ten seconds or more with it. A
+         * title card declaring fifteen went open-ended and was cleared by the
+         * next event, or never. Absence is spelled null now, so a real
+         * fifteen seconds is fifteen seconds.
+         */
+        internal fun bitmapWindowEnd(
+            startNanos: Long,
+            displayStartMs: Long,
+            displayEndMs: Long,
+            durationMs: Long?,
+        ): Long = when {
+            displayEndMs > displayStartMs -> startNanos + (displayEndMs - displayStartMs) * 1_000_000
+            durationMs != null && durationMs > 0 -> startNanos + durationMs * 1_000_000
+            else -> Long.MAX_VALUE
         }
 
         /** AVPALETTE_SIZE in entries: what every subtitle decoder allocates. */
