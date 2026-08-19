@@ -10,6 +10,7 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertNull
 import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -660,5 +661,26 @@ class SubtitleTrackSwitchTest {
         assertFalse(SubtitlePipeline.isFontAttachment("image/png", "cover.png"))
         assertFalse(SubtitlePipeline.isFontAttachment("application/octet-stream", "notes.txt"))
         assertFalse(SubtitlePipeline.isFontAttachment("", ""))
+    }
+
+    @Test
+    fun `a bitmap rect is sized from its geometry, or refused`() {
+        // The rect comes from a decoder, so a real file cannot reach the
+        // refusals -- which is exactly why the decision is held here rather
+        // than through a fixture. What it guards is the narrowing: the size
+        // is computed in Long and used as an Int, so a rect claiming an
+        // implausible geometry would pick its allocation out of a truncated
+        // number.
+        assertEquals(1920 * 1080, SubtitlePipeline.indexPlaneBytes(1920, 1080, 1920))
+        // Padded rows: the last one carries only its width.
+        assertEquals(2048 * 99 + 100, SubtitlePipeline.indexPlaneBytes(100, 100, 2048))
+
+        assertNull(SubtitlePipeline.indexPlaneBytes(0, 100, 100), "no width is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 0, 100), "no height is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100, 0), "no stride is no rect")
+        assertNull(SubtitlePipeline.indexPlaneBytes(-1, 100, 100))
+        // Beyond any subtitle, and beyond what an Int would carry honestly.
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100_000, 100_000), "an implausible plane is refused")
+        assertNull(SubtitlePipeline.indexPlaneBytes(Int.MAX_VALUE, Int.MAX_VALUE, Int.MAX_VALUE))
     }
 }
