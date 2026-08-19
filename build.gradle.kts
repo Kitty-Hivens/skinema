@@ -125,6 +125,13 @@ subprojects {
 subprojects {
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions.allWarningsAsErrors.set(true)
+        // The floor the README promises, enforced instead of asserted. Every
+        // module targets 22 while the toolchain is 25, so without this Kotlin
+        // compiles against 25's class library: an API added after 22 would
+        // build here, ship, and fail at the consumer on the very version the
+        // documentation tells them is enough. The Java half already does this
+        // through options.release.
+        compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
     }
 }
 
