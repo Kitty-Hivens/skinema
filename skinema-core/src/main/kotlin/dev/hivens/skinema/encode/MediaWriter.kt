@@ -128,6 +128,14 @@ class MediaWriter private constructor(
         drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen, video.frameDurationMicros)
         audio?.let { a ->
             // A short final frame, then the flush packet.
+            // Whole frames first. send() encodes at most one frame's worth,
+            // so a single call left everything past the first frame in the
+            // buffer -- and silently, because the clamp that stopped an
+            // overrun turned the excess into data nobody encodes.
+            while (a.hasFullFrame()) {
+                a.send(a.frameSize)
+                drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
+            }
             a.remainingSamples()?.let { samples ->
                 a.send(samples)
                 drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
@@ -271,17 +279,23 @@ class MediaWriter private constructor(
         fun send(rgba: ByteArray, ptsNanos: Long) {
             require(rgba.size == width * height * 4) { "frame must be ${width * height * 4} RGBA bytes, got ${rgba.size}" }
             if (swsCtx == MemorySegment.NULL) {
-                swsCtx = Libav.swsGetContext(
+                // Built into a local and published at the end. Assigning the
+                // field first meant a throw in between -- the colourspace call
+                // below -- left a context standing whose source buffers had
+                // never been allocated, and the next frame skipped this block
+                // and handed swscale a null. The decode side had the same
+                // shape and the same fix.
+                val ctx = Libav.swsGetContext(
                     width, height, LibavAbi.AV_PIX_FMT_RGBA,
                     width, height, dstFormat, LibavAbi.SWS_BILINEAR,
                 )
-                if (swsCtx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
+                if (ctx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
                 // The other half of the tag written on the encoder: the
                 // conversion has to USE the matrix the file will claim.
                 // RGBA is full range in, limited range out.
                 val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, width, height))
                 Libav.checkAv(
-                    Libav.swsSetColorspaceDetails(swsCtx, coefficients, 1, coefficients, 0, 0, SWS_UNIT, SWS_UNIT),
+                    Libav.swsSetColorspaceDetails(ctx, coefficients, 1, coefficients, 0, 0, SWS_UNIT, SWS_UNIT),
                     "sws_setColorspaceDetails(encode)",
                 )
                 // Padded: swscale reads whole SIMD blocks, so it can read past
@@ -290,6 +304,7 @@ class MediaWriter private constructor(
                 srcNative = arena.allocate(width.toLong() * height * 4 + SWS_READ_PADDING)
                 srcData = arena.allocate(ADDRESS, 8).also { it.setAtIndex(ADDRESS, 0, srcNative) }
                 srcStride = arena.allocate(JAVA_INT, 8).also { it.setAtIndex(JAVA_INT, 0, width * 4) }
+                swsCtx = ctx
             }
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(video)")
             MemorySegment.copy(rgba, 0, srcNative, JAVA_BYTE, 0, rgba.size)
@@ -383,8 +398,11 @@ class MediaWriter private constructor(
             Libav.checkAv(converted, "swr_convert(audio encode)")
             frame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, samples)
             frame.set(JAVA_LONG, LibavAbi.Frame.PTS, samplesEncoded)
-            samplesEncoded += samples
             Libav.checkAv(Libav.avcodecSendFrame(codecCtx, frame), "avcodec_send_frame(audio)")
+            // After the send, with the buffer, so a throw leaves both where
+            // they were. Moved first, a caller that retried re-encoded the
+            // same samples a frame late -- duplicated sound and a gap.
+            samplesEncoded += samples
             System.arraycopy(pcm, bytes, pcm, 0, pcmLen - bytes)
             pcmLen -= bytes
         }
