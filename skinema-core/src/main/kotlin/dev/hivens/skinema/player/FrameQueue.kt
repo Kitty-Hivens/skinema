@@ -169,13 +169,29 @@ internal class FrameQueue(depth: Int) {
     }
 
     /** Pops the head without taking its pixels (a dropped late frame). */
-    fun dropHead() {
+    /**
+     * Drops the head the caller judged, and only that one.
+     *
+     * [sinceTick] is the reading taken before the peek the decision was made
+     * on. Deciding to drop takes real time -- the clock reading in the middle
+     * of it reaches the audio device -- and a seek in that window clears this
+     * queue and commits its landing, so an unconditional drop discarded the
+     * landing instead of the late frame it had judged. The picture then stayed
+     * on the pre-seek frame while the position and the sound sat at the
+     * target, and on an inexact seek nothing else was ever coming.
+     *
+     * Every other consumer operation already re-validates -- poll returns null
+     * on an emptied queue, publish re-peeks -- so this one was the exception.
+     * Returns false when the queue moved on and the caller should look again.
+     */
+    fun dropHead(sinceTick: Long): Boolean {
         synchronized(lock) {
-            if (count == 0) return
+            if (changes != sinceTick || count == 0) return false
             head = (head + 1) % cells.size
             count--
             changes++
             lock.notifyAll()
+            return true
         }
     }
 }
