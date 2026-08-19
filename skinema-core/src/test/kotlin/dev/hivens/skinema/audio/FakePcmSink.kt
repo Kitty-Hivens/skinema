@@ -45,7 +45,19 @@ class FakePcmSink : PcmSink {
     val totalBytes: Int get() = synchronized(all) { all.size() }
     val bytesSinceLastFlush: Int get() = synchronized(all) { sinceFlush.size() }
 
+    /**
+     * When set, the next [open] throws and clears the flag -- the device that
+     * will not come back at the new track's rate. A track switch opens the
+     * line before it commits to anything, so this is where that failure
+     * lands. Off by default; [BoundedPcmSink] models the permanent version.
+     */
+    var failNextOpen = false
+
     override fun open(sampleRate: Int) {
+        if (failNextOpen) {
+            failNextOpen = false
+            throw IllegalStateException("device refused the new rate")
+        }
         this.sampleRate = sampleRate
         // Per the contract, open STARTS the device -- a fake that leaves
         // [stopped] untouched would let freeze-across-reopen tests pass

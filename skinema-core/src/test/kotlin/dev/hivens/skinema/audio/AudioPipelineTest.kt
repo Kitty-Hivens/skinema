@@ -512,6 +512,36 @@ class AudioPipelineTest {
     }
 
     @Test
+    fun `a line that refuses the new track's rate does not end this side`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(twoTracks("noreopen.mka"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.opens == 1 && sink.totalBytes > 0 }, "the first track must be playing")
+
+            // A switch opens the line for the new rate before it commits to
+            // anything. The refusal used to travel out of the command handler
+            // and end the audio thread for good: the file went silent and the
+            // video side read the dead pipeline as a track that had finished.
+            sink.failNextOpen = true
+            pipeline.selectTrack(1)
+
+            // What must happen instead: the clock stops depending on a line
+            // there is none of, and the recovery path gets one back.
+            assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
+            assertFalse(pipeline.isEnded, "a refused rate is not the end of the audio")
+            val played = sink.totalBytes
+            assertTrue(
+                awaitTrue { sink.totalBytes > played },
+                "sound must keep reaching the device after the refusal",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `a switch to an unknown index is a no-op`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
