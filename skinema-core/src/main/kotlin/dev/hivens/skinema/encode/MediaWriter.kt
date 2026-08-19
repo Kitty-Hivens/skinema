@@ -660,6 +660,12 @@ class MediaWriter private constructor(
                 if (openedIo) {
                     ptrPtr.set(ADDRESS, 0, fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB))
                     Libav.avioClosep(ptrPtr)
+                    // The same reason close() nulls it: avformat_free_context
+                    // below dispatches into the muxer's deinit once the header
+                    // has been written, and that must not be handed a freed
+                    // pointer. One of the two teardown paths documented the
+                    // rule and the other did not follow it.
+                    fmtCtx.set(ADDRESS, LibavAbi.FormatContext.PB, MemorySegment.NULL)
                     // avio_open truncates on the way in, so a refusal after it
                     // -- a codec the inferred container will not carry, above
                     // all -- had already destroyed whatever was at that path
