@@ -488,14 +488,16 @@ internal class SubtitlePipeline(
             val height = rect.get(JAVA_INT, LibavAbi.SubtitleRect.H)
             val colors = rect.get(JAVA_INT, LibavAbi.SubtitleRect.NB_COLORS)
             val linesize = rect.get(JAVA_INT, LibavAbi.SubtitleRect.LINESIZE)
-            if (width <= 0 || height <= 0 || colors <= 0 || linesize <= 0) continue
+            if (colors <= 0) continue
+            val indexBytes = indexPlaneBytes(width, height, linesize) ?: continue
             val indicesPtr = rect.get(ADDRESS, LibavAbi.SubtitleRect.DATA)
             val palettePtr = rect.get(ADDRESS, LibavAbi.SubtitleRect.DATA + ADDRESS.byteSize())
             if (indicesPtr == MemorySegment.NULL || palettePtr == MemorySegment.NULL) continue
 
-            val indexBytes = linesize.toLong() * (height - 1) + width
-            val indices = ByteArray(indexBytes.toInt())
-            MemorySegment.copy(indicesPtr.reinterpret(indexBytes), JAVA_BYTE, 0, indices, 0, indices.size)
+            val indices = ByteArray(indexBytes)
+            MemorySegment.copy(
+                indicesPtr.reinterpret(indexBytes.toLong()), JAVA_BYTE, 0, indices, 0, indices.size,
+            )
             val palette = IntArray(colors)
             val paletteSeg = palettePtr.reinterpret(colors * 4L)
             for (c in 0 until colors) palette[c] = paletteSeg.getAtIndex(JAVA_INT, c.toLong())
@@ -708,6 +710,27 @@ internal class SubtitlePipeline(
         fun isFontAttachment(mime: String?, name: String?): Boolean =
             mime?.lowercase() in FONT_MIMETYPES ||
                 name?.let { n -> FONT_SUFFIXES.any { n.endsWith(it, ignoreCase = true) } } == true
+
+        /**
+         * Bytes in a bitmap rect's index plane, or null when the geometry is
+         * not one a subtitle can have.
+         *
+         * The rect comes from a decoder, so this is defence in depth rather
+         * than validation -- but the arithmetic is done in Long and used as
+         * an Int, and a rect claiming an implausible size would otherwise
+         * pick the allocation size out of a truncated number. The ceiling is
+         * far above anything real: a 4096x4096 indexed plane is 16 MiB, and
+         * PGS at 1080p is nearer two.
+         */
+        internal fun indexPlaneBytes(width: Int, height: Int, linesize: Int): Int? {
+            if (width <= 0 || height <= 0 || linesize <= 0) return null
+            val bytes = linesize.toLong() * (height - 1) + width
+            if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
+            return bytes.toInt()
+        }
+
+        /** Ceiling on a single bitmap rect's index plane; see [indexPlaneBytes]. */
+        const val MAX_RECT_BYTES = 64L * 1024 * 1024
 
         /** Attachment mimetypes the wild uses for fonts. */
         val FONT_MIMETYPES = setOf(
