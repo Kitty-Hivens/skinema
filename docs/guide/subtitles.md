@@ -85,6 +85,14 @@ libass ships in the native bundles, but it is treated as optional. When
 it is present, text tracks render. When it is absent (a stripped
 bundle, a load failure), **text tracks refuse selection and everything
 else plays on** -- video, audio and bitmap subtitles are unaffected.
-Check by selecting a text track and seeing whether
-`activeSubtitleTrack` reflects it, or simply prefer bitmap tracks where
-both exist. Bitmap subtitles never depend on libass.
+Ask before you select:
+
+```kotlin
+dev.hivens.skinema.ass.Ass.available   // synchronous, no side effects
+```
+
+Selection is asynchronous -- `selectSubtitleTrack` queues a command for
+the decode thread -- so watching `activeSubtitleTrack` for an answer is
+a poll with no defined settling point. `Ass.available` answers straight
+away. Bitmap subtitles never depend on libass, so preferring a bitmap
+track where both exist is the other way out.

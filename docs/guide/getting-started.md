@@ -88,7 +88,7 @@ consuming app).
 
 If you would rather use a system FFmpeg than the bundle, point
 `SKINEMA_LIBAV_DIR` at a directory collecting the libraries (a `symlinkJoin`
-of `ffmpeg` + `libass` + `libwebp`). The soname is pinned, so the package must
+of `ffmpeg` + `libass`). The soname is pinned, so the package must
 match the pinned major -- with the n9.0 pin that is `ffmpeg_9`
 (`libavcodec.so.63`); `ffmpeg_8` ships `.so.62` and will not resolve.
 

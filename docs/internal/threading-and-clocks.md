@@ -7,7 +7,7 @@ bugs here are subtle and were expensive to find.
 
 ## The threads
 
-A player has up to four threads, each owning a confined arena where it
+A player has up to five threads, each owning a confined arena where it
 touches native memory:
 
 | Thread                | Created when         | Owns                                         |
@@ -176,8 +176,21 @@ The player picks the clock once at startup:
 
 ```kotlin
 clock = explicitClock ?: audioClock ?: PlaybackClock()
-ownsClock = explicitClock != null || audioClock == null
+audioMastered = explicitClock == null && audioClock != null
 ```
+
+`ownsClock` is derived from that, and asked every time rather than
+settled once:
+
+```kotlin
+private val ownsClock: Boolean
+    get() = !audioMastered || audioPipeline?.alive != true
+```
+
+The re-evaluation is load-bearing: the audio side can leave mid-file --
+a device that dies, a track switch onto a rate the machine refuses --
+and a player that went on deferring to a thread no longer there stopped
+re-anchoring on its own seeks.
 
 `ownsClock` says which side supplies media time -- the audio device or
 the wall -- and no longer says who may move it. The rule that kept the
@@ -197,15 +210,17 @@ at its own end and the picture waited for that, could not describe a
 file whose track is shorter than its picture: the timeline sawed back
 to zero while the picture still had seconds to run.
 
-AudioClock's three disciplined operations:
+AudioClock's four disciplined operations:
 
 - **rebase(mediaNanos, sampleRate)** -- the one synchronized point a
   rate or track change can re-anchor *and* re-scale, atomically under
   the lock, so a new sample rate applies only forward and never
   rescales history.
-- **detachToWallTime()** -- the failure hatch. If the device dies, the
-  clock switches to extrapolating from wall time so the picture keeps
-  moving.
+- **detachToWallTime(readDevice = true)** -- the failure hatch. If the
+  device dies, the clock switches to extrapolating from wall time so the
+  picture keeps moving. The watchdog passes `readDevice = false`: it is
+  detaching precisely because the device will not answer, and asking it
+  one last time would park the rescue on the lock it came to break.
 - **monotonic clamp** -- `mediaNanos` never returns a value below the
   last one it returned (some backends reconcile `framePosition`
   non-monotonically around a flush/restart); the floor is cleared on a

@@ -5,8 +5,9 @@ hand-written Java FFM (Panama) bindings: frames out as raw RGBA or Skia
 images with a Compose Desktop surface on top, and frames back in to a
 muxed file. No JNI wrapper stacks, no embedded player engines. The bundled
 FFmpeg is built with `--disable-network`, so skinema performs no network
-I/O of its own -- it works on the file you hand it (or the bytes a
-`MediaSource` feeds it) and nothing more.
+I/O of its own -- it works on the file you hand it and nothing more.
+(`VideoDecoder` also opens a `MediaSource`, so bytes from anywhere can be
+decoded directly; the player itself takes a path.)
 
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)
@@ -19,7 +20,8 @@ player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ```
 
 `positionNanos()` and `durationNanos` carry a timeline (duration is
-null for animated webp, which declares none); `chapters`, `tags` and
+null for an animated webp until one lap has played, since the format
+declares none and the length is only known once it has been read); `chapters`, `tags` and
 `coverArt` carry the rest of the container's metadata -- the cover
 ships as the stored png/jpeg bytes for your own image stack. A file
 whose only video stream is the embedded cover plays frameless, art
@@ -181,10 +183,11 @@ CoreText); a fontless headless box renders blank overlays.
   as coarse as the file's keyframe spacing. Skip buttons want inexact;
   timeline scrubbing wants exact. `stepForward`/`stepBackward` move a
   single frame and leave the player paused on it.
-- **Two threads per player** (a third with audio): decode fills a small
-  frame queue, a pacer presents from it. Players are independent and
-  self-synced; play as many as your CPU affords (a desktop comfortably
-  runs dozens of 1080p30 streams).
+- **Two threads per player, four with sound.** Decode fills a small
+  frame queue and a pacer presents from it; sound adds an audio thread
+  and its watchdog, and a selected subtitle track a fifth. Players are
+  independent and self-synced; play as many as your CPU affords (a
+  desktop comfortably runs dozens of 1080p30 streams).
 - **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
   many decoded frames of inventory, so a decode stall does not stall
   the screen while inventory lasts. Each step of depth costs one full
@@ -224,7 +227,7 @@ natives takes on FFmpeg's GPL obligations, as anyone distributing a GPL
 FFmpeg build does; a consumer that needs to stay LGPL takes `core` or
 `decode`. skinema's own Apache code is unaffected either way.
 
-libwebp, libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
+libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
 the `full` build is `--enable-gpl`). libass (ISC) ships with FreeType and
 HarfBuzz folded in
 -- portions of the bundled software are copyright The FreeType Project

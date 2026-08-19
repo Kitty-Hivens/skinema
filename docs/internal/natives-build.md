@@ -6,27 +6,38 @@ workflows plus the `skinema-natives` module.
 
 ## What the bundle contains
 
-A per-platform bundle carries a decode-only FFmpeg (LGPL, shared
-libraries) plus libwebp, libass and their dependencies -- roughly 11-15
-MB against ~70 MB for a full build. The FFmpeg `./configure` is
-disable-everything plus an explicit whitelist;
-`tools/build-natives.sh` is authoritative, but the shape is:
+A per-platform bundle carries a trimmed FFmpeg (shared libraries) plus
+libass and its dependencies, against ~70 MB for a full build. What goes
+in depends on the tier: `core` is the modern decode essentials, `decode`
+adds subtitles and the legacy/broadcast format set, and `full` adds the
+encoders (which is what makes it GPL). The FFmpeg `./configure` is
+disable-everything plus an explicit whitelist, assembled per feature;
+`tools/build-natives.sh` is authoritative and the only place the real
+list lives. Its shape, with the feature-gated groups collapsed:
 
 ```
 --disable-everything --disable-network --enable-shared --disable-static
 --disable-programs --disable-doc --disable-avdevice
 --enable-libvpx --enable-libdav1d
 --enable-protocol=file,pipe
---enable-demuxer=mov,matroska,gif,apng,image2,image_png_pipe,image_webp_pipe,image_jpeg_pipe,
-                 ogg,mp3,flac,wav,ac3,eac3,ass,srt,webvtt,sup
+--enable-demuxer=mov,matroska,gif,apng,image2,ogg,mp3,flac,wav,ac3,eac3   [+ subs: ass,srt,webvtt,sup]
+                                                                          [+ formats: avi,mpegts,flv,asf,dv,rm,...]
 --enable-decoder=h264,hevc,vp8,vp9,libvpx_vp8,libvpx_vp9,libdav1d,av1,mjpeg,
-                 png,apng,gif,webp,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,
-                 pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,
-                 ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub
+                 png,apng,gif,webp,webp_anim,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,
+                 pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le                  [+ subs: ass,ssa,subrip,movtext,webvtt,pgssub,dvdsub]
+                                                                          [+ formats: vvc,mpeg2video,vc1,theora,prores,dnxhd,dts,...]
 --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,
                 opus,vorbis,flac,ac3
 --enable-filter=atempo
+                                    [+ encode: --enable-gpl --enable-libx264 --enable-libx265
+                                               --enable-encoder=libx264,libx265,aac,flac,h264_vaapi,hevc_vaapi
+                                               --enable-muxer=mov,mp4,matroska,webm]
+                                    [+ hwaccel: --enable-vaapi / --enable-videotoolbox / --enable-d3d11va]
 ```
+
+Animated WebP decodes through FFmpeg's own `webp_anim`; the libwebp,
+libwebpdemux and libsharpyuv that used to carry it are no longer built
+or shipped.
 
 `--disable-network` is a load-bearing guarantee, not an optimization:
 the shipped library physically cannot do I/O beyond the file given to

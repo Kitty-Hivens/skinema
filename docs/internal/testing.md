@@ -34,18 +34,24 @@ false green hid exactly that (Linux libass loaded but exported zero
 symbols; the subtitle suites had been skipping all along).
 
 The fix is `SKINEMA_REQUIRE_CAPS` -- a comma-separated list (from
-`decode`, `subs`, `webp`) the bundle under test must load:
+`decode`, `subs`, `webp`, `encode`, `formats`, `audio`) the bundle under
+test must load:
 
 ```kotlin
 // Fixtures.kt
 fun assumeSubtitleRendering() {
     if (requires("subs")) {
-        check(Ass.available) { "SKINEMA_REQUIRE_CAPS lists 'subs' but libass did not load" }
+        check(capLoads("subs")) { "SKINEMA_REQUIRE_CAPS lists 'subs' but libass did not load" }
         return
     }
-    assumeTrue(Ass.available, "libass not loadable -- skipping subtitle rendering test")
+    assumeTrue(capLoads("subs"), "libass not loadable -- skipping subtitle rendering test")
 }
 ```
+
+The question is `capLoads("subs")`, not `Ass.available`, and the
+difference is the whole point of the gate: `Ass.available` reads true
+off a system libass on a `core` bundle that ships none, so the check
+would pass while testing something other than the bundle under test.
 
 When a capability is listed, its gate is a loud failure; when it is
 not, the suite skips (developer convenience). On top of the per-feature
@@ -60,11 +66,11 @@ bundle fails *before it uploads*, in the workflow that built it.
 `decode,webp`, `decode` adds `subs,formats`, `full` adds `encode` -- so a
 tier that quietly lost a capability cannot upload. `build.yml` dogfoods the
 `full` tier and holds all of `decode,subs,webp,encode,formats` mandatory on
-each of its four rows.
+each of its seven rows.
 
 ## Test doubles
 
-The runtime is tested without real devices or files through three
+The runtime is tested without real devices or files through these
 doubles in the test sources:
 
 - **FakePcmSink** -- an instant, deterministic audio sink. `write`
@@ -79,6 +85,15 @@ doubles in the test sources:
   keeps audio genuinely mid-stream so loop-wrap parks and
   queue-pinning scenarios cannot self-heal, and a test can assert the
   writer is actually parked.
+- **PacedPcmSink** -- a bounded sink that plays out in real time rather
+  than on a test's command. Where `BoundedPcmSink` freezes the device to
+  make a scenario deterministic, this one is the case where only a line
+  that genuinely drains tells two behaviours apart -- what a seek's
+  flush throws away exists nowhere else, so only a real-time line can
+  show a tail count that was never settled against the device.
+- **PcmSinkContract** -- the shared assertions every sink double must
+  satisfy, run over each of them by `PcmSinkContractTest`, so a double
+  cannot drift into modelling a device that could not exist.
 - **ScriptedFrameSource** -- a synthetic `FrameSource` with no
   files/natives: a grid of frames at a configurable period, a
   `blockAt(index)` latch that stalls the next decode, a

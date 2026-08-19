@@ -14,8 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One open video file: demux + decode + RGBA conversion, pull-style via
- * [nextFrame]. Spike-grade (M0): best video stream only, software decode,
- * blocking calls. The backing Arena is confined -- the thread that called
+ * [nextFrame]. Best video stream only, blocking calls, software decode
+ * unless a [HwAccel] policy asks otherwise -- and the RGBA that comes out
+ * is the same either way, since a hardware frame is mapped back to system
+ * memory here. The backing Arena is confined -- the thread that called
  * [open] owns the session, which is the design intent (one decode thread).
  */
 class VideoDecoder private constructor(
