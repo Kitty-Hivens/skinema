@@ -13,23 +13,29 @@
 # list, checked by tools/check-windows-bundle.sh.
 #
 # Raising a line is a decision about which machines can run the bundle.
-# libva/libva-drm mean "a graphics stack is installed", which a
-# headless container has not; libfontconfig means "a font stack", which the
-# subtitle tiers genuinely need.
+# libfontconfig means "a font stack", which the subtitle tiers genuinely
+# need -- and libass is loaded optionally, so a machine without one loses
+# subtitles rather than everything.
+#
+# libva and libva-drm used to be here, and could not be: FFmpeg links them
+# into libavutil, the first library the loader opens, so their absence took
+# software decode down with the hardware. The desktop tiers now carry their
+# own copies as a fallback; the loader still maps the host's first, because
+# a dispatcher older than the installed driver cannot load it.
 
 linux-glibc  core   = libc.so.6 libm.so.6
-linux-glibc  decode = libc.so.6 libm.so.6 libva.so.2 libva-drm.so.2 libfontconfig.so.1
+linux-glibc  decode = libc.so.6 libm.so.6 libfontconfig.so.1
 # libmvec is part of glibc itself (vectorised math, pulled in by x265),
 # so it costs a consumer nothing; libnuma would NOT be -- x265 is built
 # with it off deliberately.
-linux-glibc  full   = libc.so.6 libm.so.6 libmvec.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libstdc++.so.6
+linux-glibc  full   = libc.so.6 libm.so.6 libmvec.so.1 libfontconfig.so.1 libstdc++.so.6
 
 # musl folds libm into libc, so the leanest tier needs exactly one library.
 linux-musl   core   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1
-linux-musl   decode = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1
+linux-musl   decode = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libfontconfig.so.1
 # libstdc++, not libc++: Alpine builds with GCC, and the guess that it
 # would mirror the Windows aarch64 clang toolchain was wrong -- measured.
-linux-musl   full   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libva.so.2 libva-drm.so.2 libfontconfig.so.1 libstdc++.so.6
+linux-musl   full   = libc.musl-x86_64.so.1 libc.musl-aarch64.so.1 libfontconfig.so.1 libstdc++.so.6
 
 # Mach-O: the system frameworks are always present, so only the dylibs a
 # consumer could plausibly lack are worth naming.
