@@ -170,9 +170,15 @@ class VideoSurfaceRenderTest {
                 VideoSurface(player, Modifier.size(240.dp, 180.dp))
             }.use { scene ->
                 var frame = 0L
-                val deadline = System.currentTimeMillis() + 25_000
                 var selected = false
-                while (canvas.first < 200 && System.currentTimeMillis() < deadline) {
+                val deadline = System.currentTimeMillis() + 25_000
+                // Render only until the track is selected and the draw has run
+                // a few times -- the post lives in the draw and needs nothing
+                // from the overlay. Then STOP rendering: the surface polls the
+                // overlay mailbox on every frame it draws, and a mailbox with
+                // one slot has one winner per publish. Two pollers made this a
+                // coin flip that a slower machine lost.
+                while (System.currentTimeMillis() < deadline) {
                     if (!selected) {
                         player.subtitleTracks.firstOrNull()?.let {
                             player.selectSubtitleTrack(it.id)
@@ -181,13 +187,15 @@ class VideoSurfaceRenderTest {
                     }
                     scene.render(frame)
                     frame += 16_000_000L
+                    if (selected && frame > 20 * 16_000_000L) break
+                    Thread.sleep(10)
+                }
+                assumeTrue(selected, "no subtitle track to select")
+
+                while (canvas.first < 200 && System.currentTimeMillis() < deadline) {
                     player.acquireSubtitles()?.let { canvas = it.canvasWidth to it.canvasHeight }
                     Thread.sleep(10)
                 }
-                // Skipped rather than failed where libass is absent: the
-                // overlay then has no text to carry a canvas on, which is a
-                // missing capability and not a broken surface.
-                assumeTrue(selected, "no subtitle track to select")
                 assertTrue(
                     canvas.first >= 200,
                     "the overlay must rasterize at the surface's rect, not the video's, saw $canvas",

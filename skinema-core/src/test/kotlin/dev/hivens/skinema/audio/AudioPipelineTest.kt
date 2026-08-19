@@ -518,6 +518,12 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(twoTracks("noreopen.mka"), sink, loop = true)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            // Pin the playhead. This sink takes writes instantly, so an
+            // unpinned position runs at decode speed rather than real time --
+            // it left the 30s track behind on a fast runner, the audio ended
+            // for the honest reason, and the refusal under test never got to
+            // be the thing that mattered.
+            sink.positionFrames.set(44_100L)
             assertTrue(awaitTrue { sink.opens == 1 && sink.totalBytes > 0 }, "the first track must be playing")
 
             // A switch opens the line for the new rate before it commits to
