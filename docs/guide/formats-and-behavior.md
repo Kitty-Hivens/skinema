@@ -2,19 +2,26 @@
 
 ## What it plays
 
-|                  |                                                                                              |
-|------------------|----------------------------------------------------------------------------------------------|
-| Containers       | mp4/mov/m4a, webm/mkv, gif, apng, webp, ogg, mp3, flac, wav, raw ac3/eac3                    |
-| Video            | H.264, HEVC, VP8, VP9 (incl. webm alpha), AV1 (dav1d), MJPEG                                  |
-| Animated images  | GIF, APNG, animated WebP -- the last via libwebp, which plain FFmpeg cannot decode           |
-| Audio            | AAC, AC-3/E-AC-3, ALAC, Opus, Vorbis, MP3, FLAC, WAV PCM (16/24/32-bit and float)            |
-| Subtitles        | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
-| Pixels out       | RGBA8888, straight alpha, exact-pts pacing; BT.601/709/2020 matrix and range honored; PQ/HLG tone-mapped to SDR |
+|                 |                                                                                               |
+|-----------------|-----------------------------------------------------------------------------------------------|
+| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
+| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
+| Animated images | GIF, APNG, animated WebP                                                                      |
+| Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
 
-The supported set is exactly the trimmed FFmpeg whitelist plus libwebp
-and libass (see
-[../internal/natives-build.md](../internal/natives-build.md) for the
-authoritative list). It is decode-only and offline by construction: the
+The supported set is exactly the trimmed FFmpeg whitelist plus libass
+(see [../internal/natives-build.md](../internal/natives-build.md) for
+the authoritative list). The legacy and broadcast formats ride the
+`decode` and `full` tiers; the lean `core` tier carries the modern
+essentials only. Animated WebP decodes through FFmpeg's own `webp_anim`
+decoder -- the libwebp that used to carry it is no longer built or
+shipped.
+
+Decode is not all of it: `MediaWriter` encodes video and audio into
+mp4/mov, mkv and webm, in software everywhere and on the GPU where VAAPI
+is available. What it is either way is offline by construction -- the
 bundled FFmpeg is built `--disable-network`, so the library physically
 cannot perform any I/O beyond the file you hand it.
 
@@ -41,8 +48,13 @@ bug.
 
 The clock never waits for a slow consumer. If your render loop falls
 behind, the player skips frames to stay on time rather than building
-latency. A consumer that stops polling (a hidden window) simply stops
-the decode pump until it polls again.
+latency.
+
+The pump does not stop for a consumer that stops polling. The mailbox is
+latest-wins and the pacer keeps filling it, so decode, convert and pace
+go on at full rate with the results overwritten unseen. A Compose
+consumer gets the stop at its own level instead: `VideoSurface` draws on
+the frame clock, and a hidden window does not run one.
 
 ### Seeks answer immediately
 
@@ -54,10 +66,12 @@ buttons want inexact; timeline scrubbing wants exact.
 `stepForward`/`stepBackward` move a single frame and leave the player
 paused on it.
 
-### Two threads per player, three with audio
+### Two threads per player, four with sound
 
 A decode thread fills a small frame queue; a pacer thread presents from
-it. Adding sound adds an audio thread that owns the device clock.
+it. Sound adds two: an audio thread that owns the device clock, and a
+watchdog that hands the clock to wall time when the device stops
+consuming without saying so. A selected subtitle track adds a fifth.
 Players are independent and self-synced: there is no global clock and no
 in-process mixer (the OS audio server mixes streams). Play as many as
 your CPU affords -- a desktop comfortably runs dozens of 1080p30

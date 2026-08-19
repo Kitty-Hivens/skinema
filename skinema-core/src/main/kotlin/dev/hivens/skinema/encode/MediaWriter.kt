@@ -88,6 +88,11 @@ class MediaWriter private constructor(
     // so close() can tell "nothing to do" from "nobody wrote it".
     private var trailerWritten = false
 
+    // What the trailer attempt threw, if it threw. The attempt cannot be
+    // repeated (see [finish]), so this is what a later call has to say
+    // instead of reporting a success that did not happen.
+    private var trailerFailure: Throwable? = null
+
     /**
      * Encodes one RGBA8888 frame ([VideoEncodeConfig.width] x height,
      * tightly packed) presented at [ptsNanos]. Frames must arrive in
@@ -154,7 +159,20 @@ class MediaWriter private constructor(
         // down with it.
         if (!trailerWritten) {
             trailerWritten = true
-            Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer")
+            try {
+                Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer")
+            } catch (t: Throwable) {
+                trailerFailure = t
+                throw t
+            }
+        } else {
+            // A retry gets the encoder drains, which are retryable, and then
+            // has to be told the truth about the step that is not: the index
+            // never reached the file and no second attempt can put it there.
+            // Reporting success here was worse than the failure -- the caller
+            // freed the disk space, called finish() again, was told the encode
+            // had finished, and kept a container nothing opens.
+            trailerFailure?.let { throw it }
         }
         // Still set last: a refusal above must leave finish() able to run its
         // encoder drains again, which are retryable even when the trailer is
@@ -225,6 +243,7 @@ class MediaWriter private constructor(
         // effort, because whatever aborted the write may refuse this too; a
         // file missing its undrained tail still beats one missing its index.
         if (!trailerWritten) {
+            trailerWritten = true
             runCatching { Libav.checkAv(Libav.avWriteTrailer(fmtCtx), "av_write_trailer(close)") }
                 .onFailure { Debug.trace("av_write_trailer on close", it) }
         }
@@ -235,7 +254,12 @@ class MediaWriter private constructor(
         Libav.avPacketFree(ptrPtr)
         if (needsFileIo) {
             ptrPtr.set(ADDRESS, 0, fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB))
-            Libav.avioClosep(ptrPtr)
+            // The last flush of the file happens here, and it can fail -- a
+            // full disk reaches the caller as a short file otherwise, with
+            // nothing said anywhere. Traced rather than thrown: close() is
+            // the teardown, and what is left to free still has to be freed.
+            val ioClosed = Libav.avioClosep(ptrPtr)
+            if (ioClosed < 0) Debug.trace("avio_closep left the file unflushed: $ioClosed", LibavException("avio_closep: $ioClosed"))
             // avio_closep nulls the scratch it was handed, not the field it
             // was read from. avformat_free_context below dispatches into the
             // muxer's own deinit, which is entitled to look at pb -- none of
@@ -290,25 +314,42 @@ class MediaWriter private constructor(
                     width, height, dstFormat, LibavAbi.SWS_BILINEAR,
                 )
                 if (ctx == MemorySegment.NULL) throw LibavException("sws_getContext(RGBA->$dstFormat) refused ${width}x$height")
-                // The other half of the tag written on the encoder: the
-                // conversion has to USE the matrix the file will claim.
-                // RGBA is full range in, limited range out.
-                val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, width, height))
-                Libav.checkAv(
-                    Libav.swsSetColorspaceDetails(ctx, coefficients, 1, coefficients, 0, 0, SWS_UNIT, SWS_UNIT),
-                    "sws_setColorspaceDetails(encode)",
-                )
-                // Padded: swscale reads whole SIMD blocks, so it can read past
-                // the last row for a width that is not block-aligned; the slack
-                // keeps that read inside the allocation.
-                srcNative = arena.allocate(width.toLong() * height * 4 + SWS_READ_PADDING)
-                srcData = arena.allocate(ADDRESS, 8).also { it.setAtIndex(ADDRESS, 0, srcNative) }
-                srcStride = arena.allocate(JAVA_INT, 8).also { it.setAtIndex(JAVA_INT, 0, width * 4) }
+                // Nothing else holds this until the publish at the end, so
+                // every exit before it has to free it -- the colourspace call
+                // below refuses on some builds, and free() would find the
+                // field still NULL. A caller retrying the frame allocated
+                // another scaler and its tables on every attempt.
+                try {
+                    // The other half of the tag written on the encoder: the
+                    // conversion has to USE the matrix the file will claim.
+                    // RGBA is full range in, limited range out.
+                    val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, width, height))
+                    Libav.checkAv(
+                        Libav.swsSetColorspaceDetails(ctx, coefficients, 1, coefficients, 0, 0, SWS_UNIT, SWS_UNIT),
+                        "sws_setColorspaceDetails(encode)",
+                    )
+                    // Padded: swscale reads whole SIMD blocks, so it can read past
+                    // the last row for a width that is not block-aligned; the slack
+                    // keeps that read inside the allocation.
+                    srcNative = arena.allocate(width.toLong() * height * 4 + SWS_READ_PADDING)
+                    srcData = arena.allocate(ADDRESS, 8).also { it.setAtIndex(ADDRESS, 0, srcNative) }
+                    srcStride = arena.allocate(JAVA_INT, 8).also { it.setAtIndex(JAVA_INT, 0, width * 4) }
+                } catch (t: Throwable) {
+                    Libav.swsFreeContext(ctx)
+                    throw t
+                }
                 swsCtx = ctx
             }
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(video)")
             MemorySegment.copy(rgba, 0, srcNative, JAVA_BYTE, 0, rgba.size)
-            Libav.swsScale(swsCtx, srcData, srcStride, 0, height, frame.asSlice(LibavAbi.Frame.DATA), frame.asSlice(LibavAbi.Frame.LINESIZE))
+            // Checked like every other call here. A refused scale leaves the
+            // previous frame's pixels in the buffer, and that got stamped and
+            // encoded -- a silently duplicated or garbage frame instead of a
+            // failure. The audio side's swr_convert was already checked.
+            Libav.checkAv(
+                Libav.swsScale(swsCtx, srcData, srcStride, 0, height, frame.asSlice(LibavAbi.Frame.DATA), frame.asSlice(LibavAbi.Frame.LINESIZE)),
+                "sws_scale(encode)",
+            )
             // Frame stamps are nanoseconds; the codec time_base is microseconds.
             val pts = ptsNanos / NANOS_PER_MICRO
             if (hwFramesCtx == MemorySegment.NULL) {
@@ -537,7 +578,13 @@ class MediaWriter private constructor(
                     fctx.set(JAVA_INT, LibavAbi.HwFramesContext.INITIAL_POOL_SIZE, HW_FRAME_POOL_SIZE)
                     Libav.checkAv(Libav.avHwframeCtxInit(hwFramesRef), "av_hwframe_ctx_init(${video.codecName})")
                     vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, hw.pixFmt)
-                    vc.set(ADDRESS, LibavAbi.CodecContext.HW_FRAMES_CTX, Libav.avBufferRef(hwFramesRef))
+                    // av_buffer_ref answers NULL when it cannot allocate, and
+                    // a NULL written straight into hw_frames_ctx turns an
+                    // allocation failure into a bare "no device" out of
+                    // avcodec_open2.
+                    val framesRefForCodec = Libav.avBufferRef(hwFramesRef)
+                    if (framesRefForCodec == MemorySegment.NULL) throw LibavException("av_buffer_ref(hw frames) returned NULL")
+                    vc.set(ADDRESS, LibavAbi.CodecContext.HW_FRAMES_CTX, framesRefForCodec)
                 }
                 vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE, 1)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE + 4, MICROS_DEN)
