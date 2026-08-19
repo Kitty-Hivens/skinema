@@ -11,10 +11,14 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import dev.hivens.skinema.libav.LibavException
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.concurrent.thread
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -1568,5 +1572,41 @@ class VideoPlayerTest {
                 "a text codec outside the old list must still reach the overlay",
             )
         }
+    }
+
+    @Test
+    fun `a close during the open is honoured rather than raced past`() {
+        // Deliberately slow: the scenario IS close() exhausting its five
+        // second join and returning while the open is still running. Shorter
+        // than that and the thread finishes on its own, both builds settle
+        // Closed, and the test proves nothing -- which is what the first
+        // version of it did.
+        val opening = CountDownLatch(1)
+        val source = ScriptedFrameSource(frameCount = 50)
+        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null) {
+            opening.await(20, TimeUnit.SECONDS)
+            source
+        }
+        assertTrue(awaitTrue(2_000) { player.state is VideoPlayer.State.Opening }, "must start out opening")
+
+        val closeReturned = AtomicLong(0)
+        val closer = thread {
+            player.close()
+            closeReturned.set(System.nanoTime())
+        }
+        assertTrue(awaitTrue(8_000) { closeReturned.get() != 0L }, "close must return on its own timeout")
+
+        // From here the caller has been told the player is gone. Nothing it
+        // does afterwards may contradict that.
+        opening.countDown()
+        var sawPlaying = false
+        val deadline = System.currentTimeMillis() + 3_000
+        while (System.currentTimeMillis() < deadline) {
+            if (player.state is VideoPlayer.State.Playing) sawPlaying = true
+            Thread.sleep(2)
+        }
+        closer.join(5_000)
+        assertFalse(sawPlaying, "a player must not announce itself Playing after close() returned")
+        assertTrue(player.state is VideoPlayer.State.Closed, "and must settle Closed, saw ${player.state}")
     }
 }
