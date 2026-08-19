@@ -290,6 +290,18 @@ object LibavAbi {
     const val AV_CODEC_ID_SSA = 94212
     const val AV_CODEC_ID_MOV_TEXT = 94213
     const val AV_CODEC_ID_HDMV_PGS_SUBTITLE = 94214
+
+    /**
+     * AVCodecDescriptor: only its property bits are read, to ask the library
+     * whether a subtitle codec is text or bitmap rather than keeping a list.
+     */
+    object CodecDescriptor {
+        const val PROPS = 24L
+        const val SIZEOF = 48L
+    }
+
+    const val AV_CODEC_PROP_BITMAP_SUB = 65536
+    const val AV_CODEC_PROP_TEXT_SUB = 131072
     const val AV_CODEC_ID_SUBRIP = 94225
     const val AV_CODEC_ID_WEBVTT = 94226
     const val AV_CODEC_ID_ASS = 94230
