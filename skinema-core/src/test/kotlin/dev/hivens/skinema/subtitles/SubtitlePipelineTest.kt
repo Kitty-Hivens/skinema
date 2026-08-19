@@ -547,6 +547,60 @@ class SubtitlePipelineTest {
     }
 
     /**
+     * The read-ahead horizon bounds the schedule in time, and time is not
+     * what it costs: bitmap pixels convert once, at ingest, so a horizon
+     * holds however much the stream chose to put in it. Dialogue PGS is a
+     * few megabytes; a full-plane 1080p signs track is eight per
+     * presentation set, several a second, and the thirty seconds ahead plus
+     * the ten of preroll a seek replays arrive before one window is evicted.
+     *
+     * The budget is a constructor parameter for the same reason the audio
+     * pipeline's stall bound is: the real one is measured in tens of
+     * megabytes, and a fixture that reached it would have to be enormous.
+     */
+    @Test
+    fun `the bitmap schedule stops reading ahead once it is holding too much`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeBitmapSubtitles()
+        val sup = dir.resolve("budget.sup")
+        Files.write(sup, SupBuilder.buildMany(count = 60, periodMs = 2_000, visibleMs = 1_000))
+        val path = Fixtures.generate(
+            dir.resolve("budget.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", sup.toString(),
+            "-map", "0:v", "-map", "1", "-t", "120",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
+            "-c:s", "copy",
+        )
+        clock.start(0)
+        val window = 32 * 16 * 4
+        // Four windows of budget, against a horizon that holds about fifteen.
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null, maxScheduledBitmapBytes = 4L * window)
+        try {
+            var peak = 0L
+            var sawPatches = false
+            val latest = Latest()
+            for (secs in 1..60) {
+                frames.set(framesFor(secs * 1_000L))
+                Thread.sleep(15)
+                peak = maxOf(peak, pipeline.scheduledBitmapBytes)
+                if (latest.poll(pipeline)?.patches?.isNotEmpty() == true) sawPatches = true
+            }
+            val windows = peak / window
+            assertTrue(windows > 0, "the schedule must actually hold something to bound")
+            assertTrue(
+                windows <= 6,
+                "the schedule peaked at $windows windows against a budget of four",
+            )
+            // A budget that stopped the pipeline rather than its read-ahead
+            // would satisfy the bound above and show nothing.
+            assertTrue(sawPatches, "subtitles must still be published under the budget")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
      * A pipeline that failed closed keeps its reference in the player, and
      * the player announces every seek to whatever it is holding. Each one
      * queued a command on a thread that had already exited and raised a
@@ -614,6 +668,70 @@ class SubtitlePipelineTest {
         // Beyond any subtitle, and beyond what an Int would carry honestly.
         assertNull(SubtitlePipeline.indexPlaneBytes(100, 100_000, 100_000), "an implausible plane is refused")
         assertNull(SubtitlePipeline.indexPlaneBytes(Int.MAX_VALUE, Int.MAX_VALUE, Int.MAX_VALUE))
+
+        // The plane is not what gets held. It converts to RGBA at four bytes
+        // a pixel, and the only thing tying the two together is a linesize
+        // the same rect supplies -- so a geometry that would be an enormous
+        // allocation can arrive inside a plane of a few kilobytes.
+        assertNull(
+            SubtitlePipeline.indexPlaneBytes(8192, 8192, 1),
+            "16 KiB of plane must not buy 256 MiB of pixels",
+        )
+        // width * height * 4 is Int arithmetic: this one lands on exactly
+        // 2^31, which is a negative array size.
+        assertNull(
+            SubtitlePipeline.indexPlaneBytes(65_536, 8_192, 1),
+            "a geometry whose RGBA size overflows an Int is refused",
+        )
+        // A stride narrower than the row is not a stride.
+        assertNull(SubtitlePipeline.indexPlaneBytes(100, 100, 99), "a linesize below the width is no rect")
+    }
+
+    /**
+     * "Nobody said" and "said zero" are different answers, and a fine time
+     * base makes the second one common: at 90 kHz -- mov_text in mp4, every
+     * stream in MPEG-TS -- a duration under 90 units divides away to nothing.
+     */
+    @Test
+    fun `a duration that floors to zero is no duration at all`() {
+        // 90 kHz: a full second survives, and 89 units do not.
+        assertEquals(
+            1_000L,
+            SubtitlePipeline.declaredDurationMs(90_000, 1, 90_000, 0, 0),
+        )
+        assertNull(
+            SubtitlePipeline.declaredDurationMs(89, 1, 90_000, 0, 0),
+            "a sub-millisecond packet duration is not a length",
+        )
+        // ...and the display times still get their say when it does.
+        assertEquals(
+            400L,
+            SubtitlePipeline.declaredDurationMs(89, 1, 90_000, 100, 500),
+            "a floored packet duration must not shadow a declared window",
+        )
+        // A millisecond grid, where the packet's own number carries.
+        assertEquals(
+            15_000L,
+            SubtitlePipeline.declaredDurationMs(15_000, 1, 1_000, 0, 0),
+        )
+        assertNull(SubtitlePipeline.declaredDurationMs(0, 1, 1_000, 0, 0), "nothing said is null")
+    }
+
+    /**
+     * A schedule shows the last window covering the moment, so a window that
+     * outlives its successor is not hidden by it -- only postponed. It
+     * reappeared the instant the shorter one closed.
+     */
+    @Test
+    fun `a window ends where the next one begins, whatever it declared`() {
+        // Ten seconds declared, replaced after two: it ends at two.
+        assertEquals(2_000L, SubtitlePipeline.windowTruncatedAt(10_000L, 2_000L))
+        // Open-ended, the case that was already handled.
+        assertEquals(2_000L, SubtitlePipeline.windowTruncatedAt(Long.MAX_VALUE, 2_000L))
+        // A window that ends before its successor keeps its own end.
+        assertEquals(1_000L, SubtitlePipeline.windowTruncatedAt(1_000L, 2_000L))
+        // Back to back: no change either way.
+        assertEquals(2_000L, SubtitlePipeline.windowTruncatedAt(2_000L, 2_000L))
     }
 
     @Test
