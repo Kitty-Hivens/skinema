@@ -43,6 +43,24 @@ class VideoSurfaceRenderTest {
         p.waitFor() == 0
     }.getOrDefault(false)
 
+    /** The same, plus a subtitle track, so the surface's text half has work. */
+    private fun subbedClip(): Path {
+        val srt = dir.resolve("subs.srt")
+        Files.writeString(srt, "1\n00:00:00,200 --> 00:00:09,000\nTypeset\n")
+        val out = dir.resolve("subbed.mkv")
+        val p = ProcessBuilder(
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=red:size=64x48:rate=10", "-i", srt.toString(),
+            "-map", "0:v", "-map", "1", "-t", "9",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+            out.toString(),
+        ).redirectErrorStream(true).start()
+        val log = p.inputStream.readAllBytes().decodeToString()
+        check(p.waitFor() == 0) { "ffmpeg failed: $log" }
+        return out
+    }
+
     /** A solid red clip, so "did it paint" is a question about one pixel. */
     private fun redClip(): Path {
         val out = dir.resolve("red.mp4")
@@ -127,6 +145,53 @@ class VideoSurfaceRenderTest {
                     if (!painted) Thread.sleep(10)
                 }
                 assertTrue(painted, "the surface must put the decoded picture on the canvas")
+            }
+        }
+    }
+
+    /**
+     * The surface tells the player what size to rasterize text at, and that
+     * post is what papers over anything that loses the size elsewhere -- it
+     * had never executed, along with the whole subtitle half of the draw.
+     * A surface far larger than the video makes the answer unambiguous: the
+     * canvas the overlay reports has to be the surface's rect, not the
+     * video's own 64x48.
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun `the surface tells the player what size to rasterize text at`() {
+        assumeTrue(ffmpegAvailable(), "no ffmpeg CLI -- the fixture cannot be built")
+        val video = subbedClip()
+        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+
+        VideoPlayer(video, loop = true).use { player ->
+            var canvas = 0 to 0
+            ImageComposeScene(240, 180, Density(1f)) {
+                VideoSurface(player, Modifier.size(240.dp, 180.dp))
+            }.use { scene ->
+                var frame = 0L
+                val deadline = System.currentTimeMillis() + 25_000
+                var selected = false
+                while (canvas.first < 200 && System.currentTimeMillis() < deadline) {
+                    if (!selected) {
+                        player.subtitleTracks.firstOrNull()?.let {
+                            player.selectSubtitleTrack(it.id)
+                            selected = true
+                        }
+                    }
+                    scene.render(frame)
+                    frame += 16_000_000L
+                    player.acquireSubtitles()?.let { canvas = it.canvasWidth to it.canvasHeight }
+                    Thread.sleep(10)
+                }
+                // Skipped rather than failed where libass is absent: the
+                // overlay then has no text to carry a canvas on, which is a
+                // missing capability and not a broken surface.
+                assumeTrue(selected, "no subtitle track to select")
+                assertTrue(
+                    canvas.first >= 200,
+                    "the overlay must rasterize at the surface's rect, not the video's, saw $canvas",
+                )
             }
         }
     }
