@@ -7,11 +7,13 @@ they fit and the rules that shaped them.
 
 ```
 skinema-core      FFM bindings + demux/decode + pacing + VideoPlayer
-                  emits RGBA frames with pts; zero UI dependency
+                  + MediaWriter (encode/mux); emits RGBA frames with pts,
+                  takes them back in; zero UI dependency
 skinema-skiko     frame bytes -> org.jetbrains.skia.Image (one raster copy)
 skinema-compose   VideoSurface, rememberPlayerState, VideoScale
 skinema-demo      the in-repo harness: demo, spike, seekbench, soak
-skinema-natives   trimmed FFmpeg + libwebp + libass, one classifier jar/platform
+skinema-natives   trimmed FFmpeg + libass, one classifier jar per tier
+                  and platform
 ```
 
 `skinema-core` is the whole engine and has no UI dependency, so it is
@@ -43,7 +45,10 @@ One file, from disk to pixel:
 With sound, a third thread runs the audio: it decodes, resamples to
 stereo S16LE, and writes to the device. The device's consumed-sample
 count *is* the clock the pacer waits against -- audio masters, video
-follows. A fourth, lazy thread runs subtitles when a track is selected.
+follows. A fourth watches that thread: a write that never returns is a
+device that died silently, and the watchdog hands the clock to wall time
+so the picture keeps moving. A fifth, lazy thread runs subtitles when a
+track is selected.
 
 The decode thread never presents. Presentation lives entirely on the
 pacer thread, so a stalled decode cannot stall the screen while
@@ -79,9 +84,11 @@ arbitrary. The full reasoning is in `../ROADMAP.md` sections 2-10.
 - **Pinned natives.** Releases load the FFmpeg build we ship, by exact
   soname, never the system one. Development on Linux may use the system
   FFmpeg if it matches the pinned major.
-- **Boring beats clever.** Software decode, one memcpy per frame, no GPU
-  interop until a consumer actually needs it. Buffers are reused, never
-  allocated per frame.
+- **Boring beats clever.** One memcpy per frame, buffers reused rather
+  than allocated per frame, and no GPU interop in the frame path: GPU
+  decode and encode exist, but the frames still come back through system
+  memory and the RGBA contract is identical on every path. Zero-copy
+  interop waits until a consumer actually needs it.
 - **One clock, never two.** Pacing depends only on the `MediaClock`
   interface. Audio masters when present; video never re-anchors the
   audio clock. The seam exists precisely so nothing inverts when sound

@@ -59,7 +59,7 @@ object Libav {
 
     private fun libraryPath(lib: LibavLibrary): String = resolveLibraryPath(lib.fileName(Os.current()))
 
-    /** Resolves [name] against the natives directory override, shared with the webp bindings. */
+    /** Resolves [name] against the natives directory override, shared with the libass bindings. */
     internal fun resolveLibraryPath(name: String): String =
         if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
 

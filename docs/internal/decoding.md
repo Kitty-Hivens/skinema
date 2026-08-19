@@ -12,10 +12,11 @@ Files in `skinema-core/.../libav/`: `VideoDecoder.kt`,
 
 `FrameSource` is the decode-side abstraction the player talks to. It is
 an interface so the runtime can be tested with a `ScriptedFrameSource`
-that needs no natives (see [testing.md](testing.md)). The real
-implementations are `VideoDecoder` and `WebpAnimSource`;
-`FrameSources.open(path)` picks between them (RIFF/WEBP to libwebp,
-everything else to libav).
+that needs no natives (see [testing.md](testing.md)); there is one real
+implementation, `VideoDecoder`, and `FrameSources.open(path, hardware)`
+opens it. It used to pick between two -- animated WebP had its own
+libwebp-backed source -- and FFmpeg 9's own `webp_anim` decoder replaced
+that, libwebp with it.
 
 Its load-bearing methods:
 

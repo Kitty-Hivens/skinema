@@ -1,9 +1,10 @@
 # skinema developer documentation
 
-Video decode and playback for JVM desktop apps: FFmpeg through
+Video decode, encode and playback for JVM desktop apps: FFmpeg through
 hand-written Java FFM (Panama) bindings, frames out as raw RGBA or Skia
-images, a Compose Desktop surface on top. No JNI wrapper stacks, no
-embedded player engines, no network access.
+images, a Compose Desktop surface on top, and frames back in to a muxed
+file. No JNI wrapper stacks, no embedded player engines, no network
+access.
 
 This tree has two audiences. Pick the half you need.
 
@@ -24,6 +25,9 @@ You depend on `dev.hivens:skinema-*` and embed a player in your app.
   playback rate.
 - [guide/subtitles.md](guide/subtitles.md) -- embedded and external
   subtitles, text vs bitmap tracks, the optional libass capability.
+- [guide/encoding.md](guide/encoding.md) -- `MediaWriter`: pushing
+  frames and PCM back out to a muxed file, the timestamp contract, and
+  hardware encode.
 - [guide/formats-and-behavior.md](guide/formats-and-behavior.md) --
   what plays, and the behavior contract every consumer relies on
   (fail-closed, drop-late, threading, read-ahead).

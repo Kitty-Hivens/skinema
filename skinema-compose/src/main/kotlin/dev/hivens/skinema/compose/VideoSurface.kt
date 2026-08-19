@@ -31,8 +31,9 @@ enum class VideoScale {
 
 /**
  * Draws [player]'s frames, repainting on the Compose frame clock: each
- * UI frame polls [VideoPlayer.acquireFrame], so a hidden window stops the
- * pump for free while the player keeps its latest-frame mailbox warm.
+ * UI frame polls [VideoPlayer.acquireFrame], so a hidden window stops
+ * polling for free -- Compose runs it no frame clock. The player goes on
+ * decoding and pacing into its latest-wins mailbox regardless.
  *
  * The surface draws pixels and nothing else -- no spinners, no error
  * states. Watch [VideoPlayer.state] and react outside; before the first
@@ -49,6 +50,11 @@ fun VideoSurface(
     val subtitles = remember(player) { SubtitleOverlayImage() }
     var frameStamp by remember(player) { mutableLongStateOf(0L) }
     var subtitleCanvas by remember(player) { mutableStateOf(0 to 0) }
+    // Snapshot state rather than a read in the draw scope, because a failure
+    // publishes no frame: nothing would invalidate the draw, and the picture
+    // this surface promises to drop would stay on screen until something
+    // else recomposed it.
+    var failed by remember(player) { mutableStateOf(false) }
     // The size last posted to the player, held outside Compose state on
     // purpose: it is written from the draw scope, and a snapshot write there
     // would invalidate the very frame writing it.
@@ -67,6 +73,8 @@ fun VideoSurface(
                 frames.update(slot.width, slot.height, slot.rgba)
                 frameStamp++
             }
+            val nowFailed = player.state is VideoPlayer.State.Failed
+            if (nowFailed != failed) failed = nowFailed
             player.acquireSubtitles()?.let { overlay ->
                 subtitles.update(
                     overlay.patches.map {
@@ -82,6 +90,12 @@ fun VideoSurface(
     Canvas(modifier) {
         @Suppress("UNUSED_EXPRESSION")
         frameStamp // snapshot read: a new frame invalidates this draw scope
+        // The documented contract, which the draw did not keep: a failed
+        // player draws nothing, so the fallback composed behind this surface
+        // is what the viewer sees. A failure publishes no frame, so the last
+        // one stayed painted -- and a consumer drawing its fallback anywhere
+        // but on top of the surface never got to show it.
+        if (failed) return@Canvas
         val image = frames.image ?: return@Canvas
         // Phone footage arrives sideways with its orientation as metadata;
         // scaling decisions follow what the viewer SEES, so quarter turns

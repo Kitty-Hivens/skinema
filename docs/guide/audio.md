@@ -83,10 +83,57 @@ pitch stays natural. With sound on, the audio clock advances at the new
 rate and the picture follows; on a silent player the wall clock scales
 instead. The rate survives seeks, pauses and track switches.
 
+## Playing through your own audio stack
+
+The `sink` constructor parameter is the seam. Implement
+`dev.hivens.skinema.audio.PcmSink` and the player pushes S16LE
+interleaved stereo through it instead of opening a platform line -- an
+adapter onto your own mixer, a socket, a server connection. No change is
+needed on this side; the adapter is yours.
+
+```kotlin
+interface PcmSink : AutoCloseable {
+    fun open(sampleRate: Int)                                  // and starts it
+    fun write(data: ByteArray, offset: Int, length: Int)       // blocking: this is the pacing
+    fun stop()                                                 // freezes; framePosition holds
+    fun start()
+    fun flush()                                                // drop what is buffered (a seek)
+    fun framePosition(): Long                                  // frames PLAYED since open
+    fun setVolume(volume: Float)                               // linear 0..1, best effort
+}
+```
+
+Two things carry the whole contract. `write` blocks until the device has
+taken the bytes -- that is what paces playback, so a sink that accepts
+everything instantly runs the decoder at its own speed. And
+`framePosition` counts frames the device has *played*, not frames it has
+accepted: it is the clock the player runs on, and a sink that reports
+what it was handed makes the picture run ahead of the sound by a whole
+buffer.
+
+The calls do not all arrive on one thread. `open`/`write`/`stop`/
+`start`/`flush` come from the audio thread in order; `close` can also
+come from its watchdog, deliberately while a `write` is blocked, because
+closing the line is how a dead device is broken out of; `setVolume`
+comes from your thread; and `framePosition` is read from several threads
+at once, including during a write. So `framePosition` and `setVolume`
+must never wait on a lock the write holds -- every clock reader in the
+player goes through `framePosition`, and one that parks there parks the
+picture too.
+
 ## Device loss
 
 If the audio device vanishes mid-playback (an unplug, a server
 restart), a watchdog detaches the clock to wall time so the picture
-keeps moving instead of freezing on a dead write. This is a safety net,
-not a routing system -- skinema does not follow the default-device
-change; it keeps the video alive.
+keeps moving instead of freezing on a dead write.
+
+Sound is not given up on. The audio thread then retries the device on a
+fixed cadence (`SKINEMA_AUDIO_RECOVERY_MS`, 400 ms by default) for as
+long as the outage lasts, and on its return resyncs to where the video
+advanced on the wall clock and rebases the clock onto the fresh line, so
+sound rejoins in step rather than lagging by the length of the outage.
+The audio that played during it is dropped, not queued.
+
+This is a safety net, not a routing system -- skinema does not follow a
+default-device change; it keeps the video alive and takes the device
+back if it comes back.

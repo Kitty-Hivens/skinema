@@ -1,6 +1,6 @@
 # FFM bindings and the native loader
 
-skinema talks to FFmpeg (and libwebp, libass) through Java's Foreign
+skinema talks to FFmpeg (and libass) through Java's Foreign
 Function and Memory API -- Panama. There is no JNI, no generated
 binding monster. The whole layer is meant to be read in one sitting.
 
@@ -8,13 +8,14 @@ Key files, all in `skinema-core/.../libav/`:
 
 | File              | Role                                                            |
 |-------------------|----------------------------------------------------------------|
-| `Libav.kt`        | the facade: loads each library, binds ~40 downcalls, wraps them |
+| `Libav.kt`        | the facade: loads each library, binds ~80 downcalls, wraps them |
 | `LibavLibrary.kt` | the soname enum -- one entry per pinned library + filename rule |
 | `LibavAbi.kt`     | struct field offsets and enum constants for the pinned major   |
 | `NativeBundle.kt` | unpacks the classifier jar into a fingerprint-keyed cache      |
 
-Optional capabilities mirror the same shape: `ass/Ass.kt` + `AssAbi.kt`
-and `webp/Webp.kt` + `WebpAbi.kt`.
+The optional capability mirrors the same shape: `ass/Ass.kt` +
+`AssAbi.kt`. There used to be a second, `webp/Webp.kt` + `WebpAbi.kt`,
+until FFmpeg 9's own `webp_anim` decoder made libwebp unnecessary.
 
 ## Binding a function
 
@@ -45,7 +46,13 @@ adaptation cost irrelevant; the M0 spike confirmed this and it has not
 been revisited. The surface is roughly the avformat / avcodec / swscale
 / swresample / avfilter functions you would expect (open, find stream,
 read frame, send packet, receive frame, seek, the alloc/unref/free
-families, sws and swr context lifecycle, the dict and error helpers).
+families, sws and swr context lifecycle, the dict and error helpers),
+plus two families the decode path does not use: the muxer and encoder
+side (`avcodec_find_encoder_by_name`, `avcodec_get_supported_config`,
+`avformat_alloc_output_context2`, `avformat_write_header`,
+`av_interleaved_write_frame`, `av_write_trailer`) and hardware decode
+(`av_hwdevice_ctx_create`, the `av_hwframe_*` family,
+`avcodec_get_hw_config`).
 
 Struct access is minimized: anything reachable through a function goes
 through the function. Direct offset reads are limited to the
@@ -84,8 +91,9 @@ P(sizeof(AVFrame));
 
 It is **not** part of the build. You run it by hand against the headers
 of the pinned major and transcribe its output into `LibavAbi.kt`.
-`ass-oracle.c` and `webp-oracle.c` do the same for `AssAbi.kt` and
-`WebpAbi.kt`. Bumping the FFmpeg pin means re-running the oracle and
+`ass-oracle.c` does the same for `AssAbi.kt` (`webp-oracle.c` is still
+in the tree with nothing left to feed). Bumping the FFmpeg pin means
+re-running the oracle and
 updating the tables -- and that PR runs the integration suite against
 the new build on every OS (see [natives-build.md](natives-build.md)).
 
@@ -182,15 +190,20 @@ by name or soname:
 - **libass.** Preloads fribidi (shared, LGPL -- it must not fold into
   libass), and on Windows also the freetype and harfbuzz DLLs, before
   libass itself.
-- **libwebp.** Preloads sharpyuv and libwebp before libwebpdemux, so
-  the demuxer binds the bundled webp.
+- **libva on Linux.** `preferHostVaapi()` maps the host's `libva.so.2`
+  and `libva-drm.so.2` before libavutil, deliberately preferring the
+  host copy over the bundled one: libva dispatches to a driver whose ABI
+  is versioned against it, and the driver on the machine belongs to the
+  host's libva, not to ours. The bundled pair stays as the fallback for
+  a machine that has none.
 
 ## Optional capabilities
 
-`Ass` and `Webp` are optional. Each builds its bindings in a
+`Ass` is optional. It builds its bindings in a
 `runCatching { Bindings() }.getOrNull()`; if the library fails to load,
-`available` is `false` and the feature degrades (text subtitles refuse
-selection; animated WebP falls back to the libav still path). This is
+`Ass.available` is `false` and text subtitles refuse selection while
+everything else plays on -- that flag is the documented way for a
+consumer to ask, too. This is
 also where skinema's only FFM upcall lives: libass logs to stderr
 unless a message callback is set, and NULL is a no-op, so a
 `MethodHandles.empty` stub silences it without ever dereferencing the
