@@ -478,6 +478,40 @@ class AudioPipelineTest {
     }
 
     @Test
+    fun `a track that will not open leaves the line playing the old one`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Staged by deleting the file out from under the pipeline: a switch
+        // reopens it BY PATH, so the open fails while the stream already
+        // playing keeps its own descriptor. Windows refuses to unlink an open
+        // file, so the failing open cannot be reached from there; the
+        // recovery this guards is not platform-specific.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            dev.hivens.skinema.libav.Os.current() != dev.hivens.skinema.libav.Os.WINDOWS,
+            "an open file cannot be deleted on Windows, so the failing open cannot be staged",
+        )
+        val sink = FakePcmSink()
+        val file = twoTracks("vanishing.mka")
+        val pipeline = AudioPipeline(file, sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { !sink.stopped }, "playback must start")
+            Files.delete(file)
+
+            pipeline.selectTrack(1)
+            Thread.sleep(300)
+            assertEquals(0, pipeline.activeAudioTrack, "a track that cannot open must not become active")
+            assertEquals(44_100, sink.sampleRate, "the line stays on the old track")
+            // The switch freezes the line before it does anything else. A
+            // refusal that returns without lifting that freeze leaves silence
+            // against a clock still mastered by a device that has stopped --
+            // the shape every hang in this file has had.
+            assertTrue(awaitTrue { !sink.stopped }, "the refused switch must put the line back to playing")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    @Test
     fun `a switch to an unknown index is a no-op`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
