@@ -996,8 +996,15 @@ for f in "$PREFIX"/lib/lib*.dylib; do
     fi
 done
 # Plain *.dll, not *-*.dll: the MinGW runtime ships zlib1.dll (no
-# version dash), and everything in bin here is a shipping DLL.
+# version dash), and everything in bin here is a shipping DLL -- bar one.
+# harfbuzz's meson build emits libharfbuzz-subset unconditionally (no option
+# turns it off, unlike the cmake path aarch64 takes with HB_BUILD_SUBSET=OFF),
+# and nothing here imports it: libass shapes text, it does not subset fonts.
+# Copying it shipped a megabyte nothing could ever call.
 for f in "$PREFIX"/bin/*.dll; do
+    case "$(basename "$f")" in
+        libharfbuzz-subset-*.dll) continue ;;
+    esac
     cp "$f" "$BUNDLE/"
 done
 shopt -u nullglob
