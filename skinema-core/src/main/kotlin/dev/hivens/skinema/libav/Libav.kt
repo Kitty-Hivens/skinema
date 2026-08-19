@@ -113,6 +113,38 @@ object Libav {
                 runCatching { SymbolLookup.libraryLookup(resolveLibraryPath(rt), Arena.global()) }
             }
         }
+        preferHostVaapi()
+    }
+
+    /**
+     * Maps the HOST's libva before libavutil asks for it, so the host's own
+     * pair of dispatcher and driver is the one that ends up in the process.
+     *
+     * The decode and full tiers link libva as a hard dependency of libavutil
+     * -- FFmpeg has no lazy path for it, its configure puts libva on the link
+     * line -- so a machine without libva could not load the bundle at all,
+     * and lost software decode along with the hardware it never had. The
+     * bundle therefore carries a copy, which its own RUNPATH would otherwise
+     * always win with.
+     *
+     * That is the wrong way round. libva looks up the driver's entry point by
+     * version name and walks minor versions DOWNWARD from its own, so a
+     * dispatcher older than the installed driver never finds it: bundling a
+     * pinned copy and letting it win would trade a loud failure on machines
+     * without libva for silent loss of GPU decode on machines whose drivers
+     * moved ahead of our pin. Loading the host's copy first leaves the
+     * bundled one as what it should be -- the fallback that keeps a bare
+     * container running on the CPU.
+     *
+     * A soname already in the process satisfies a later NEEDED entry for it,
+     * so nothing here has to reach into the linking of libavutil itself.
+     * Failure is the ordinary case (no host libva) and is silent by design.
+     */
+    private fun preferHostVaapi() {
+        if (Os.current() != Os.LINUX) return
+        for (name in listOf("libva.so.2", "libva-drm.so.2")) {
+            runCatching { SymbolLookup.libraryLookup(name, Arena.global()) }
+        }
     }
 
     private val lookups: Map<LibavLibrary, SymbolLookup> =
