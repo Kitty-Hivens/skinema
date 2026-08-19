@@ -39,8 +39,15 @@ val demoSubs = providers.gradleProperty("subs")
 
 // Read-ahead depth for every demo task: -PreadAhead=N (default 1).
 val demoReadAhead = providers.gradleProperty("readAhead")
+// Sound and GPU decode for the soak. A run that leaves both off measures the
+// plain looping path and nothing else -- which is not where the threads, the
+// device handles or the downloaded frames live.
+val demoSoakAudio = providers.gradleProperty("soakAudio")
+val demoSoakHardware = providers.gradleProperty("hardware")
 tasks.withType<JavaExec>().configureEach {
     demoReadAhead.orNull?.let { systemProperty("skinema.demo.readAhead", it) }
+    demoSoakAudio.orNull?.let { systemProperty("skinema.demo.soakAudio", it) }
+    demoSoakHardware.orNull?.let { systemProperty("skinema.demo.hardware", it) }
 }
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
@@ -114,7 +121,7 @@ tasks.register<JavaExec>("seekbench") {
 val soakMinutes = providers.gradleProperty("minutes")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
