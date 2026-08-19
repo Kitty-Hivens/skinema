@@ -334,4 +334,39 @@ class MediaWriterTest {
         proc.waitFor()
         return text
     }
+
+    @Test
+    fun `an encoder that will not take yuv420p is given what it does take`() {
+        // qtrle accepts rgb24, argb, rgb555be and gray -- no yuv420p at all.
+        // Written as a constant, avcodec_open2 refused it with a bare errno,
+        // the same shape the audio side's sample format had before it was
+        // negotiated. Lossless, so the colour is the conversion's doing.
+        Fixtures.assumeLibraryEncoder("qtrle")
+        val w = 64
+        val h = 64
+        val out = dir.resolve("qtrle.mov")
+        MediaWriter.open(out, VideoEncodeConfig("qtrle", w, h, 10)).use { writer ->
+            val frame = ByteArray(w * h * 4).also {
+                for (i in 0 until w * h) {
+                    it[i * 4] = 220.toByte()
+                    it[i * 4 + 1] = 30
+                    it[i * 4 + 2] = 40
+                    it[i * 4 + 3] = -1
+                }
+            }
+            repeat(3) { i -> writer.writeFrame(frame, i * 100_000_000L) }
+            writer.finish()
+        }
+        VideoDecoder.open(out).use { d ->
+            val f = assertNotNull(d.nextFrame(), "qtrle decoded no frame")
+            val mid = ((f.height / 2) * f.width + f.width / 2) * 4
+            val got = Triple(
+                f.rgba[mid].toInt() and 0xFF,
+                f.rgba[mid + 1].toInt() and 0xFF,
+                f.rgba[mid + 2].toInt() and 0xFF,
+            )
+            val err = maxOf(abs(got.first - 220), maxOf(abs(got.second - 30), abs(got.third - 40)))
+            assertTrue(err <= 2, "an rgb encoder round trip came back as $got, off by $err")
+        }
+    }
 }
