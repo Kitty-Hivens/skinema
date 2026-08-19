@@ -467,8 +467,25 @@ class VideoPlayer internal constructor(
      * storage-resolution text scaled along with the pixels.
      */
     fun setSubtitleCanvasSize(width: Int, height: Int) {
+        announcedCanvas = width to height
         subtitlePipeline?.setCanvasSize(width, height)
     }
+
+    /**
+     * The last size a consumer announced, kept because the pipeline it is
+     * meant for may not exist yet.
+     *
+     * A selection is marshalled onto the decode thread and builds the
+     * pipeline there, so announcing a size right after asking for a track --
+     * the natural order, and the one a consumer writes -- reached a null
+     * field and was dropped without a word. The text then rasterized at the
+     * video's storage size: 64x48 on the fixture that caught this, against
+     * the 800x600 asked for. A surface that resizes later papers over it,
+     * which is why it survived; a consumer drawing frames itself, or a
+     * window that never resizes, does not get that second chance.
+     */
+    @Volatile
+    private var announcedCanvas: Pair<Int, Int>? = null
 
     /**
      * Current media position in nanoseconds; zero until playback starts.
@@ -1166,12 +1183,19 @@ class VideoPlayer internal constructor(
         // refuses an unopenable track. Bitmap tracks never need it.
         if (track.isText && !Ass.available) return
         current?.closeAsync()
-        subtitlePipeline = SubtitlePipeline(
+        val fresh = SubtitlePipeline(
             path = track.externalPath ?: path,
             clock = clock,
             track = track,
             storageSize = decoder?.videoSize(),
         )
+        // Opening a track sets the canvas from the video's storage size, so
+        // a size the consumer announced earlier has to be re-stated here --
+        // for the first pipeline, which did not exist when it was announced,
+        // and for every switch after, which would otherwise drop back to
+        // storage resolution mid-playback.
+        announcedCanvas?.let { (w, h) -> fresh.setCanvasSize(w, h) }
+        subtitlePipeline = fresh
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */

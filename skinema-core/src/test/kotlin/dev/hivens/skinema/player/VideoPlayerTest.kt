@@ -1278,6 +1278,35 @@ class VideoPlayerTest {
     }
 
     @Test
+    fun `the canvas size a consumer announces reaches the rasterizer`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // The player's forwarder had never been called by any test -- the
+        // pipeline's own setCanvasSize was covered, the way through the
+        // player was not, and text rasterized at the wrong size is exactly
+        // the kind of defect that shows up only on a resized window.
+        VideoPlayer(subbedFixture("subcanvas"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // Announced right after asking for the track, which is the order
+            // a consumer writes and the one that used to lose it: the
+            // selection builds the pipeline on the decode thread, so the
+            // announcement arrives before there is anything to receive it.
+            player.selectSubtitleTrack(player.subtitleTracks.single().id)
+            player.setSubtitleCanvasSize(800, 600)
+            var canvas: Pair<Int, Int>? = null
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let {
+                        if (it.patches.isNotEmpty()) canvas = it.canvasWidth to it.canvasHeight
+                    }
+                    canvas == 800 to 600
+                },
+                "the overlay must rasterize at the announced size, got $canvas",
+            )
+        }
+    }
+
+    @Test
     fun `a subtitle selection queued before playback works`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeSubtitleRendering()
