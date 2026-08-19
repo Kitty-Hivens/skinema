@@ -56,6 +56,7 @@ internal class SubtitlePipeline(
     private val clock: MediaClock,
     val track: SubtitleTrack,
     private val storageSize: Pair<Int, Int>?,
+    private val maxScheduledBitmapBytes: Long = MAX_SCHEDULED_BITMAP_BYTES,
 ) {
 
     /**
@@ -362,6 +363,18 @@ internal class SubtitlePipeline(
         if (eofReached) return
         val gate = demuxNowNanos(nowNanos)
         while (lastDemuxedPtsNanos < gate + HORIZON_NANOS) {
+            // The horizon bounds the read-ahead in time, and time is not what
+            // it costs. Bitmap pixels convert once, at ingest, so a horizon's
+            // worth of them is however much the stream chose to put there:
+            // dialogue PGS is a few megabytes, and an animated signs track at
+            // full-plane 1080p is eight megabytes per presentation set, several
+            // a second, for the thirty seconds ahead plus the ten of preroll a
+            // seek replays before a single window is evicted. That is gigabytes
+            // reached in one burst after an ordinary scrub, and the resulting
+            // OutOfMemoryError is caught by the thread's own handler, so the
+            // track simply dies. Read-ahead is the right thing to give up
+            // here: the clock evicts as it advances and the refill resumes.
+            if (scheduledBitmapBytes > maxScheduledBitmapBytes) return
             if (Libav.avReadFrame(fmtCtx, packet) < 0) {
                 eofReached = true
                 return
@@ -465,8 +478,7 @@ internal class SubtitlePipeline(
      * follow each other and num_rects == 0 is the explicit clear).
      */
     private fun ingestBitmapEvent(subtitle: MemorySegment, startNanos: Long, durationMs: Long?) {
-        // The next event ends an open-ended predecessor either way.
-        bitmapEvents.lastOrNull()?.takeIf { it.endNanos == Long.MAX_VALUE }?.endNanos = startNanos
+        bitmapEvents.lastOrNull()?.let { it.endNanos = windowTruncatedAt(it.endNanos, startNanos) }
 
         val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
         val end = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong()
@@ -545,24 +557,15 @@ internal class SubtitlePipeline(
         buffer.publish()
     }
 
-    /**
-     * How long this cue is meant to be up, or null when nothing says.
-     *
-     * Null rather than the default, because the two were the same value and
-     * a caller could not tell them apart: a cue genuinely declaring ten
-     * seconds or more read as "nobody knows" and became open-ended, so a
-     * title card held for fifteen seconds was cleared by the next event or
-     * not at all. The default belongs at the point that needs one.
-     */
-    private fun packetDurationMs(packet: MemorySegment, subtitle: MemorySegment): Long? {
+    /** How long this cue is meant to be up; see [declaredDurationMs]. */
+    private fun packetDurationMs(packet: MemorySegment, subtitle: MemorySegment): Long? = declaredDurationMs(
         // A duration delta, not a timestamp -- start_time does not apply.
-        val packetDuration = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION)
-        if (packetDuration > 0) return ptsToNanos(packetDuration, timeBaseNum, timeBaseDen) / 1_000_000
-        val start = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong()
-        val end = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong()
-        if (end > start) return end - start
-        return null
-    }
+        packetDuration = packet.get(JAVA_LONG, LibavAbi.Packet.DURATION),
+        timeBaseNum = timeBaseNum,
+        timeBaseDen = timeBaseDen,
+        displayStartMs = subtitle.get(JAVA_INT, LibavAbi.Subtitle.START_DISPLAY_TIME).toLong(),
+        displayEndMs = subtitle.get(JAVA_INT, LibavAbi.Subtitle.END_DISPLAY_TIME).toLong(),
+    )
 
     private fun handle(cmd: Command): Boolean = when (cmd) {
         Command.Close -> false
@@ -608,7 +611,7 @@ internal class SubtitlePipeline(
      */
     private fun reposition(targetNanos: Long) {
         val preroll = (targetNanos - PREROLL_NANOS).coerceAtLeast(0)
-        runCatching {
+        val moved = runCatching {
             Libav.checkAv(
                 Libav.avSeekFrame(
                     fmtCtx, track.streamIndex,
@@ -618,7 +621,7 @@ internal class SubtitlePipeline(
                 ),
                 "av_seek_frame(subs)",
             )
-        }
+        }.onFailure { Debug.trace("subtitle demuxer reposition", it) }.isSuccess
         Libav.avcodecFlushBuffers(codecCtx)
         if (assTrack != MemorySegment.NULL && convertedCodec) {
             Ass.flushEvents(assTrack)
@@ -630,8 +633,20 @@ internal class SubtitlePipeline(
         scheduledBitmapBytes = 0L
         shownBitmapStart = Long.MAX_VALUE
         eofReached = false
-        lastDemuxedPtsNanos = Long.MIN_VALUE
-        repositionTargetNanos = targetNanos
+        // Only a demuxer that actually moved has nothing behind it. The
+        // refusal used to be discarded and the rest applied regardless, which
+        // told the refill gate to re-observe the target plus a horizon from a
+        // stream still standing where it was: on a backward seek that is a
+        // read to EOF -- every packet of every stream -- with the subtitles
+        // blank for the length of it and no way back for the rest of the file.
+        // A stream that will not seek keeps demuxing forward from where it
+        // is, against the clock rather than a target it never reached.
+        if (moved) {
+            lastDemuxedPtsNanos = Long.MIN_VALUE
+            repositionTargetNanos = targetNanos
+        } else {
+            repositionTargetNanos = Long.MIN_VALUE
+        }
         repositionAtWall = System.nanoTime()
     }
 
@@ -655,19 +670,27 @@ internal class SubtitlePipeline(
     }
 
     private fun closeNatives() {
-        if (assTrack != MemorySegment.NULL) Ass.freeTrack(assTrack)
-        if (assRenderer != MemorySegment.NULL) Ass.rendererDone(assRenderer)
-        if (assLibrary != MemorySegment.NULL) Ass.libraryDone(assLibrary)
-        val ptrPtr = arena.allocate(ADDRESS)
-        if (codecCtx != MemorySegment.NULL) {
-            ptrPtr.set(ADDRESS, 0, codecCtx)
-            Libav.avcodecFreeContext(ptrPtr)
+        // The arena goes last and unconditionally. Its close was the last
+        // statement of a block the caller wraps in runCatching, so a throw
+        // from any free above it -- a libass handle a partial open left in an
+        // odd state -- leaked the whole confined arena, the codec context and
+        // the format context with it, once per track switch.
+        try {
+            if (assTrack != MemorySegment.NULL) Ass.freeTrack(assTrack)
+            if (assRenderer != MemorySegment.NULL) Ass.rendererDone(assRenderer)
+            if (assLibrary != MemorySegment.NULL) Ass.libraryDone(assLibrary)
+            val ptrPtr = arena.allocate(ADDRESS)
+            if (codecCtx != MemorySegment.NULL) {
+                ptrPtr.set(ADDRESS, 0, codecCtx)
+                Libav.avcodecFreeContext(ptrPtr)
+            }
+            if (fmtCtx != MemorySegment.NULL) {
+                ptrPtr.set(ADDRESS, 0, fmtCtx)
+                Libav.avformatCloseInput(ptrPtr)
+            }
+        } finally {
+            arena.close()
         }
-        if (fmtCtx != MemorySegment.NULL) {
-            ptrPtr.set(ADDRESS, 0, fmtCtx)
-            Libav.avformatCloseInput(ptrPtr)
-        }
-        arena.close()
     }
 
     internal companion object {
@@ -733,9 +756,18 @@ internal class SubtitlePipeline(
          * pick the allocation size out of a truncated number. The ceiling is
          * far above anything real: a 4096x4096 indexed plane is 16 MiB, and
          * PGS at 1080p is nearer two.
+         *
+         * The geometry is bounded as well as the plane, because the plane is
+         * not what gets held: it converts to RGBA at four bytes a pixel, and
+         * the two are only related through a linesize the rect also supplies.
+         * A rect claiming 8192x8192 with a linesize of one occupies 16 KiB
+         * and asked for 256 MiB of output; one claiming 65536x8192 asked for
+         * exactly 2^31 bytes, which is a negative array size and takes the
+         * track down. A linesize below the width is not a stride at all.
          */
         internal fun indexPlaneBytes(width: Int, height: Int, linesize: Int): Int? {
-            if (width <= 0 || height <= 0 || linesize <= 0) return null
+            if (width <= 0 || height <= 0 || linesize < width) return null
+            if (width.toLong() * height > MAX_RECT_PIXELS) return null
             val bytes = linesize.toLong() * (height - 1) + width
             if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
             return bytes.toInt()
@@ -763,11 +795,75 @@ internal class SubtitlePipeline(
             else -> Long.MAX_VALUE
         }
 
+        /**
+         * Where a window ends once the next one begins -- the second half of
+         * the rule [bitmapWindowEnd] states, and the half that was missing.
+         *
+         * Only an OPEN-ENDED predecessor used to be cut here, so a window
+         * with a declared end outliving its successor stayed in the schedule
+         * behind it. The schedule shows the last window covering the moment,
+         * which hides that while the successor is open and stops hiding it
+         * the instant the successor closes: a ten-second cue replaced after
+         * two seconds by a one-second one came back on screen at three and
+         * stayed to ten. dvdsub declares an end on every cue, so it is the
+         * ordinary case there, and PGS reaches it whenever the packet's
+         * duration outruns the gap to the next presentation.
+         */
+        internal fun windowTruncatedAt(previousEnd: Long, nextStart: Long): Long =
+            if (previousEnd > nextStart) nextStart else previousEnd
+
+        /**
+         * How long a cue is meant to be up, or null when nothing says.
+         *
+         * Null rather than the default, because the two were the same value
+         * and a caller could not tell them apart: a cue genuinely declaring
+         * ten seconds or more read as "nobody knows" and became open-ended,
+         * so a title card held for fifteen seconds was cleared by the next
+         * event or not at all. The default belongs at the point that needs
+         * one.
+         *
+         * A packet duration that floors to zero milliseconds is not a length
+         * either. Fine grids make that ordinary -- mov_text in mp4 and
+         * anything in MPEG-TS run at 90 kHz, where a duration under 90 units
+         * divides away -- and a zero handed on as a known length reaches the
+         * text path, which has no arm for it, and renders a cue that is never
+         * on screen.
+         */
+        internal fun declaredDurationMs(
+            packetDuration: Long,
+            timeBaseNum: Int,
+            timeBaseDen: Int,
+            displayStartMs: Long,
+            displayEndMs: Long,
+        ): Long? {
+            if (packetDuration > 0) {
+                val ms = ptsToNanos(packetDuration, timeBaseNum, timeBaseDen) / 1_000_000
+                if (ms > 0) return ms
+            }
+            if (displayEndMs > displayStartMs) return displayEndMs - displayStartMs
+            return null
+        }
+
         /** AVPALETTE_SIZE in entries: what every subtitle decoder allocates. */
         const val MAX_PALETTE_ENTRIES = 256
 
+        /**
+         * Ceiling on the decoded pixels the bitmap schedule holds ahead of
+         * the clock. Eight full-plane 1080p presentation sets, and hundreds
+         * of ordinary dialogue ones -- the read-ahead horizon is reached
+         * first by everything except a track built to defeat it.
+         */
+        const val MAX_SCHEDULED_BITMAP_BYTES = 64L * 1024 * 1024
+
         /** Ceiling on a single bitmap rect's index plane; see [indexPlaneBytes]. */
         const val MAX_RECT_BYTES = 64L * 1024 * 1024
+
+        /**
+         * Ceiling on a single bitmap rect's pixel count -- what the RGBA it
+         * converts to is sized from. Sixteen megapixels is four 4K frames and
+         * far past anything a subtitle covers.
+         */
+        const val MAX_RECT_PIXELS = 16L * 1024 * 1024
 
         /** Attachment mimetypes the wild uses for fonts. */
         val FONT_MIMETYPES = setOf(

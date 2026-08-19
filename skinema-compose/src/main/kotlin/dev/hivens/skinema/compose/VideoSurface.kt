@@ -49,6 +49,10 @@ fun VideoSurface(
     val subtitles = remember(player) { SubtitleOverlayImage() }
     var frameStamp by remember(player) { mutableLongStateOf(0L) }
     var subtitleCanvas by remember(player) { mutableStateOf(0 to 0) }
+    // The size last posted to the player, held outside Compose state on
+    // purpose: it is written from the draw scope, and a snapshot write there
+    // would invalidate the very frame writing it.
+    val postedCanvas = remember(player) { intArrayOf(-1, -1) }
 
     DisposableEffect(player) {
         onDispose {
@@ -139,10 +143,24 @@ fun VideoSurface(
         // The pipeline rasterizes text at whatever size the surface
         // reports; posting the pre-rotation (storage-oriented) rect keeps
         // the libass frame aspect matched to the video and glyphs crisp at
-        // any window size. Cheap and idempotent -- a command only when the
-        // size actually changed.
+        // any window size.
+        //
+        // Only when it changes, and the comparison belongs here. It used to
+        // be described as idempotent and was not: the call queues a command
+        // unconditionally and the size is compared on the subtitle thread,
+        // after that thread has already been woken to read it. This draw
+        // scope runs on every painted frame, so a steady window posted sixty
+        // commands a second onto an unbounded queue -- which the subtitle
+        // pump treats as work pending, so it refilled a packet at a time and
+        // never reached its own render cadence.
         if (player.activeSubtitleTrack != null) {
-            player.setSubtitleCanvasSize(imageRect.width.roundToInt(), imageRect.height.roundToInt())
+            val postW = imageRect.width.roundToInt()
+            val postH = imageRect.height.roundToInt()
+            if (postW != postedCanvas[0] || postH != postedCanvas[1]) {
+                postedCanvas[0] = postW
+                postedCanvas[1] = postH
+                player.setSubtitleCanvasSize(postW, postH)
+            }
         }
     }
 }
