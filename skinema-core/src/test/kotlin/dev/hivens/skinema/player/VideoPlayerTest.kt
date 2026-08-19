@@ -7,6 +7,7 @@ import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.libav.Fixtures
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import dev.hivens.skinema.libav.LibavException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -1274,6 +1275,53 @@ class VideoPlayerTest {
             )
             player.selectSubtitleTrack(null)
             assertTrue(awaitTrue { player.activeSubtitleTrack == null }, "deselect must land")
+        }
+    }
+
+    /** A font from the host, or null when this machine ships none to attach. */
+    private fun hostFont(): Path? = runCatching {
+        val p = ProcessBuilder("fc-match", "-f", "%{file}", "sans").redirectErrorStream(true).start()
+        val out = p.inputStream.readAllBytes().decodeToString().trim()
+        p.waitFor()
+        Path.of(out).takeIf { out.endsWith(".ttf", true) || out.endsWith(".otf", true) }
+    }.getOrNull()?.takeIf { Files.isReadable(it) }
+
+    @Test
+    fun `a file whose fonts ride inside it still renders its subtitles`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // Anime releases ship their typesetting faces as attachments, and the
+        // extraction that hands them to libass had never executed in any test
+        // -- no fixture carried one. This proves the path runs and leaves the
+        // render working; it does NOT prove the glyphs came from the attached
+        // face, which would need a font this machine does not otherwise have.
+        val font = hostFont()
+        assumeTrue(font != null, "no host font to attach")
+        val srt = dir.resolve("attached.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nTypeset\n")
+        val video = Fixtures.generate(
+            dir.resolve("attached.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-attach", font.toString(),
+            "-metadata:s:t", "mimetype=application/x-truetype-font",
+            "-map", "0:v", "-map", "1", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "ass",
+        )
+        VideoPlayer(video, loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val id = player.subtitleTracks.single().id
+            player.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == id }, "the selection must land")
+            var patched = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { patched = patched || it.patches.isNotEmpty() }
+                    patched
+                },
+                "text must reach the overlay with an attachment present",
+            )
         }
     }
 
