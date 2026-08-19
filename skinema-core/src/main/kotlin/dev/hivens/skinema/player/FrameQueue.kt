@@ -108,7 +108,12 @@ internal class FrameQueue(depth: Int) {
         }
     }
 
-    /** Wakes and permanently releases the consumer. */
+    /**
+     * Wakes and permanently releases both sides. The decode thread calls it
+     * in its teardown; a pacer that died calls it too, because the producer's
+     * wait for a free cell asks only this question and nobody else would ever
+     * answer it.
+     */
     fun close() {
         synchronized(lock) {
             closed = true
@@ -147,6 +152,10 @@ internal class FrameQueue(depth: Int) {
     fun awaitChange(sinceTick: Long, timeoutNanos: Long) {
         synchronized(lock) {
             if (changes != sinceTick || closed) return
+            // Object.wait(0, 0) is an indefinite wait, and every caller here
+            // means "at most this long": a computed zero would park a thread
+            // on a notify that its own next act was supposed to produce.
+            if (timeoutNanos <= 0L) return
             lock.wait(timeoutNanos / 1_000_000L, (timeoutNanos % 1_000_000L).toInt())
         }
     }
@@ -168,7 +177,6 @@ internal class FrameQueue(depth: Int) {
         out
     }
 
-    /** Pops the head without taking its pixels (a dropped late frame). */
     /**
      * Drops the head the caller judged, and only that one.
      *

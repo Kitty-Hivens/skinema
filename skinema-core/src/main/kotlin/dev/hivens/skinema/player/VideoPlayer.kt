@@ -273,11 +273,21 @@ class VideoPlayer internal constructor(
     // acquireSubtitles/activeSubtitleTrack from their render loops.
     @Volatile
     private var subtitlePipeline: SubtitlePipeline? = null
+    // Written once on the decode thread, read from arbitrary consumer
+    // threads through positionNanos(). Volatile for the publication: a
+    // caller-supplied MediaClock gets no safe-publication guarantee
+    // otherwise, and positionNanos() could go on reporting zero after
+    // playback had started.
+    @Volatile
     private lateinit var clock: MediaClock
 
     // Whether an audio clock ever took over: settled once, when the audio
     // side reports what the file and the machine can actually do.
     private var audioMastered = false
+
+    // What killed the pacer, if anything did. See [runPacer].
+    @Volatile
+    private var pacerFailure: Throwable? = null
 
     // Which side supplies media time -- the device or the wall -- not who
     // may move it. Both sides re-anchor, each at a point where nothing is in
@@ -620,6 +630,7 @@ class VideoPlayer internal constructor(
                 // decode thread that had died: close() then joined a thread
                 // that was already gone and returned, with the sound still
                 // running and the device still held.
+                var framelessReturned = false
                 try {
                     // Nobody else starts it on this path. With sound the
                     // pipeline's own clock is already running; without, this
@@ -627,14 +638,17 @@ class VideoPlayer internal constructor(
                     // otherwise sit at zero forever.
                     if (ownsClock) clock.start(0)
                     framelessLoop()
-                    state = State.Closed
+                    framelessReturned = true
                 } catch (framelessFailure: Throwable) {
                     state = State.Failed(framelessFailure)
                 }
+                audioPipeline.close()
+                // After the device, for the reason the framed path gives.
+                if (framelessReturned && state !is State.Failed) state = State.Closed
             } else {
                 state = State.Failed(t)
+                audioPipeline?.close()
             }
-            audioPipeline?.close()
             return
         }
         // close() can have come and gone while this was opening -- the wait
@@ -655,6 +669,7 @@ class VideoPlayer internal constructor(
         // the audio pipeline for good and pinned the state at Opening, with
         // close() joining a thread that had already unwound.
         var pacer: Thread? = null
+        var loopReturned = false
         try {
             durationNanos = decoder.durationNanos()
             tags = decoder.tags()
@@ -663,14 +678,14 @@ class VideoPlayer internal constructor(
             rotationDegrees = decoder.rotationDegrees()
             hardwareActive = decoder.hardwareActive()
             synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
-            pacer = Thread(::paceLoop, "skinema-pace").apply {
+            pacer = Thread(::runPacer, "skinema-pace").apply {
                 isDaemon = true
                 start()
             }
             if (ownsClock) clock.start(0)
             state = State.Playing
             decodeLoop(decoder)
-            state = State.Closed
+            loopReturned = true
         } catch (t: Throwable) {
             state = State.Failed(t)
         } finally {
@@ -679,6 +694,12 @@ class VideoPlayer internal constructor(
             runCatching { decoder.close() }
             runCatching { audioPipeline?.close() }
             runCatching { subtitlePipeline?.close() }
+            // Published after the teardown rather than before it. A consumer
+            // polls this and reads Closed as leave to release what it lent
+            // the player -- its own sink above all -- while the audio thread
+            // is still writing into that sink until the close above returns.
+            // A failure has already published its own state and keeps it.
+            if (loopReturned && state !is State.Failed) state = State.Closed
         }
     }
 
@@ -1420,6 +1441,43 @@ class VideoPlayer internal constructor(
     }
 
     // -- Pacer thread ---------------------------------------------------------
+
+    /**
+     * The pacer's thread body, and the only thing standing between a throw in
+     * [paceLoop] and a player that hangs.
+     *
+     * Every other thread here catches; this one did not, and it is not a
+     * thread that cannot throw: it rebuilds the mailbox around every geometry
+     * change (three full frames -- an allocation a 4K stream can lose), and
+     * it reads the clock, which on a caller-supplied MediaClock or PcmSink is
+     * the consumer's own code.
+     *
+     * What its death cost is the reason this exists. Nothing announced it:
+     * the picture stopped, [state] went on reporting Playing, and the
+     * position ran on under it -- so a consumer had no failure to fall back
+     * from, and a player it then closed took the full join budget before
+     * returning. Publishing the failure is what ends that, and it is what
+     * keeps the decode thread out of trouble too: a Failed player takes none
+     * of the presses that would have it wait for a free cell.
+     *
+     * Closing the queue is for the one thread that cannot be warned -- a
+     * decode thread already inside that wait when the pacer dies. Its only
+     * escape is a closed queue, and the queue is normally closed by that very
+     * thread, in a teardown it is not going to reach.
+     */
+    private fun runPacer() {
+        try {
+            paceLoop()
+        } catch (t: Throwable) {
+            pacerFailure = t
+            state = State.Failed(t)
+            // The producer's waits ask only whether the queue is closed. It
+            // is now, in the sense they are asking about: there is no
+            // consumer left.
+            queue.close()
+            commands.put(Command.Close)
+        }
+    }
 
     /**
      * Owns presentation: waits out each queued frame's pts against the
