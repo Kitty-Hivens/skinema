@@ -141,7 +141,7 @@ object LibavAbi {
         const val WIDTH = 112L
         const val HEIGHT = 116L
 
-        /** AVPixelFormat the encoder takes (set to YUV420P). */
+        /** AVPixelFormat the encoder takes, negotiated against what it advertises. */
         const val PIX_FMT = 136L
         const val MAX_B_FRAMES = 200L
         const val GOP_SIZE = 332L
@@ -306,6 +306,7 @@ object LibavAbi {
      * enum AVCodecConfig, for avcodec_get_supported_config. Each list is
      * NULL when the codec accepts anything of that kind.
      */
+    const val AV_CODEC_CONFIG_PIX_FORMAT = 0
     const val AV_CODEC_CONFIG_SAMPLE_RATE = 2
     const val AV_CODEC_CONFIG_SAMPLE_FORMAT = 3
     const val AV_PIX_FMT_RGBA = 26
@@ -345,6 +346,10 @@ object LibavAbi {
     const val AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX = 2
 
     // -- M12 encode + mux --
+    const val AV_PIX_FMT_YUV422P = 4
+    const val AV_PIX_FMT_YUV444P = 5
+    const val AV_PIX_FMT_GBRP = 168
+    const val AV_PIX_FMT_RGB24 = 2
     const val AV_PIX_FMT_YUV420P = 0
     const val AV_PIX_FMT_YUVA420P = 33
 

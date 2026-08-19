@@ -484,13 +484,25 @@ class MediaWriter private constructor(
                 vc.set(JAVA_INT, LibavAbi.CodecContext.WIDTH, video.width)
                 vc.set(JAVA_INT, LibavAbi.CodecContext.HEIGHT, video.height)
 
-                // Software encode takes YUV420P directly; a hardware encoder
-                // takes its surface format (e.g. VAAPI) and is fed NV12
-                // uploads through a GPU frames pool built here.
+                // A hardware encoder takes its surface format (e.g. VAAPI) and
+                // is fed NV12 uploads through a GPU frames pool built here. A
+                // software one is asked what it takes: YUV420P covers the
+                // common ones and led here as a constant, but an encoder that
+                // wants 4:2:2, 4:4:4 or planar RGB -- prores, dnxhd,
+                // libx264rgb -- was refused by avcodec_open2 with a bare
+                // errno. The audio side already picks its sample format this
+                // way; this is the branch that fix did not reach.
                 val hw = detectHwEncode(vEncoder)
-                val swFrameFormat = if (hw == null) LibavAbi.AV_PIX_FMT_YUV420P else LibavAbi.AV_PIX_FMT_NV12
+                val swFrameFormat = if (hw == null) {
+                    pickPixelFormat(
+                        video.codecName,
+                        supportedInts(arena, vEncoder, LibavAbi.AV_CODEC_CONFIG_PIX_FORMAT),
+                    )
+                } else {
+                    LibavAbi.AV_PIX_FMT_NV12
+                }
                 if (hw == null) {
-                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, LibavAbi.AV_PIX_FMT_YUV420P)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, swFrameFormat)
                 } else {
                     val deviceOut = arena.allocate(ADDRESS)
                     val deviceArg = video.device?.let { arena.allocateFrom(it) } ?: MemorySegment.NULL
@@ -697,6 +709,33 @@ class MediaWriter private constructor(
             val sized = list.reinterpret(count.toLong() * JAVA_INT.byteSize())
             return IntArray(count) { sized.getAtIndex(JAVA_INT, it.toLong()) }
         }
+
+        /**
+         * The pixel format to hand a software encoder.
+         *
+         * YUV420P leads because it is what every encoder that already worked
+         * here takes, so nothing that encodes today changes format; the rest
+         * runs outward from it through the layouts an RGBA source reaches
+         * without losing more than the subsampling already does. A NULL list
+         * means the encoder accepts anything, which is the same answer.
+         */
+        private fun pickPixelFormat(codecName: String, supported: IntArray?): Int {
+            if (supported == null) return LibavAbi.AV_PIX_FMT_YUV420P
+            for (candidate in PIXEL_FORMAT_PREFERENCE) if (candidate in supported) return candidate
+            // Something exotic (a palette, a bit depth swscale will refuse):
+            // hand it over anyway and let sws_getContext name what it cannot
+            // do, rather than refusing here on a guess about what it means.
+            return supported.firstOrNull()
+                ?: throw LibavException("'$codecName' advertises no input pixel format")
+        }
+
+        private val PIXEL_FORMAT_PREFERENCE = intArrayOf(
+            LibavAbi.AV_PIX_FMT_YUV420P,
+            LibavAbi.AV_PIX_FMT_YUV422P,
+            LibavAbi.AV_PIX_FMT_YUV444P,
+            LibavAbi.AV_PIX_FMT_GBRP,
+            LibavAbi.AV_PIX_FMT_RGB24,
+        )
 
         /**
          * The sample format to hand the encoder. Planar float leads because
