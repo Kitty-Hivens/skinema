@@ -498,6 +498,11 @@ internal class SubtitlePipeline(
             MemorySegment.copy(
                 indicesPtr.reinterpret(indexBytes.toLong()), JAVA_BYTE, 0, indices, 0, indices.size,
             )
+            // Every decoder allocates this plane at AVPALETTE_SIZE -- 256
+            // entries -- so a count past that is a rect describing memory the
+            // decoder did not allocate, and reading it is off the end. The
+            // index plane next to it is bounded the same way.
+            if (colors > MAX_PALETTE_ENTRIES) continue
             val palette = IntArray(colors)
             val paletteSeg = palettePtr.reinterpret(colors * 4L)
             for (c in 0 until colors) palette[c] = paletteSeg.getAtIndex(JAVA_INT, c.toLong())
@@ -728,6 +733,9 @@ internal class SubtitlePipeline(
             if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
             return bytes.toInt()
         }
+
+        /** AVPALETTE_SIZE in entries: what every subtitle decoder allocates. */
+        const val MAX_PALETTE_ENTRIES = 256
 
         /** Ceiling on a single bitmap rect's index plane; see [indexPlaneBytes]. */
         const val MAX_RECT_BYTES = 64L * 1024 * 1024

@@ -428,7 +428,22 @@ object Libav {
      */
     @JvmStatic
     @Suppress("unused")
-    private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int {
+    private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int =
+        try {
+            chooseHwFormatOrThrow(ctx, formats)
+        } catch (_: Throwable) {
+            // Nothing here should throw, and a throwable unwinding out of an
+            // upcall with native frames below takes the JVM down without a
+            // stack trace. The two AVIO upcalls carry the same barrier; this
+            // one was the exception because "it cannot throw" was true rather
+            // than enforced. NONE is not a fallback to software -- avcodec
+            // reads it as "no format is acceptable" and fails the decode --
+            // which is the point: one file fails closed instead of the
+            // process dying without a word.
+            LibavAbi.AV_PIX_FMT_NONE
+        }
+
+    private fun chooseHwFormatOrThrow(ctx: MemorySegment, formats: MemorySegment): Int {
         val target = negotiatedHwFormat(ctx)
         val list = formats.reinterpret(Long.MAX_VALUE)
         var i = 0L

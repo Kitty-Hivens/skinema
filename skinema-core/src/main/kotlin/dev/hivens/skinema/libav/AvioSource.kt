@@ -39,6 +39,8 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
     @Volatile
     private var pendingError: Throwable? = null
 
+    private val freed = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val readStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().bind(
             this, "readPacket",
@@ -144,6 +146,12 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
      * free the buffer, so the current one is released first.
      */
     fun free(ptrPtr: MemorySegment) {
+        // Once. Every caller today is exclusive of the others, and the day one
+        // is not, a second pass would av_free a released buffer and free a
+        // released context -- which aborts the JVM rather than raising, the
+        // one failure a caller cannot contain. Both close() paths in this
+        // package guard themselves the same way.
+        if (!freed.compareAndSet(false, true)) return
         val current = context.reinterpret(LibavAbi.AvioContext.BUFFER + ADDRESS.byteSize())
             .get(ADDRESS, LibavAbi.AvioContext.BUFFER)
         if (current != MemorySegment.NULL) Libav.avFree(current)
