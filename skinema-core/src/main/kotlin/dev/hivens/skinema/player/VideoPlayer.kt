@@ -299,6 +299,20 @@ class VideoPlayer internal constructor(
     @Volatile
     private var lastPublishedPts = 0L
 
+    /**
+     * Set while the pacer is between taking a frame off the queue and
+     * writing the playhead it just published.
+     *
+     * Volatile: raised and lowered on the pacer, read by the decode thread's
+     * step waits. Those wait for the screen to catch up and give up early
+     * when there is nothing left to publish -- and an empty queue alone does
+     * not mean that, because the frame in flight has already left it. A step
+     * that gave up there read the previous playhead and computed the target
+     * its predecessor had just used, so one press of a burst moved nothing.
+     */
+    @Volatile
+    private var publishing = false
+
     // Wall time of the last publish; feeds the late-frame starvation
     // guard on both threads.
     @Volatile
@@ -1301,7 +1315,7 @@ class VideoPlayer internal constructor(
             val deadline = System.nanoTime() + STEP_PUBLISH_WAIT_NANOS
             while (!queue.isClosed && System.nanoTime() < deadline) {
                 val tick = queue.changeTick()
-                if (lastPublishedPts == landed || queue.peekHead() == null) break
+                if (lastPublishedPts == landed || (queue.peekHead() == null && !publishing)) break
                 queue.awaitChange(tick, PACE_RECHECK_NANOS)
             }
         }
@@ -1435,17 +1449,27 @@ class VideoPlayer internal constructor(
             current
         }
         val slot = target.writing
-        val frame = queue.poll(slot.rgba) ?: return false
-        slot.rgba = frame.rgba
-        slot.width = frame.width
-        slot.height = frame.height
-        slot.ptsNanos = frame.ptsNanos
-        // Forward gaps only: a seek landing or a wrap publishes backwards,
-        // and neither is a frame period.
-        if (frame.ptsNanos > lastPublishedPts) lastPublishGapNanos = frame.ptsNanos - lastPublishedPts
-        lastPublishedPts = frame.ptsNanos
-        lastPublishWallNanos = System.nanoTime()
-        target.publish()
+        // Raised BEFORE the head leaves the queue and lowered after the
+        // playhead is written, because between those two the queue is empty
+        // and [lastPublishedPts] still holds the previous frame -- a state
+        // that reads exactly like "nothing left to publish" to anyone
+        // waiting on it.
+        publishing = true
+        try {
+            val frame = queue.poll(slot.rgba) ?: return false
+            slot.rgba = frame.rgba
+            slot.width = frame.width
+            slot.height = frame.height
+            slot.ptsNanos = frame.ptsNanos
+            // Forward gaps only: a seek landing or a wrap publishes backwards,
+            // and neither is a frame period.
+            if (frame.ptsNanos > lastPublishedPts) lastPublishGapNanos = frame.ptsNanos - lastPublishedPts
+            lastPublishedPts = frame.ptsNanos
+            lastPublishWallNanos = System.nanoTime()
+            target.publish()
+        } finally {
+            publishing = false
+        }
         if (target !== current) buffer = target
         commands.put(Command.RoomFreed)
         return true
