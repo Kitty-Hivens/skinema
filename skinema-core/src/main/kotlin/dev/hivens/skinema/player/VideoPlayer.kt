@@ -768,19 +768,7 @@ class VideoPlayer internal constructor(
                         }
                         LapWait.PLAYED_OUT -> {}
                     }
-                    decoder.seekTo(0)
-                    // The picture owns the lap, so it restarts both sides --
-                    // including the landing handshake, without which the sound
-                    // stays muted from the second lap on.
-                    // Only a pipeline still on its feet: a seek into a dead
-                    // one raises a landing counter nobody will lower, and the
-                    // video side then treats every frame as still settling.
-                    audioPipeline?.takeIf { it.alive }?.let {
-                        it.seek(0)
-                        it.videoLanded()
-                    }
-                    clock.seek(0)
-                    clock.resume()
+                    restartLap(decoder, resume = true)
                 } else {
                     enterEnded()
                 }
@@ -1088,34 +1076,35 @@ class VideoPlayer internal constructor(
                 dropped++
             }
             if (f == null) {
-                // Seeked past the last frame: same treatment as EOF.
-                if (loop) {
-                    decoder.seekTo(0)
-                    if (ownsClock) clock.seek(0)
-                    finishSeek(State.Playing)
-                } else {
-                    // The end of the VIDEO stream, which is not the end of the
-                    // file: a clip laid over a longer track still has sound to
-                    // play. Ending here dropped the rest of that track and
-                    // snapped the picture back to the first frame, from an
-                    // ordinary drag of the timeline into the audio-only tail.
-                    // Hand it to the EOF path instead -- the one place that
-                    // knows a file is over when BOTH streams are, and that
-                    // ends through the same door so the timeline stops and
-                    // lands on the duration.
-                    finishSeek(State.Playing)
-                    eofPending = true
-                    // Only the Playing arm of the decode loop ever consumes
-                    // that flag, and finishSeek restores whatever ran before
-                    // the burst -- so on a PAUSED player the seek went
-                    // nowhere at all: the queue was cleared, no landing
-                    // replaced it, and the position still read where the
-                    // press had left from, until a resume drove it straight
-                    // to Ended. With nothing left to play, say so now.
-                    if (state !is State.Playing && audioPipeline?.hasSoundLeft != true) {
-                        eofPending = false
-                        enterEnded()
-                    }
+                // The end of the VIDEO stream, which is not the end of the
+                // file: a clip laid over a longer track still has sound to
+                // play. Ending here dropped the rest of that track and
+                // snapped the picture back to the first frame, from an
+                // ordinary drag of the timeline into the audio-only tail.
+                // Hand it to the EOF path -- the one place that knows a file
+                // is over when BOTH streams are.
+                //
+                // A looping player used to take a shortcut here and wrap the
+                // picture on the spot, which is the same mistake read the
+                // other way round: the sound was never told, so it played on
+                // from the target while frames arrived at pts zero and the
+                // chase threw every one of them away. Measured on a 2s
+                // picture under a 6s track: the screen stood still for two
+                // seconds, until the sound reached its own end. mpv, ffplay,
+                // VLC and Media3 all agree on the rule this now follows --
+                // the last picture stays up, the sound plays out, and the lap
+                // turns when the FILE ends.
+                finishSeek(State.Playing)
+                eofPending = true
+                // Only the Playing arm of the decode loop ever consumes that
+                // flag, and finishSeek restores whatever ran before the burst
+                // -- so on a PAUSED player the seek went nowhere at all: the
+                // queue was cleared, no landing replaced it, and the position
+                // still read where the press had left from. With nothing left
+                // to play, settle it here instead.
+                if (state !is State.Playing && audioPipeline?.hasSoundLeft != true) {
+                    eofPending = false
+                    if (loop) restartLap(decoder, resume = false) else enterEnded()
                 }
                 return true
             }
@@ -1328,6 +1317,35 @@ class VideoPlayer internal constructor(
      * player stays paused at the new frame); [ended]/[playing] only chooses
      * the fallback when there was no prior state to restore.
      */
+    /**
+     * Puts every side back at the start of the file.
+     *
+     * The picture owns the lap, so it restarts both others -- including the
+     * landing handshake, without which the sound stays muted from the second
+     * lap on. Only a pipeline still on its feet: a seek into a dead one
+     * raises a landing counter nobody will lower, and the video side then
+     * treats every frame as still settling.
+     */
+    private fun restartLap(decoder: FrameSource, resume: Boolean) {
+        decoder.seekTo(0)
+        audioPipeline?.takeIf { it.alive }?.let {
+            it.seek(0)
+            it.videoLanded()
+        }
+        // The subtitle side used to learn about a lap only by noticing the
+        // clock jump backward by more than a second, which a lap shorter than
+        // that never does. Nothing goes visibly wrong today -- the demux
+        // horizon is thirty seconds, so a short file is resident after one
+        // lap and renders from what it already holds -- so this is here to
+        // stop that being load-bearing, and its effect is deliberately not
+        // asserted anywhere: there is nothing to assert while the resident
+        // state covers it, and reaching in to count repositions would put a
+        // seam on the player for a fact no consumer can see.
+        subtitlePipeline?.seek(0)
+        clock.seek(0)
+        if (resume) clock.resume()
+    }
+
     private fun finishSeek(landed: State) {
         seekInFlight = false
         val prior = stateBeforeSeek.getAndSet(null)
