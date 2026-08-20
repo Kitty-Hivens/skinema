@@ -211,8 +211,17 @@ Those surfaces have their own pages:
 
 ## Threading note
 
-Every field above is `@Volatile` and safe to read from any thread;
-every method is safe to call from any thread (commands are marshalled
-onto the decode thread internally). You do not synchronize around the
-player. The only rule is the `FrameSlot` ownership window: the slot
-from `acquireFrame` is yours only until the next `acquireFrame`.
+Every field above is `@Volatile` and safe to read from any thread, and
+every method is safe to call from any thread. You do not synchronize
+around the player.
+
+Most methods work by queueing a command for the decode thread, which is
+why order is preserved and nothing races. A few act on the spot instead
+-- `setVolume` goes straight to the audio sink, and the track and
+subtitle selectors publish before they announce -- so a caller's own
+thread does the work. Both are safe; the distinction only matters if you
+are reasoning about when an effect lands.
+
+The one rule is the ownership window: the `FrameSlot` from
+`acquireFrame` is yours only until the next `acquireFrame`, and the same
+holds for the overlay from `acquireSubtitles`.
