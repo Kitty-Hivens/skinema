@@ -122,10 +122,14 @@ Ubuntu 24.04, Debian 13 and Fedora 39 upward for the desktop tiers, and not
 RHEL 9. `core-linux-x64` alone still loads on Ubuntu 22.04.
 macOS bundles are built for 14.0, so Sonoma upward. The `linux-musl-*`
 bundles have no such floor: musl does not version its symbols. The `decode`
-and `full` Linux bundles link `libva`, `libva-drm` and `libfontconfig` from
-the host and load none of their libraries without them, which is worth
-knowing before putting them in a headless container -- `core` needs only
-libc and libm and has no such requirement.
+and `full` Linux bundles want `libfontconfig` from the host -- libass's font
+provider links it, and without it none of their libraries load, which is
+worth knowing before putting them in a headless container. `core` needs only
+libc and libm and has no such requirement. VAAPI used to be a second such
+requirement and is not any more: those bundles carry `libva`, `libva-drm`
+and `libdrm` themselves, so a machine with no libva installed still loads
+them. The host's own copy is still preferred where there is one, because the
+driver on the machine is versioned against it rather than against ours.
 
 ## What it plays
 
