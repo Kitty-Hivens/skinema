@@ -507,7 +507,14 @@ class MediaWriter private constructor(
          */
         fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig? = null): MediaWriter {
             require(video.width > 0 && video.height > 0) { "width/height must be positive" }
-            require(video.width % 2 == 0 && video.height % 2 == 0) { "YUV420P needs even dimensions" }
+            // Named for the constraint rather than for one format: which
+            // format the encoder takes is not known until it is asked, some
+            // pages further down, and every encoder any tier ships takes a
+            // chroma-subsampled one (yuv420p in software, NV12 on the GPU).
+            // An encoder that subsamples cannot halve an odd side.
+            require(video.width % 2 == 0 && video.height % 2 == 0) {
+                "chroma-subsampled encoding needs even dimensions, got ${video.width}x${video.height}"
+            }
             require(video.fps > 0) { "fps must be positive" }
             val arena = Arena.ofConfined()
             var fmtCtx = MemorySegment.NULL
