@@ -6,6 +6,7 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Pitch-preserving time-stretch over interleaved S16LE stereo PCM at a
@@ -33,6 +34,9 @@ internal class TempoFilter(
     private var graph = MemorySegment.NULL
     private var src = MemorySegment.NULL
     private var sink = MemorySegment.NULL
+
+    /** [close] is idempotent through this, the way both decoders are. */
+    private val closed = AtomicBoolean(false)
     private var inputFramesFed = 0L
 
     init {
@@ -51,8 +55,21 @@ internal class TempoFilter(
      * atempo accumulates its analysis window).
      */
     fun process(pcm: ByteArray, byteCount: Int): Int {
+        // A count that is not whole sample frames used to size the AVFrame by
+        // the truncated number and then copy the full byteCount into it. The
+        // buffer is allocated for the frame's samples, so the remainder --
+        // up to three bytes -- landed outside it, and the reinterpret above
+        // the copy defeats the bounds check that would have said so. Refused
+        // rather than rounded: the input is S16LE stereo by contract, so a
+        // partial frame is a caller that has lost track of its own stream.
+        require(byteCount % BYTES_PER_FRAME == 0) {
+            "S16LE stereo takes whole sample frames, got $byteCount bytes"
+        }
         val samples = byteCount / BYTES_PER_FRAME
         if (samples == 0) return 0
+        check(src != MemorySegment.NULL && sink != MemorySegment.NULL) {
+            "the tempo graph is not built; process after a failed build or a close"
+        }
         frame.set(JAVA_INT, LibavAbi.Frame.FORMAT, LibavAbi.AV_SAMPLE_FMT_S16)
         frame.set(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE, sampleRate)
         frame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, samples)
@@ -70,6 +87,12 @@ internal class TempoFilter(
 
     /** End of stream: drains atempo's window into [output]. */
     fun flush(): Int {
+        // Same guard as [process]: a graph that failed to build leaves these
+        // NULL, and libavfilter answers a NULL context by dereferencing it --
+        // a JVM crash with no stack rather than an exception.
+        check(src != MemorySegment.NULL && sink != MemorySegment.NULL) {
+            "the tempo graph is not built; flush after a failed build or a close"
+        }
         Libav.checkAv(Libav.avBuffersrcAddFrame(src, MemorySegment.NULL), "av_buffersrc_add_frame(eof)")
         return drain()
     }
@@ -138,7 +161,15 @@ internal class TempoFilter(
         sink = MemorySegment.NULL
     }
 
+    /**
+     * Idempotent, which AutoCloseable asks for and this did not give: the
+     * frame handle is a val and stays non-NULL, so a second close reached
+     * for a scratch pointer in an arena the first one had already closed.
+     * Both siblings carry the same flag for the same reason -- a teardown
+     * that throws is a teardown that stopped halfway.
+     */
     override fun close() {
+        if (closed.getAndSet(true)) return
         freeGraph()
         if (frame != MemorySegment.NULL) {
             graphOut.set(ADDRESS, 0, frame)

@@ -400,14 +400,24 @@ class VideoDecoder private constructor(
         ensureSws(width, height, format)
         ensureColorspaceDetails(src, width, height)
 
-        Libav.swsScale(
-            swsCtx,
-            src.asSlice(LibavAbi.Frame.DATA),
-            src.asSlice(LibavAbi.Frame.LINESIZE),
-            0,
-            height,
-            dstData,
-            dstStride,
+        // Checked, because the destination is not empty when this fails.
+        // The arena zero-fills, so a refusal on the first frame publishes a
+        // fully transparent black picture; on any later one it re-publishes
+        // whatever the buffer still holds -- the PREVIOUS frame -- as if it
+        // were newly decoded. Either way the picture stops while the position
+        // runs on and the state stays Playing, which is the one failure this
+        // pipeline is built never to produce.
+        Libav.checkAv(
+            Libav.swsScale(
+                swsCtx,
+                src.asSlice(LibavAbi.Frame.DATA),
+                src.asSlice(LibavAbi.Frame.LINESIZE),
+                0,
+                height,
+                dstData,
+                dstStride,
+            ),
+            "sws_scale(decode)",
         )
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         MemorySegment.copy(rgbaNative, JAVA_BYTE, 0, out, 0, out.size)
@@ -498,14 +508,22 @@ class VideoDecoder private constructor(
         val colorspace = src.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
         val range = src.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
         if (colorspace == swsColorspace && range == swsRange) return
-        swsColorspace = colorspace
-        swsRange = range
         val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(colorspace, width, height))
         val srcFullRange = if (range == LibavAbi.AVCOL_RANGE_JPEG) 1 else 0
         // RGBA output is always full range. Sources without a YUV matrix
         // (paletted gif, rgba apng) answer a negative and swscale keeps
         // its defaults, which is correct there.
-        Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
+        val applied = Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
+        // Cached AFTER the call, not before it. Written first, a refusal for
+        // any reason other than the no-matrix case above left the cache
+        // saying "applied" for a geometry where it never was, and every later
+        // frame took the early return -- so one refused call meant the whole
+        // stream converted with swscale's defaults instead of the file's own
+        // matrix. The tone-map path next door already checked its return.
+        if (applied >= 0) {
+            swsColorspace = colorspace
+            swsRange = range
+        }
     }
 
     /** PQ and HLG are the only transfers the tone-mapper handles. */
@@ -579,14 +597,17 @@ class VideoDecoder private constructor(
 
     /** swscale to 16-bit RGBA, then the pure-Kotlin tone-map to 8-bit RGBA. */
     private fun toneMappedFrame(src: MemorySegment, width: Int, height: Int, target: ByteArray?): RgbaFrame {
-        Libav.swsScale(
-            hdrCtx,
-            src.asSlice(LibavAbi.Frame.DATA),
-            src.asSlice(LibavAbi.Frame.LINESIZE),
-            0,
-            height,
-            hdrDstData,
-            hdrDstStride,
+        Libav.checkAv(
+            Libav.swsScale(
+                hdrCtx,
+                src.asSlice(LibavAbi.Frame.DATA),
+                src.asSlice(LibavAbi.Frame.LINESIZE),
+                0,
+                height,
+                hdrDstData,
+                hdrDstStride,
+            ),
+            "sws_scale(tone-map)",
         )
         MemorySegment.copy(hdrNative, JAVA_SHORT, 0, hdrShorts, 0, hdrShorts.size)
         val out = target?.takeIf { it.size == hdrOutHeap.size } ?: hdrOutHeap
@@ -740,7 +761,18 @@ class VideoDecoder private constructor(
                 val device = deviceOut.get(ADDRESS, 0)
                 // The context owns the ref it is handed (avcodec_free_context
                 // releases it); we keep the original to unref at close.
-                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, Libav.avBufferRef(device))
+                //
+                // av_buffer_ref answers NULL when it cannot allocate, and a
+                // NULL written into hw_device_ctx opens the codec with no
+                // device while the surface format still names a GPU one -- so
+                // the negotiation pins a format nothing can back and every
+                // receive fails, for a reason nothing reports.
+                val deviceRef = Libav.avBufferRef(device)
+                if (deviceRef == MemorySegment.NULL) {
+                    Libav.avBufferUnref(deviceOut)
+                    continue
+                }
+                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, deviceRef)
                 ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
                 // The surface to negotiate for, travelling with the context so
                 // the upcall finds it whichever thread avcodec calls it on.
