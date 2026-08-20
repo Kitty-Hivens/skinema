@@ -31,7 +31,15 @@ set -euo pipefail
 FFMPEG_VERSION="${FFMPEG_VERSION:-9.0.1}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
-X264_VERSION="${X264_VERSION:-stable}"
+# A COMMIT, not the "stable" branch it used to name. x264 publishes no
+# releases and its snapshot service was discontinued in 2019 ("please use
+# code.videolan.org to get the tarballs"), so a commit is the only fixed
+# point there is. Named this way the archive is content-addressed: the
+# tarball can be hash-pinned like every other dependency, and what a given
+# skinema revision shipped stays answerable afterwards -- which a GPL
+# encoder needs to be, since the corresponding source is owed to whoever
+# received the binary.
+X264_VERSION="${X264_VERSION:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
 X265_VERSION="${X265_VERSION:-4.1}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
@@ -180,9 +188,11 @@ fi
 # keeps the check fail-closed -- if GitHub ever regenerates its archive the
 # build stops and says so, rather than accepting whatever arrives.
 #
-# x264 has no entry: X264_VERSION names a branch, so upstream moves the
-# tarball under it and there is nothing stable to pin. That also means x264
-# builds are not reproducible; pinning it to a commit is a separate decision.
+# x264 is pinned like the rest now that X264_VERSION names a commit rather
+# than the "stable" branch. GitLab generates these archives on demand, so a
+# repack upstream would fail this check even though the commit is unchanged;
+# that is the intended failure -- loud once in a while beats a silently
+# different encoder in every build, which is what the branch gave.
 sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
     case "$1" in
         zlib.tar.gz)         echo 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 ;;
@@ -202,7 +212,7 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         # "-" is the deliberate opt-out, spelled so it cannot be reached by
         # accident. Falling through to it silently would mean a new dependency,
         # or a typo in a dest name, quietly downloads unverified.
-        x264.tar.gz)         echo "-" ;;
+        x264.tar.gz)         echo cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9 ;;
         # A sentinel, not an exit: every caller runs this inside a command
         # substitution, where exiting kills only that substitution and the
         # script carries on downloading unverified.
