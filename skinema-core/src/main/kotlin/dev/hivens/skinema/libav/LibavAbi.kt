@@ -360,7 +360,7 @@ object LibavAbi {
     // -- M12 encode + mux --
     const val AV_PIX_FMT_YUV422P = 4
     const val AV_PIX_FMT_YUV444P = 5
-    const val AV_PIX_FMT_GBRP = 168
+    const val AV_PIX_FMT_GBRP = 71
     const val AV_PIX_FMT_RGB24 = 2
     const val AV_PIX_FMT_YUV420P = 0
     const val AV_PIX_FMT_YUVA420P = 33

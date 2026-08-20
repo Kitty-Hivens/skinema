@@ -112,6 +112,13 @@ fun VideoSurface(
         // The rect the video draws into BEFORE the rotation transform --
         // the storage orientation. Equals dst for upright video.
         val imageRect = imageDrawRect(dst, rotation)
+        // And the part of it a viewer can see. Under Cover the video rect is
+        // deliberately larger than the bounds, and text laid out in it was
+        // laid out partly outside them: a portrait clip in a square surface
+        // put a bottom-anchored line a hundred pixels below the edge, so the
+        // viewer turned subtitles on and saw nothing at all over a picture
+        // that was plainly running.
+        val subtitleRect = visibleRect(imageRect, size.width, size.height, rotation)
         drawIntoCanvas { canvas ->
             val nc = canvas.skiaCanvas
             nc.save()
@@ -142,7 +149,7 @@ fun VideoSurface(
                         placed.image,
                         Rect.makeWH(placed.image.width.toFloat(), placed.image.height.toFloat()),
                         subtitleDrawRect(
-                            imageRect, canvasW, canvasH,
+                            subtitleRect, canvasW, canvasH,
                             placed.x, placed.y, placed.image.width, placed.image.height,
                         ),
                         SamplingMode.LINEAR,
@@ -168,8 +175,8 @@ fun VideoSurface(
         // pump treats as work pending, so it refilled a packet at a time and
         // never reached its own render cadence.
         if (player.activeSubtitleTrack != null) {
-            val postW = imageRect.width.roundToInt()
-            val postH = imageRect.height.roundToInt()
+            val postW = subtitleRect.width.roundToInt()
+            val postH = subtitleRect.height.roundToInt()
             if (postW != postedCanvas[0] || postH != postedCanvas[1]) {
                 postedCanvas[0] = postW
                 postedCanvas[1] = postH
@@ -219,6 +226,41 @@ internal fun imageDrawRect(dst: Rect, rotationDegrees: Int): Rect {
     val halfWidth = dst.height / 2f
     val halfHeight = dst.width / 2f
     return Rect.makeLTRB(centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight)
+}
+
+/**
+ * The part of the video's rect a viewer can actually see: what the
+ * subtitles are laid out in and mapped onto.
+ *
+ * Under [VideoScale.Fit] the video rect is already inside the bounds and
+ * this changes nothing. Under [VideoScale.Cover] it deliberately overflows
+ * them, and laying text out in the whole of it put lines outside the clip
+ * -- invisible, and rasterized at full size to be thrown away.
+ *
+ * The intersection is taken in the video's PRE-rotation space, because
+ * that is where the subtitles are placed while the clip is in screen
+ * space: a quarter turn swaps the bounds' sides about the same centre the
+ * rotation turns around. Pure -- tested without a renderer.
+ */
+internal fun visibleRect(
+    imageRect: Rect,
+    boundsWidth: Float,
+    boundsHeight: Float,
+    rotationDegrees: Int,
+): Rect {
+    val centerX = (imageRect.left + imageRect.right) / 2f
+    val centerY = (imageRect.top + imageRect.bottom) / 2f
+    val quarterTurn = rotationDegrees == 90 || rotationDegrees == 270
+    val halfWidth = (if (quarterTurn) boundsHeight else boundsWidth) / 2f
+    val halfHeight = (if (quarterTurn) boundsWidth else boundsHeight) / 2f
+    val left = maxOf(imageRect.left, centerX - halfWidth)
+    val top = maxOf(imageRect.top, centerY - halfHeight)
+    val right = minOf(imageRect.right, centerX + halfWidth)
+    val bottom = minOf(imageRect.bottom, centerY + halfHeight)
+    // A degenerate overlap means the bounds carry no video at all; there is
+    // nothing better to lay text out in than the rect itself.
+    if (right <= left || bottom <= top) return imageRect
+    return Rect.makeLTRB(left, top, right, bottom)
 }
 
 /**

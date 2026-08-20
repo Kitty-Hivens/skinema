@@ -283,6 +283,16 @@ int main(void) {
     P(AVIO_FLAG_WRITE);
     P(AV_PKT_FLAG_KEY);
     P(AV_PIX_FMT_YUV420P);
+    /* The encoder's format preference. Hand-transcribed once and one of
+       them was wrong -- GBRP was written as 168, which is GRAY10LE, so a
+       planar-RGB encoder never matched and a 10-bit grayscale one would
+       have. Emitted here so a major bump re-captures them like everything
+       else. */
+    P(AV_PIX_FMT_YUV422P);
+    P(AV_PIX_FMT_YUV444P);
+    P(AV_PIX_FMT_GBRP);
+    P(AV_PIX_FMT_RGB24);
+    P(AV_PIX_FMT_YUVA420P);
     P(AV_SAMPLE_FMT_FLTP);
     P(AV_OPT_SEARCH_CHILDREN);
     P(AV_CODEC_ID_H264);
