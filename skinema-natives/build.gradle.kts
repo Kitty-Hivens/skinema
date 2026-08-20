@@ -1,4 +1,5 @@
 import org.gradle.jvm.tasks.Jar
+import java.security.MessageDigest
 
 // Packs the trimmed FFmpeg bundles into per-platform classifier jars
 // (ROADMAP.md section 10): resources under dev/hivens/skinema/natives/
@@ -55,6 +56,59 @@ val platforms = listOf(
 // bundle the platform carries.
 val tiers = listOf("core", "decode", "full")
 
+// What each bundle is expected to be. See bundle-checksums.txt for why.
+val checksumFile = layout.projectDirectory.file("bundle-checksums.txt")
+val expectedChecksums: Map<String, String> by lazy {
+    val f = checksumFile.asFile
+    if (!f.isFile) {
+        emptyMap()
+    } else {
+        f.readLines()
+            .map { it.substringBefore('#').trim() }
+            .filter { it.isNotEmpty() }
+            .associate { line ->
+                val parts = line.split(Regex("\\s+"), limit = 2)
+                parts[1].trim() to parts[0].trim()
+            }
+    }
+}
+
+fun sha256Of(f: File): String =
+    MessageDigest.getInstance("SHA-256").digest(f.readBytes())
+        .joinToString("") { byte -> "%02x".format(byte) }
+
+/**
+ * Re-reads every bundle's sha256 from the release and rewrites
+ * bundle-checksums.txt. Run it after a deliberate natives rebuild, then
+ * review the diff: a line that moved is a bundle that changed.
+ */
+tasks.register("refreshBundleChecksums") {
+    group = "skinema"
+    description = "Rewrite bundle-checksums.txt from the $nativesTag release"
+    doLast {
+        val lines = mutableListOf<String>()
+        for (tier in tiers) {
+            for (platform in platforms) {
+                val url =
+                    "https://github.com/Kitty-Hivens/skinema/releases/download/$nativesTag/skinema-natives-$tier-$platform.tar.gz"
+                val tmp = File.createTempFile("skinema-bundle", ".tar.gz")
+                try {
+                    uri(url).toURL().openStream().use { input ->
+                        tmp.outputStream().use { input.copyTo(it) }
+                    }
+                    lines += "${sha256Of(tmp)}  $tier-$platform"
+                } finally {
+                    tmp.delete()
+                }
+            }
+        }
+        val f = checksumFile.asFile
+        val header = f.readLines().takeWhile { it.startsWith("#") || it.isBlank() }
+        f.writeText((header + lines.sortedBy { it.substringAfter("  ") }).joinToString("\n") + "\n")
+        logger.lifecycle("bundle-checksums.txt: ${lines.size} bundles")
+    }
+}
+
 // ./gradlew :skinema-natives:jarLocal -Pplatform=linux-x64 -PbundleDir=<dir>
 val localPlatform = providers.gradleProperty("platform")
 val localBundle = providers.gradleProperty("bundleDir")
@@ -82,6 +136,26 @@ tiers.forEach { tier ->
                 target.parentFile.mkdirs()
                 uri(url).toURL().openStream().use { input ->
                     target.outputStream().use { input.copyTo(it) }
+                }
+                // The tag is rolling and the module's version does not move
+                // when its contents do, so what this URL serves is not a
+                // function of what was reviewed. Packed unverified, a jar
+                // bound for Central could carry a bundle no gate ever ran
+                // against.
+                val expected = expectedChecksums["$tier-$platform"]
+                    ?: throw GradleException(
+                        "no checksum for $tier-$platform in bundle-checksums.txt -- " +
+                            "run :skinema-natives:refreshBundleChecksums and review the diff",
+                    )
+                val actual = sha256Of(target)
+                if (actual != expected) {
+                    throw GradleException(
+                        "the $tier $platform bundle is not the one this revision was built against.\n" +
+                            "  expected: $expected\n" +
+                            "  got:      $actual\n" +
+                            "If the natives were deliberately rebuilt, run " +
+                            ":skinema-natives:refreshBundleChecksums and review the diff.",
+                    )
                 }
             }
         }

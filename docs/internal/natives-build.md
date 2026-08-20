@@ -170,6 +170,14 @@ change that contradicts one fails CI rather than shipping:
 - `tools/check-windows-bundle.sh` -- import closure and preload order for the
   Windows bundles, read off the PE headers and off the loader's own preload
   lists in the Kotlin sources.
+- `skinema-natives/bundle-checksums.txt` -- the sha256 of every bundle the
+  classifier jars are packed from. The release tag is rolling and the
+  module's version does not move when its contents do, so what the download
+  URL serves is not a function of what was reviewed: without this, the
+  publish packed whatever was there, and every gate above could have run
+  against a different tarball than the one a consumer resolves. Regenerate
+  after a deliberate rebuild with `:skinema-natives:refreshBundleChecksums`
+  and review the diff -- a line that moved is a bundle that changed.
 
 ## Delivery: two workflows
 
