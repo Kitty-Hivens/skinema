@@ -136,18 +136,24 @@ internal class AudioPipeline(
     private var queuedFrames = 0L
     private var lastPositionSeen = 0L
 
+    // Write failures since the last write that finished. Owned by the audio
+    // thread. See [guardedWrite]: a device that reopens cleanly and then
+    // refuses every write is not an outage to wait out.
+    private var writeFailures = 0
+
     // When the blocking write in flight started, or 0 when none is. The
     // watchdog judges a stall by how long ONE write has been outstanding,
     // which is a question it can answer without touching the device.
     //
     // It used to poll the device's frame position instead and call it stuck
-    // when that stopped advancing. The position is the one thing it cannot
-    // ask for: a JavaSound line answers it under the same native monitor its
-    // write holds, so on the dead device this exists to rescue, the watchdog
-    // parked on the very lock it came to break -- the clock was never
-    // detached, and the pacer, the decode thread and the consumer's render
-    // loop went down behind it. A write outstanding this long is a stall
-    // whatever the device would have said.
+    // when that stopped advancing, which is the wrong question twice over. A
+    // frozen position is what a PAUSED line reports too, and the watchdog
+    // cannot tell those apart from outside; and the answer comes from the
+    // device this exists to rescue, so on one that has stopped answering
+    // there is no answer to judge. How long one write has been outstanding is
+    // a fact this side owns, and it is enough: a live line takes at most its
+    // buffer's length to accept a chunk, and the stall bound is an order of
+    // magnitude past that.
     @Volatile
     private var writeInFlightSince = 0L
 
@@ -435,17 +441,39 @@ internal class AudioPipeline(
         try {
             sink.write(data, offset, length)
             queuedFrames += length / BYTES_PER_FRAME
+            writeFailures = 0
         } catch (t: Throwable) {
-            // The watchdog's whole rescue is to close the line out from under
-            // a write that will not return, and a backend is within its
-            // rights to throw rather than return from that. Left to travel,
-            // the throw reached run()'s handler and finished this side for
-            // good -- so the device came back to a [recover] that was never
-            // going to run, and the file stayed silent for the session.
-            // [deviceLost] is set before the close, so a throw with it
-            // standing is the rescue arriving, not a fault of its own.
-            if (!deviceLost) throw t
-            Debug.trace("audio write released by the device-loss rescue", t)
+            // A write that did not finish is a device that stopped taking
+            // sound, and this pipeline has a path for exactly that. Two ways
+            // in: the watchdog's rescue closes the line out from under a
+            // write that will not return, and a line whose device vanished
+            // reports a short write of its own accord. Neither is the end of
+            // the audio side -- left to travel, the throw reached run()'s
+            // handler and finished this side for good, so a device that came
+            // back found a [recover] that was never going to run.
+            //
+            // [deviceLost] already standing means the watchdog got there
+            // first and has detached the clock; otherwise this is the first
+            // notice and the detach belongs here, or the picture would wait
+            // on a device that stopped.
+            if (deviceLost) {
+                Debug.trace("audio write released by the device-loss rescue", t)
+            } else {
+                writeFailures++
+                // Bounded, because recovery answers an OUTAGE and this may not
+                // be one. A device that reopens cleanly and then refuses the
+                // very next write would be retried forever, and every round
+                // rebases the mastered clock onto a line that plays nothing --
+                // so the picture stops at the landing while this side keeps
+                // reporting itself alive. A few rounds, then the throw travels
+                // as it used to and the player runs the rest on wall time,
+                // which is what it documents for a device that will not come
+                // back.
+                if (writeFailures > MAX_WRITE_FAILURES) throw t
+                Debug.trace("audio write did not finish; treating the device as lost", t)
+                clock?.detachToWallTime(readDevice = false)
+                deviceLost = true
+            }
         } finally {
             writeInFlightSince = 0L
         }
@@ -552,13 +580,18 @@ internal class AudioPipeline(
      * [recover]. The watchdog stays alive across the outage to catch a
      * second loss once the device is back.
      *
-     * It deliberately asks the device nothing. Every question a line can be
-     * asked goes through the same native monitor its write holds, so a
-     * watchdog that polled the frame position parked on the very lock it
-     * came to break. How long its own write has been outstanding is the one
-     * thing it can know without the device's help, and it is enough: a live
-     * line takes at most its buffer's length to accept a chunk, and the
-     * stall bound is an order of magnitude past that.
+     * It deliberately asks the device nothing, and the reason is that the
+     * answer would be worthless rather than that the question would hang.
+     * (It was written up as the latter: a line does answer position queries
+     * under the same native monitor its write takes, but the write is a Java
+     * polling loop that holds that monitor for one non-blocking native call
+     * at a time and waits out the rest elsewhere, so a query is delayed by
+     * an iteration and not by the write.) The device this exists to rescue
+     * is one that has stopped answering honestly, and a frozen position
+     * reads identically to a line that is merely paused. How long its own
+     * write has been outstanding is a fact this side owns outright, and it
+     * is enough: a live line takes at most its buffer's length to accept a
+     * chunk, and the stall bound is an order of magnitude past that.
      */
     private fun runWatchdog() {
         val pollMs = (writeStallNanos / 4_000_000L).coerceIn(20L, 250L)
@@ -993,6 +1026,14 @@ internal class AudioPipeline(
          * spends it: a live one empties on its own and ends the wait there.
          */
         const val TAIL_GRACE_NANOS = 500_000_000L
+
+        /**
+         * Rounds of reopen-and-fail before this side gives up on the device
+         * and lets the player fall back to wall-clock playback. Three, because
+         * one is a hiccup a reopen fixes and a fourth would be the same answer
+         * as the third.
+         */
+        const val MAX_WRITE_FAILURES = 3
 
         /**
          * One write outstanding this long is a dead device; the watchdog

@@ -72,7 +72,20 @@ class FakePcmSink : PcmSink {
 
     private var openedAtFrames = 0L
 
+    /**
+     * When set, the next [write] throws and clears the flag -- a line whose
+     * device stopped taking sound. A real JavaSound line reports that as a
+     * short count rather than a throw, and [JavaSoundSink] turns the short
+     * count into this.
+     */
+    @Volatile
+    var failNextWrite = false
+
     override fun write(data: ByteArray, offset: Int, length: Int) {
+        if (failNextWrite) {
+            failNextWrite = false
+            throw IllegalStateException("the audio line took 0 of $length bytes")
+        }
         synchronized(all) {
             if (stopped) writesWhileStopped++
             all.write(data, offset, length)

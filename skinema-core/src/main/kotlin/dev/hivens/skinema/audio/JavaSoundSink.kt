@@ -93,8 +93,30 @@ class JavaSoundSink : PcmSink {
         applyVolume()
     }
 
+    /**
+     * The blocking write, made to keep the promise [PcmSink.write] makes.
+     *
+     * A JavaSound write does not raise when it cannot finish. Both its
+     * specification and its implementation say it returns the count written
+     * so far -- when the line is closed, stopped or flushed under it, and
+     * also when the backend gives up on the device (`DAUDIO_Write` answering
+     * negative breaks the loop and the partial count comes back). Discarding
+     * that count made a vanished device look like a completed write: the tail
+     * accounting was credited frames no device ever saw, the watchdog had no
+     * outstanding write to time out so it never fired, and -- since the
+     * blocking write IS this pipeline's pacing -- the audio thread ran the
+     * rest of the file at decode speed against a line accepting nothing,
+     * while the frame position it masters stood still and took the picture
+     * with it.
+     */
     override fun write(data: ByteArray, offset: Int, length: Int) {
-        line?.write(data, offset, length)
+        val l = line ?: return
+        var written = 0
+        while (written < length) {
+            val n = l.write(data, offset + written, length - written)
+            if (n <= 0) throw IllegalStateException("the audio line took $written of $length bytes")
+            written += n
+        }
     }
 
     override fun stop() {
@@ -110,8 +132,9 @@ class JavaSoundSink : PcmSink {
         // Read across the flush rather than compute the queue depth: the one
         // number wanted is what the backend's own counter gained, and asking
         // it twice is exact where an occupancy estimate would be a second
-        // guess on top of the first. Both callers freeze the line first, so
-        // nothing drains between the two readings.
+        // guess on top of the first. All three callers -- a seek, a track
+        // switch, a rate change -- freeze the line first, so nothing drains
+        // between the two readings.
         val before = l.longFramePosition
         l.flush()
         playedBias += l.longFramePosition - before
@@ -135,6 +158,20 @@ class JavaSoundSink : PcmSink {
         gain.value = db
     }
 
+    /**
+     * Closes the line, and is called from the audio thread OR from its
+     * watchdog while a write is blocked inside this same line -- that is the
+     * rescue for a device that stopped consuming.
+     *
+     * That rescue works because a JavaSound write is a polling loop: it takes
+     * the native monitor for one non-blocking write at a time and waits out
+     * the rest on a different monitor, so [SourceDataLine.stop] gets the
+     * monitor within one iteration and its own notify releases the writer.
+     * If a stronger lever is ever needed, it is `flush()` rather than
+     * `stop()`: flush raises the loop's exit flag and notifies BEFORE it asks
+     * for the native monitor at all. Nothing in Java helps against a native
+     * call that never returns.
+     */
     override fun close() {
         val closing = line
         closing?.let {

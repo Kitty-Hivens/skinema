@@ -101,13 +101,22 @@ jobs:
         id: tier
         shell: bash
         run: |
+          # skipped: the acceptance ceiling for this tier. The suite is
+          # written against `full`, so a leaner tier skips whatever it does
+          # not carry BY DESIGN -- a core bundle has no subtitles, no legacy
+          # formats and no encoders, and every test of those is a legitimate
+          # skip. The gate that actually rejects a bad bundle here is
+          # SKINEMA_REQUIRE_CAPS, which names what the tier must load; this
+          # one is the backstop against a suite collapsing into silence, and
+          # its numbers are measured from a run rather than reasoned.
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp";                                                  caps="decode,webp" ;;
-            decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats" ;;
-            full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode" ;;
+            core)   feat="av1 vpx webp";                                                  caps="decode,webp";                    skipped=90 ;;
+            decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats";       skipped=34 ;;
+            full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode"; skipped=25 ;;
           esac
           echo "features=$feat" >> "$GITHUB_OUTPUT"
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain (Linux)
         if: runner.os == 'Linux' && matrix.libc != 'musl'
@@ -172,6 +181,7 @@ jobs:
         env:
           FEATURES: ${{ steps.tier.outputs.features }}
           CAPS: ${{ steps.tier.outputs.caps }}
+          MAX_SKIPPED: ${{ steps.tier.outputs.skipped }}
           TIER: ${{ matrix.tier }}
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
@@ -199,6 +209,7 @@ jobs:
               # resolution, so JAVA_HOME is enough.
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
               SKINEMA_REQUIRE_CAPS="$CAPS" \
+              SKINEMA_MAX_SKIPPED="$MAX_SKIPPED" \
               SKINEMA_LIBAV_DIR="/src/natives/${{ matrix.platform }}/bundle" \
                 ./gradlew :skinema-core:test --rerun-tasks
             '
@@ -276,6 +287,7 @@ jobs:
         # carry, and only full is asked for encode.
         env:
           SKINEMA_REQUIRE_CAPS: ${{ steps.tier.outputs.caps }}
+          SKINEMA_MAX_SKIPPED: ${{ steps.tier.outputs.skipped }}
         run: |
           base="$PWD"
           if [ "${{ runner.os }}" = "Windows" ]; then base="$(pwd -W)"; fi

@@ -285,17 +285,26 @@ cannot freeze the whole pipeline (a blocking JavaSound write on a
 vanished device raises nothing) and the stuck write returns into
 recovery.
 
-It deliberately asks the device nothing. It used to poll the frame
-position and call the device stuck when that stopped advancing, which
-cannot work: `nGetBytePosition` and `nWrite` are taken under the same
-native monitor (`lockNative` in openjdk's `DirectAudioDevice.java`), so
-on the dead device this exists to rescue, the watchdog parked on the
-very lock it came to break -- taking the pacer, the decode thread and
-the consumer's render loop down behind it, since they all read this
-clock. How long its own write has been outstanding is the one thing it
-can know without the device's help, and it is enough. The same monitor
-is why `AudioClock` samples the line outside its own lock, and not at
-all once detached.
+It deliberately asks the device nothing, because the answer would be
+worthless. It used to poll the frame position and call the device stuck
+when that stopped advancing, which cannot work: a frozen position is
+also what a paused line reports, and the answer comes from the device
+being judged. How long its own write has been outstanding is a fact this
+side owns, and it is enough.
+
+The stronger reason once written here -- that the poll would park on the
+lock it came to break -- is not true, and the correction is worth
+keeping because the shape recurs. `nGetBytePosition` and `nWrite` do
+share `lockNative` in openjdk's `DirectAudioDevice.java`, but `write` is
+a Java polling loop: `while (!flushing) { synchronized (lockNative) {
+nWrite(...) } ... synchronized (lock) { lock.wait(waitTime) } }`. The
+monitor is held for one non-blocking native write at a time and the
+waiting happens on a different monitor, so a position query is delayed
+by one iteration -- measured at 3 to 31 ms against writes blocking for
+154 ms and for two seconds alike. Had the claim been true the rescue
+could not work either: `close()` starts with `stop()`, which takes
+`lockNative` as well. `AudioClock` still samples the line outside its
+own lock, and not at all once detached.
 
 ## Pts math
 

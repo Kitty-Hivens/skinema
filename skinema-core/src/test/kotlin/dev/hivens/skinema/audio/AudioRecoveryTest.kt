@@ -175,11 +175,14 @@ class AudioRecoveryTest {
     }
 
     /**
-     * A line whose position can only be read between writes -- which is what
-     * a real one is. `SourceDataLine.getLongFramePosition` and its blocking
-     * write take the same native monitor (verified in the JDK's own
-     * bytecode), so while a write is stuck inside the driver nothing can ask
-     * the line where it is. [FakeSink] answers freely and is blind to this.
+     * A line whose position can only be read between writes. That is stricter
+     * than a JavaSound line, which does share a native monitor between the
+     * position query and the write but runs the write as a polling loop --
+     * one non-blocking native call under the monitor, the wait elsewhere --
+     * so a query is delayed by an iteration rather than by the write. Held
+     * deliberately at the stricter shape: it is the contract a consumer's own
+     * PcmSink is allowed to have, and [FakeSink] answers freely and is blind
+     * to it.
      */
     private class MonitorSink : PcmSink {
         @Volatile var present = true

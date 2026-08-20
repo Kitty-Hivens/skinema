@@ -59,7 +59,11 @@ class OffsetTimelineTest {
             add("mkv" to offset("off.mkv", "5"))
             add("mp4" to offset("off.mp4", "5"))
             add("mov" to offset("off.mov", "5"))
-            add("ts" to offset("off.ts", "5"))
+            // Only where the bundle carries the mpegts demuxer: a core
+            // bundle does not, so this case failed the whole test there
+            // rather than dropping out of it. The others are containers
+            // every tier can open.
+            if (Fixtures.capLoads("formats")) add("ts" to offset("off.ts", "5"))
             if (Fixtures.hasCliEncoder("libvpx-vp9")) {
                 add("webm" to offset("off.webm", "5", extra = listOf("-c:v", "libvpx-vp9", "-b:v", "200k")))
             }
