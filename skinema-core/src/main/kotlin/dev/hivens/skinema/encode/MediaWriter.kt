@@ -784,7 +784,7 @@ class MediaWriter private constructor(
          * without losing more than the subsampling already does. A NULL list
          * means the encoder accepts anything, which is the same answer.
          */
-        private fun pickPixelFormat(codecName: String, supported: IntArray?): Int {
+        internal fun pickPixelFormat(codecName: String, supported: IntArray?): Int {
             if (supported == null) return LibavAbi.AV_PIX_FMT_YUV420P
             for (candidate in PIXEL_FORMAT_PREFERENCE) if (candidate in supported) return candidate
             // Something exotic (a palette, a bit depth swscale will refuse):
@@ -808,7 +808,7 @@ class MediaWriter private constructor(
          * that plays today changes format; the rest of the order runs from
          * the shapes an S16 input reaches without requantizing outward.
          */
-        private fun pickSampleFormat(codecName: String, supported: IntArray?): Int {
+        internal fun pickSampleFormat(codecName: String, supported: IntArray?): Int {
             if (supported == null) return LibavAbi.AV_SAMPLE_FMT_FLTP
             for (candidate in SAMPLE_FORMAT_PREFERENCE) if (candidate in supported) return candidate
             return supported.firstOrNull()

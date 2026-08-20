@@ -2,6 +2,7 @@ package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
@@ -333,6 +334,61 @@ class MediaWriterTest {
         val text = proc.inputStream.readAllBytes().decodeToString().trim()
         proc.waitFor()
         return text
+    }
+
+    /**
+     * What an encoder takes is asked, not assumed. Written as a constant,
+     * `avcodec_open2` refused every encoder wanting 4:2:2, 4:4:4 or planar
+     * RGB with a bare errno -- prores, dnxhd, libx264rgb, qtrle.
+     *
+     * Asked of the decision rather than of an encoder, because no bundle
+     * carries one that refuses yuv420p: the whitelist is libx264, libx265,
+     * the two VAAPI encoders, aac and flac. The round-trip below covers the
+     * real thing wherever a system build supplies it, and skips otherwise --
+     * which left the rule itself untested on every machine that matters.
+     */
+    @Test
+    fun `an encoder is given a format from its own list`() {
+        // A NULL advertisement means "anything", which is the same answer as
+        // the leading preference.
+        assertEquals(
+            LibavAbi.AV_PIX_FMT_YUV420P,
+            MediaWriter.pickPixelFormat("libx264", null),
+        )
+        assertEquals(
+            LibavAbi.AV_PIX_FMT_YUV420P,
+            MediaWriter.pickPixelFormat("libx264", intArrayOf(LibavAbi.AV_PIX_FMT_YUV420P, LibavAbi.AV_PIX_FMT_YUV444P)),
+        )
+        // The qtrle case: no planar yuv at all, so the preference walks to RGB.
+        assertEquals(
+            LibavAbi.AV_PIX_FMT_RGB24,
+            MediaWriter.pickPixelFormat("qtrle", intArrayOf(LibavAbi.AV_PIX_FMT_RGB24, LibavAbi.AV_PIX_FMT_YUVA420P)),
+        )
+        // The libx264rgb case: planar RGB leads over a format outside the list.
+        assertEquals(
+            LibavAbi.AV_PIX_FMT_GBRP,
+            MediaWriter.pickPixelFormat("libx264rgb", intArrayOf(LibavAbi.AV_PIX_FMT_YUVA420P, LibavAbi.AV_PIX_FMT_GBRP)),
+        )
+        // Nothing the preference names: hand over what there is and let
+        // sws_getContext say what it cannot do, rather than guess here.
+        assertEquals(
+            LibavAbi.AV_PIX_FMT_YUVA420P,
+            MediaWriter.pickPixelFormat("exotic", intArrayOf(LibavAbi.AV_PIX_FMT_YUVA420P)),
+        )
+        assertFailsWith<LibavException>("an encoder advertising nothing is a refusal, not a default") {
+            MediaWriter.pickPixelFormat("empty", intArrayOf())
+        }
+
+        // The same rule on the audio side, which had it first.
+        assertEquals(
+            LibavAbi.AV_SAMPLE_FMT_FLTP,
+            MediaWriter.pickSampleFormat("aac", null),
+        )
+        assertEquals(
+            LibavAbi.AV_SAMPLE_FMT_S16,
+            MediaWriter.pickSampleFormat("flac", intArrayOf(LibavAbi.AV_SAMPLE_FMT_S16, LibavAbi.AV_SAMPLE_FMT_S32)),
+        )
+        assertFailsWith<LibavException> { MediaWriter.pickSampleFormat("empty", intArrayOf()) }
     }
 
     /**
