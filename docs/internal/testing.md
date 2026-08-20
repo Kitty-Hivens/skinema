@@ -132,6 +132,21 @@ Useful flags and env:
   reproduced headlessly with data.
 - `SKINEMA_LIBAV_DIR`, `-Dskinema.libav.dir` -- point at a specific
   native bundle.
+- `SKINEMA_DEBUG=1` -- print every cause the library swallows on its
+  fail-closed paths. The companion to the flag above and the first thing
+  to reach for when something degrades silently rather than wrongly.
+- `SKINEMA_AUDIO_RECOVERY_MS` -- how often the audio thread retries a
+  device that vanished mid-playback (400 ms by default). Lower it to
+  make an outage test finish sooner.
+- `SKINEMA_MAX_SKIPPED`, `-PmaxSkippedTests` -- the ceiling on skipped
+  tests before the build fails (8 by default). Raise it deliberately on
+  a machine with a real gap; the failure lists what it skipped.
+- `SKINEMA_TEST_AUDIO=1` -- run the suites that need a real output
+  device. Off everywhere in CI.
+- `SKINEMA_TEST_HWACCEL=1`, `SKINEMA_REQUIRE_HWACCEL=1` -- run the
+  hardware decode suites, and hold them mandatory rather than
+  skippable. `SKINEMA_TEST_HWENC=1` does the same for hardware encode.
+  All off in CI, which has no GPU.
 
 A note on CI flakes: `taskset -c 0 ./gradlew test --no-daemon` pins the
 build to one core and reproduces runner-starvation flakes locally that

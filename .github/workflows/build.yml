@@ -36,6 +36,13 @@ jobs:
           # reads: the format negotiation, which is where hardware decode was
           # actually broken, is checked here without a device.
           #
+          # Two more everywhere for encoders no bundle carries -- qtrle and the
+          # one the sample-rate refusal names. Those tests only ever run
+          # against a system ffmpeg, so the rules they cover are pinned by
+          # their own decision tests, which run here; the round-trips are what
+          # skip. And one more on every row that is not Linux for the trailer
+          # test, which stages a full disk through /dev/full.
+          #
           # Every ceiling here is the measured count plus one, re-read from a
           # run rather than carried forward by arithmetic. Windows adds two
           # over linux for tests that stage their failure by deleting or
@@ -44,15 +51,15 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 23
+            maxSkipped: 25
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 23
+            maxSkipped: 25
           - os: windows-latest
             platform: windows-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 28
+            maxSkipped: 31
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -61,18 +68,21 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 28
-          # Twenty-nine, not the default eight, and every one of them named:
-          # eleven hardware suites (opt-in, and no VAAPI encoder on a mac), one
-          # subtitle test that looks for a Linux font path, and SEVEN that
-          # cannot build their fixture because Homebrew's ffmpeg carries
-          # neither the libwebp nor the libaom-av1 encoder. That last group
-          # means webp and AV1 decode have never been exercised on macOS --
-          # invisible until the counter printed it. A ceiling here keeps the
-          # gap declared and catches it widening; closing it needs fixtures
-          # that do not depend on what the CLI was compiled with. Nine more on
-          # top of those for the audio suites, as everywhere else, and three
-          # for encoders Homebrew's ffmpeg does not carry.
+            maxSkipped: 31
+          # Thirty, and every one of them named, re-counted from the run:
+          # nine audio suites needing a real output line (as everywhere else)
+          # and the mastered clock's pacing test; six hardware (four VAAPI-only
+          # decode paths and both hardware-encode tests -- a mac has no VAAPI);
+          # NINE that cannot build their fixture at all, because Homebrew's
+          # ffmpeg carries neither the libwebp nor the libaom-av1 encoder, so
+          # webp and AV1 decode have never been exercised on macOS -- invisible
+          # until the counter printed it; three encoder tests, two for encoders
+          # no bundle carries and one that stages a full disk through
+          # /dev/full; and two font tests that want a Linux font path.
+          #
+          # A ceiling here keeps the gap declared and catches it widening;
+          # closing the fixture group needs fixtures that do not depend on what
+          # the CLI was compiled with.
           # hwaccel on this row alone. Hosted macOS runners are Apple Silicon,
           # and the run says what the documentation does not: a VideoToolbox
           # device OPENS here (surface 157) and then every frame comes back in
@@ -86,7 +96,7 @@ jobs:
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
             hwaccel: "1"
-            maxSkipped: 29
+            maxSkipped: 31
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -97,12 +107,12 @@ jobs:
             platform: linux-musl-x64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 23
+            maxSkipped: 25
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 23
+            maxSkipped: 25
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as

@@ -166,7 +166,11 @@ internal class FrameQueue(depth: Int) {
      * emptied the queue since the peek -- re-loop, never publish stale.
      */
     fun poll(replacement: ByteArray): Frame? = synchronized(lock) {
-        if (count == 0) return null
+        // A closed queue hands out nothing, which the loop condition alone
+        // does not guarantee: a publish already under way when the decode
+        // thread closes runs to completion, and if its join then times out
+        // the frame reaches the mailbox after the player has settled Closed.
+        if (closed || count == 0) return null
         val cell = cells[head]
         val out = Frame(cell.rgba, cell.width, cell.height, cell.ptsNanos, forcedFlags[head])
         cell.rgba = replacement
