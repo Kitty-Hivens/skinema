@@ -197,11 +197,21 @@ class AudioClock(
     }
 
     override fun start(atMediaNanos: Long) {
-        val frames = positionFrames()
+        // Through the guard, like every other entry point. Asked raw, this
+        // was the one way back into a device the clock had already detached
+        // from -- and it is reachable: the player starts the clock when it
+        // owns it, and it owns it once the audio side has gone, which is
+        // exactly what a device that stopped answering causes. A start that
+        // walked into a wedged native call took the decode thread with it and
+        // left close() joining a thread that was never coming back, which is
+        // the whole-player wedge the detach exists to prevent.
+        val frames = sampleDevice()
         synchronized(lock) {
             anchorGeneration++
             baseMediaNanos = atMediaNanos
-            baseFrames = frames
+            // Detached, there is no device to base on and the wall drives;
+            // keep the old base rather than pretend to a reading.
+            baseFrames = frames ?: baseFrames
             floorNanos = Long.MIN_VALUE
             forgetCadence()
             pausedAt = atMediaNanos
