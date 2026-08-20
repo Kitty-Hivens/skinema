@@ -578,15 +578,16 @@ class AudioPipelineTest {
     fun `a write the device could not finish is a loss, not the end of the sound`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        // A device that plays nothing: media time can only move if the clock
-        // was handed to the wall.
         sink.positionFrames.set(44_100L)
+        // Armed before the thread exists, so the write that fails is the
+        // pipeline's first and the moment is not a race. Arming it mid-stream
+        // instead makes the test depend on the write burst still running:
+        // nothing throttles this sink, so on a quick enough runner the track
+        // is already handed over and no further write ever comes to fail.
+        sink.failNextWrite = true
         val pipeline = AudioPipeline(twoTracks("shortwrite.mka"), sink, loop = true)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
-            assertTrue(awaitTrue { sink.opens == 1 && sink.totalBytes > 0 }, "the first track must be playing")
-
-            sink.failNextWrite = true
             assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
             assertFalse(pipeline.isEnded, "a device that stopped taking sound is not the end of the track")
             assertTrue(pipeline.alive, "and not the end of this side either")
