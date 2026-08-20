@@ -45,16 +45,47 @@ class FakePcmSink : PcmSink {
     val totalBytes: Int get() = synchronized(all) { all.size() }
     val bytesSinceLastFlush: Int get() = synchronized(all) { sinceFlush.size() }
 
+    /**
+     * When set, the next [open] throws and clears the flag -- the device that
+     * will not come back at the new track's rate. A track switch opens the
+     * line before it commits to anything, so this is where that failure
+     * lands. Off by default; [BoundedPcmSink] models the permanent version.
+     */
+    var failNextOpen = false
+
     override fun open(sampleRate: Int) {
+        if (failNextOpen) {
+            failNextOpen = false
+            throw IllegalStateException("device refused the new rate")
+        }
         this.sampleRate = sampleRate
         // Per the contract, open STARTS the device -- a fake that leaves
         // [stopped] untouched would let freeze-across-reopen tests pass
         // vacuously.
         stopped = false
+        // And a fresh line counts its frames from zero. The written bytes are
+        // kept, because tests assert on them across the reopen; only the
+        // playhead restarts, which is what a track switch rebases against.
+        openedAtFrames = (totalBytes / 4).toLong()
         opens++
     }
 
+    private var openedAtFrames = 0L
+
+    /**
+     * When set, the next [write] throws and clears the flag -- a line whose
+     * device stopped taking sound. A real JavaSound line reports that as a
+     * short count rather than a throw, and [JavaSoundSink] turns the short
+     * count into this.
+     */
+    @Volatile
+    var failNextWrite = false
+
     override fun write(data: ByteArray, offset: Int, length: Int) {
+        if (failNextWrite) {
+            failNextWrite = false
+            throw IllegalStateException("the audio line took 0 of $length bytes")
+        }
         synchronized(all) {
             if (stopped) writesWhileStopped++
             all.write(data, offset, length)
@@ -79,12 +110,18 @@ class FakePcmSink : PcmSink {
 
     override fun framePosition(): Long {
         val manual = positionFrames.get()
-        return if (manual >= 0) manual else (totalBytes / 4).toLong()
+        return if (manual >= 0) manual else (totalBytes / 4).toLong() - openedAtFrames
     }
 
     override fun setVolume(volume: Float) {
         this.volume = volume
     }
 
-    override fun close() = Unit
+    /** close() calls; the pipeline must close a sink it was handed, once. */
+    var closes = 0
+        private set
+
+    override fun close() {
+        closes++
+    }
 }

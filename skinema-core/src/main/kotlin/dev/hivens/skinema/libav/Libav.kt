@@ -16,7 +16,18 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /** The byte stream did not decode, or a libav call refused it. */
-class LibavException(message: String) : RuntimeException(message)
+open class LibavException(message: String) : RuntimeException(message)
+
+/**
+ * The file carries nothing to show: no video stream at all, or only an
+ * attached picture. Not a failure -- a player answers it by playing the
+ * sound frameless -- which is exactly why it is its own type. Read off the
+ * base type instead, every OTHER way an open can fail reads as "no video"
+ * too: an undecodable codec, a truncated file with no dimensions, a refused
+ * hardware-decode request. Those are failures, and turning them into silent
+ * audio-only playback is the opposite of failing closed.
+ */
+class NoVideoStreamException(message: String) : LibavException(message)
 
 /**
  * Hand-written downcall surface over the pinned libav* libraries -- the
@@ -48,7 +59,7 @@ object Libav {
 
     private fun libraryPath(lib: LibavLibrary): String = resolveLibraryPath(lib.fileName(Os.current()))
 
-    /** Resolves [name] against the natives directory override, shared with the webp bindings. */
+    /** Resolves [name] against the natives directory override, shared with the libass bindings. */
     internal fun resolveLibraryPath(name: String): String =
         if (libavDir != null) Path.of(libavDir, name).toAbsolutePath().toString() else name
 
@@ -102,12 +113,74 @@ object Libav {
                 runCatching { SymbolLookup.libraryLookup(resolveLibraryPath(rt), Arena.global()) }
             }
         }
+        preferHostVaapi()
+    }
+
+    /**
+     * Maps the HOST's libva before libavutil asks for it, so the host's own
+     * pair of dispatcher and driver is the one that ends up in the process.
+     *
+     * The decode and full tiers link libva as a hard dependency of libavutil
+     * -- FFmpeg has no lazy path for it, its configure puts libva on the link
+     * line -- so a machine without libva could not load the bundle at all,
+     * and lost software decode along with the hardware it never had. The
+     * bundle therefore carries a copy, which its own RUNPATH would otherwise
+     * always win with.
+     *
+     * That is the wrong way round. libva looks up the driver's entry point by
+     * version name and walks minor versions DOWNWARD from its own, so a
+     * dispatcher older than the installed driver never finds it: bundling a
+     * pinned copy and letting it win would trade a loud failure on machines
+     * without libva for silent loss of GPU decode on machines whose drivers
+     * moved ahead of our pin. Loading the host's copy first leaves the
+     * bundled one as what it should be -- the fallback that keeps a bare
+     * container running on the CPU.
+     *
+     * A soname already in the process satisfies a later NEEDED entry for it,
+     * so nothing here has to reach into the linking of libavutil itself.
+     * Failure is the ordinary case (no host libva) and is silent by design.
+     */
+    private fun preferHostVaapi() {
+        if (Os.current() != Os.LINUX) return
+        for (name in listOf("libva.so.2", "libva-drm.so.2")) {
+            runCatching { SymbolLookup.libraryLookup(name, Arena.global()) }
+        }
     }
 
     private val lookups: Map<LibavLibrary, SymbolLookup> =
-        LibavLibrary.entries.associateWith { lib ->
-            SymbolLookup.libraryLookup(libraryPath(lib), Arena.global())
+        LibavLibrary.entries.associateWith { lib -> load(lib) }
+
+    /**
+     * Opens one pinned library, or refuses with the answer rather than with
+     * the symptom.
+     *
+     * Off a bundle the name goes to the system loader, which searches the
+     * usual directories -- and a store-based distribution (NixOS, Guix) has
+     * none of them: the libraries are installed, in a path nothing looks in.
+     * The bare failure names a missing file and says nothing about that, so
+     * the escape is named here instead (#23).
+     */
+    private fun load(lib: LibavLibrary): SymbolLookup {
+        val path = libraryPath(lib)
+        return try {
+            SymbolLookup.libraryLookup(path, Arena.global())
+        } catch (t: IllegalArgumentException) {
+            throw UnsatisfiedLinkError(loadFailureMessage(lib, path, libavDir)).apply { initCause(t) }
         }
+    }
+
+    /** Pulled out of [load] so both branches can be read -- and tested -- without a broken machine. */
+    internal fun loadFailureMessage(lib: LibavLibrary, path: String, dir: String?): String {
+        val where = if (dir != null) {
+            "the natives directory $dir does not carry it, or it will not open from there"
+        } else {
+            "the system library path holds no ${lib.baseName} of the pinned major ${lib.sonameMajor} " +
+                "-- install one, or, where libraries live outside the loader's search path (NixOS, " +
+                "Guix), point skinema.libav.dir or SKINEMA_LIBAV_DIR at a directory holding the whole " +
+                "av* set, or name that directory in LD_LIBRARY_PATH"
+        }
+        return "cannot load $path: $where"
+    }
 
     private fun fn(lib: LibavLibrary, name: String, descriptor: FunctionDescriptor): MethodHandle {
         val symbol = lookups.getValue(lib).find(name).orElseThrow {
@@ -182,6 +255,15 @@ object Libav {
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+
+    // Not used by the runtime: it is how a test asks the LOADED library what
+    // a pixel-format number means. The formats in LibavAbi are transcribed
+    // from the oracle, and one of them was transcribed wrong -- GBRP as 168,
+    // which is GRAY10LE -- with every test that used it naming the same
+    // constant on both sides and so proving nothing.
+    private val hAvGetPixFmtName = fn(LibavLibrary.AVUTIL, "av_get_pix_fmt_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    private val hAvcodecDescriptorGet =
+        fn(LibavLibrary.AVCODEC, "avcodec_descriptor_get", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
     private val hAvPacketSideDataGet = fn(
         LibavLibrary.AVCODEC, "av_packet_side_data_get",
@@ -193,6 +275,7 @@ object Libav {
     private val hAvcodecSendPacket = fn(LibavLibrary.AVCODEC, "avcodec_send_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecReceiveFrame = fn(LibavLibrary.AVCODEC, "avcodec_receive_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecFindEncoderByName = fn(LibavLibrary.AVCODEC, "avcodec_find_encoder_by_name", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvcodecGetSupportedConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_supported_config", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecSendFrame = fn(LibavLibrary.AVCODEC, "avcodec_send_frame", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecReceivePacket = fn(LibavLibrary.AVCODEC, "avcodec_receive_packet", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvcodecParametersFromContext = fn(LibavLibrary.AVCODEC, "avcodec_parameters_from_context", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
@@ -334,6 +417,14 @@ object Libav {
     fun avBufferUnref(bufPtrPtr: MemorySegment) { hAvBufferUnref.invoke(bufPtrPtr) }
     fun avFrameCopyProps(dst: MemorySegment, src: MemorySegment): Int = hAvFrameCopyProps.invoke(dst, src) as Int
 
+    /**
+     * The library's own description of a codec, or NULL for an id it does not
+     * know. Its property bits say whether a subtitle codec is text or bitmap,
+     * which is a question that should never have been answered by a list.
+     */
+    fun avcodecDescriptorGet(codecId: Int): MemorySegment =
+        hAvcodecDescriptorGet.invoke(codecId) as MemorySegment
+
     /** const AVCodecHWConfig* at [index]; NULL past the last config. */
     fun avcodecGetHwConfig(codec: MemorySegment, index: Int): MemorySegment =
         hAvcodecGetHwConfig.invoke(codec, index) as MemorySegment
@@ -343,13 +434,34 @@ object Libav {
      * emit, terminated by AV_PIX_FMT_NONE; returning a hardware-surface
      * format keeps decoding on the GPU, and falling through to the last
      * (software) entry is the graceful no-device answer. skinema's first
-     * upcall carrying real logic -- it runs on the decode thread,
-     * synchronously inside avcodec, so there is no concurrency to guard.
+     * upcall carrying real logic, called synchronously inside avcodec.
+     *
+     * The surface to aim for is read off the context, NOT off the calling
+     * thread. A frame-threaded decoder negotiates on one of its own worker
+     * threads, not on the thread that opened the file, so a thread-scoped
+     * target is simply absent when this runs -- and absent means the
+     * software entry, which is how hardware decode came to be negotiated
+     * away on every open while the device sat there ready.
      */
     @JvmStatic
-    @Suppress("unused", "UNUSED_PARAMETER")
-    private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int {
-        val target = negotiatedHwFormat.get()
+    @Suppress("unused")
+    private fun chooseHwFormat(ctx: MemorySegment, formats: MemorySegment): Int =
+        try {
+            chooseHwFormatOrThrow(ctx, formats)
+        } catch (_: Throwable) {
+            // Nothing here should throw, and a throwable unwinding out of an
+            // upcall with native frames below takes the JVM down without a
+            // stack trace. The two AVIO upcalls carry the same barrier; this
+            // one was the exception because "it cannot throw" was true rather
+            // than enforced. NONE is not a fallback to software -- avcodec
+            // reads it as "no format is acceptable" and fails the decode --
+            // which is the point: one file fails closed instead of the
+            // process dying without a word.
+            LibavAbi.AV_PIX_FMT_NONE
+        }
+
+    private fun chooseHwFormatOrThrow(ctx: MemorySegment, formats: MemorySegment): Int {
+        val target = negotiatedHwFormat(ctx)
         val list = formats.reinterpret(Long.MAX_VALUE)
         var i = 0L
         var last = LibavAbi.AV_PIX_FMT_NONE
@@ -367,14 +479,17 @@ object Libav {
         }
     }
 
-    // The surface format setupHwAccel negotiated for the device it opened.
-    // ThreadLocal because the setup and this get_format upcall run on the same
-    // decode thread; AV_PIX_FMT_NONE (software, the default) leaves
-    // chooseHwFormat returning the software entry.
-    private val negotiatedHwFormat = ThreadLocal.withInitial { LibavAbi.AV_PIX_FMT_NONE }
-
-    /** Set by the video decoder before decode so [chooseHwFormat] targets the opened device's surface. */
-    fun setNegotiatedHwFormat(pixFmt: Int) = negotiatedHwFormat.set(pixFmt)
+    /**
+     * The surface format the decoder that owns [ctx] opened a device for,
+     * parked in AVCodecContext.opaque by setupHwAccel. A NULL slot is a
+     * software decoder and yields AV_PIX_FMT_NONE, which leaves
+     * [chooseHwFormat] returning the software entry.
+     */
+    private fun negotiatedHwFormat(ctx: MemorySegment): Int {
+        val slot = ctx.reinterpret(LibavAbi.CodecContext.SIZEOF).get(ADDRESS, LibavAbi.CodecContext.OPAQUE)
+        if (slot == MemorySegment.NULL) return LibavAbi.AV_PIX_FMT_NONE
+        return slot.reinterpret(JAVA_INT.byteSize()).get(JAVA_INT, 0)
+    }
 
     private val getFormatStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().findStatic(
@@ -426,6 +541,9 @@ object Libav {
 
     /** A static string owned by avcodec; never "unknown_codec"-null. */
     fun avcodecGetName(codecId: Int): MemorySegment = hAvcodecGetName.invoke(codecId) as MemorySegment
+
+    /** A static string owned by avutil, or NULL for a number no format has. */
+    fun avGetPixFmtName(pixFmt: Int): MemorySegment = hAvGetPixFmtName.invoke(pixFmt) as MemorySegment
     fun avPacketSideDataGet(sideData: MemorySegment, count: Int, type: Int): MemorySegment =
         hAvPacketSideDataGet.invoke(sideData, count, type) as MemorySegment
     fun avcodecFindDecoderByName(name: MemorySegment): MemorySegment = hAvcodecFindDecoderByName.invoke(name) as MemorySegment
@@ -458,6 +576,19 @@ object Libav {
     fun avFindBestStream(ctx: MemorySegment, mediaType: Int, decoderOut: MemorySegment): Int =
         hAvFindBestStream.invoke(ctx, mediaType, -1, -1, decoderOut, 0) as Int
     fun avReadFrame(ctx: MemorySegment, packet: MemorySegment): Int = hAvReadFrame.invoke(ctx, packet) as Int
+
+    /**
+     * The values a codec accepts for one kind of configuration (sample
+     * formats, sample rates). [outConfigs] receives the list pointer, which
+     * is NULL when everything is accepted, and [outNum] its length.
+     */
+    fun avcodecGetSupportedConfig(
+        avctx: MemorySegment,
+        codec: MemorySegment,
+        config: Int,
+        outConfigs: MemorySegment,
+        outNum: MemorySegment,
+    ): Int = hAvcodecGetSupportedConfig.invoke(avctx, codec, config, 0, outConfigs, outNum) as Int
     fun avSeekFrame(ctx: MemorySegment, streamIndex: Int, timestamp: Long, flags: Int): Int =
         hAvSeekFrame.invoke(ctx, streamIndex, timestamp, flags) as Int
     fun avformatCloseInput(ctxPtrPtr: MemorySegment) { hAvformatCloseInput.invoke(ctxPtrPtr) }

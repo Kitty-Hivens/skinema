@@ -1,0 +1,41 @@
+# sha256 of every bundle the classifier jars are packed from, one line per
+# tier and platform.
+#
+# The bundles live on a ROLLING release tag: the natives workflow uploads with
+# --clobber, so the same URL legitimately serves different bytes at different
+# times, and the module's version does not change when it does. Without this
+# file the publish step downloaded whatever was there and packed it into a jar
+# bound for Maven Central -- so every gate the natives workflow runs (the host
+# surface, the Windows import closure, the format claims) could have been run
+# against a different tarball than the one consumers get.
+#
+# Regenerate after a natives rebuild and review the diff before publishing:
+#
+#   ./gradlew :skinema-natives:refreshBundleChecksums
+#
+# A line that changes is a bundle that changed. If none was rebuilt, none
+# should move.
+b5e625910fb9286cbe35fd7203bc5e619ed6ca02884dd622827cd7b5d29c553e  core-linux-arm64
+c1d06c6be47cf73902834aff4d745c2e478a6fb22e1c655b8b8789c48aee5566  core-linux-musl-arm64
+d15cf243af7458f6da3085cd11f967be8d5265c02502c47a10a3b0a1c42feb8b  core-linux-musl-x64
+610d043cd10180d89aaf7a06caf0850ef52207eb1d7d69914e16918c0dbe3154  core-linux-x64
+938c6062dd3319e2e254b15369c0dac8d636ca1806d7e9e73dda149e3efc7f48  core-macos-arm64
+41c652269d3305ed77c4949af6e8f3519699e3c0c6dc581b43a7336cf5c58f74  core-macos-x64
+d7527572eb215ddf81de3691852b3d37c2cca443f7480248c609066547bef3ae  core-windows-arm64
+208e589a31de331bc5d0288bf1fda1d5b7a1a94fe144c995f127944346d7a4a1  core-windows-x64
+9f837ea6cc6ba60986767eef58d7b9558ccf9891bba59d96b80d0178a213b3ea  decode-linux-arm64
+2e5fb28dc6ce9ec910e4ca303e0b5700b7db20ab9d644f24973383ab535e4a82  decode-linux-musl-arm64
+d968fccd4ddab2f311ac494533b37e56c1b9d779eaf43901911fe770fc22c65f  decode-linux-musl-x64
+ece67223b841fe1a5a2ae284bfd12e592dfbcad914dc593bbcfcb025847e5078  decode-linux-x64
+f6e420a86c80738f36f4a8ad5edd5000b9fb15a1ee623e04a6c347d29fb525af  decode-macos-arm64
+70a31483bd19600c81a0f63a34a78325a7e58103d3c78b4156495e8cbcbaad91  decode-macos-x64
+9f37b89d704859908e7c18c60478381749c357553258b2a50f1af1a853574d20  decode-windows-arm64
+a15dcd83cdcd7363269154bfe73f338e9c773a1e1c8507bd0207829c8f581176  decode-windows-x64
+4207d75b3135be3533b9ddd0b6afdec107672b5005556b9320f484ca903486f7  full-linux-arm64
+097d07950fbe4159f65efd258fddbcb68045d9f4bafb281c9fb2d0366ba0d931  full-linux-musl-arm64
+de173e9347dbcad5c68714f5c26535ff63d7733f167456945070254adb50149e  full-linux-musl-x64
+621dad6165c3c11568416b4abdd0f35e67e47e306868020b0ef878a2a782e0d8  full-linux-x64
+67094546c21dd46e71da3b77e76dd98bda45000444bcbaad4d42c5e17f49a120  full-macos-arm64
+ae0101891156c809f3154694570150ddc3518aaaf98257b9ba922a36fc2e0e3a  full-macos-x64
+53877c81f5532ed6f83648fa3ba79b0ab7831d2e3da2e01205881f61606fae22  full-windows-arm64
+3e42d6e48c4ddb2f0bdeb33d45320569d83629ac5139b96fa6db5cd8f17a1b01  full-windows-x64

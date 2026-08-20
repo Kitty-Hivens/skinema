@@ -36,16 +36,33 @@ class SubtitleOverlayImage : AutoCloseable {
 
     /** Replaces the overlay; an empty list is the clear. */
     fun update(patches: List<PatchPixels>) {
-        val next = patches.map { p ->
-            Placed(
-                Image.makeRaster(
-                    ImageInfo(p.width, p.height, ColorType.RGBA_8888, ColorAlphaType.PREMUL),
-                    p.rgba,
-                    rowBytes = p.width * 4,
-                ),
-                p.x,
-                p.y,
-            )
+        val next = mutableListOf<Placed>()
+        try {
+            for (p in patches) {
+                // The same reason the frame holder checks: Skia reads
+                // height * rowBytes and checks nothing.
+                require(p.width > 0 && p.height > 0) {
+                    "a patch must have positive dimensions, got ${p.width}x${p.height}"
+                }
+                require(p.rgba.size >= p.width.toLong() * p.height * 4) {
+                    "a ${p.width}x${p.height} patch needs ${p.width * p.height * 4} bytes, got ${p.rgba.size}"
+                }
+                next += Placed(
+                    Image.makeRaster(
+                        ImageInfo(p.width, p.height, ColorType.RGBA_8888, ColorAlphaType.PREMUL),
+                        p.rgba,
+                        rowBytes = p.width * 4,
+                    ),
+                    p.x,
+                    p.y,
+                )
+            }
+        } catch (t: Throwable) {
+            // Built one at a time, so a refusal partway through leaves the
+            // ones already made held by nothing at all -- the leak this
+            // class's own close-the-previous discipline exists to avoid.
+            next.forEach { it.image.close() }
+            throw t
         }
         images.forEach { it.image.close() }
         images = next

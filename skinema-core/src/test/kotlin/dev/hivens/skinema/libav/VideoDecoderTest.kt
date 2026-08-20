@@ -7,17 +7,83 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class VideoDecoderTest {
 
+    /**
+     * Whether a subtitle codec is text is asked of the library, not of a
+     * list. The list was five ids long, and every text codec outside it --
+     * sami, microdvd, TTML, plain text -- arrived flagged as a bitmap, so
+     * the bitmap branch skipped the ASS rects their decoders emit: the track
+     * selected, reported itself active, ran a thread and drew nothing, with
+     * no error anywhere.
+     *
+     * Asked of the descriptor table rather than of a file, and deliberately.
+     * No bundle carries a decoder for any of those formats -- the whitelist
+     * is exactly the five the old list named plus the two bitmap ones -- so a
+     * fixture could not reach the case on the binaries this ships. The
+     * descriptor table is compiled in whether or not a decoder is, which is
+     * what makes the question answerable at all, and answering it correctly
+     * is the whole of the fix.
+     */
+    @Test
+    fun `a text subtitle codec is recognised whether or not it was on the old list`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Found by name off the library's own table, so the id is never
+        // hard-coded here: the oracle carries the handful of ids the code
+        // needs and these are not among them.
+        fun idOf(name: String): Int? =
+            (LibavAbi.AV_CODEC_ID_DVD_SUBTITLE until LibavAbi.AV_CODEC_ID_DVD_SUBTITLE + 64)
+                .firstOrNull { Libav.avcodecGetName(it).reinterpret(Long.MAX_VALUE).getString(0) == name }
+
+        for (name in listOf("sami", "microdvd", "text", "ttml", "jacosub", "realtext")) {
+            val id = idOf(name) ?: continue
+            assertTrue(isTextSubtitleCodec(id), "$name is a text subtitle codec")
+        }
+        for (name in listOf("ass", "ssa", "subrip", "mov_text", "webvtt")) {
+            val id = assertNotNull(idOf(name), "the library must name $name")
+            assertTrue(isTextSubtitleCodec(id), "$name is a text subtitle codec")
+        }
+        // The other half: a bitmap codec must not be dragged in with them.
+        for (name in listOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub")) {
+            val id = idOf(name) ?: continue
+            assertFalse(isTextSubtitleCodec(id), "$name draws pixels, not text")
+        }
+    }
+
     private val dir: Path = Files.createTempDirectory("skinema-decoder-test")
 
     @AfterTest
     fun cleanup() {
         dir.toFile().deleteRecursively()
+    }
+
+    /**
+     * AutoCloseable asks for idempotence and this did not give it: the scaler
+     * contexts are freed before the arena is touched and were not cleared, so
+     * a second close freed them again. That is a double free, which aborts the
+     * process rather than throwing -- a regression here does not fail this
+     * test, it takes the whole test JVM down, which is the correct amount of
+     * noise for memory corruption in a public class.
+     */
+    @Test
+    fun `closing a decoder twice is safe`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("twice.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        val decoder = VideoDecoder.open(video)
+        // A frame first: the scaler contexts only exist once something was
+        // converted, and they are what the second close freed twice.
+        assertNotNull(decoder.nextFrame(), "the fixture must decode")
+        decoder.close()
+        decoder.close()
     }
 
     @Test
@@ -391,6 +457,37 @@ class VideoDecoderTest {
         )
         VideoDecoder.open(video).use { decoder ->
             assertRgbNear(Triple(40, 180, 40), centerRgb(decoder.nextFrame()!!), "smpte170m")
+        }
+    }
+
+    @Test
+    fun `every matrix the mapping names keeps its own coefficients`() {
+        // FCC has no pixel test and cannot have one: its coefficients differ
+        // from BT.601 by at most 1.52 levels of 255 anywhere in the colour
+        // cube, which no 8-bit round trip can separate. The arm still has to
+        // survive, so it is held where it is observable -- at the mapping.
+        assertEquals(LibavAbi.SWS_CS_FCC, swsCoefficientsFor(LibavAbi.AVCOL_SPC_FCC, 640, 480))
+        assertEquals(LibavAbi.SWS_CS_SMPTE240M, swsCoefficientsFor(LibavAbi.AVCOL_SPC_SMPTE240M, 640, 480))
+        assertEquals(LibavAbi.SWS_CS_ITU709, swsCoefficientsFor(LibavAbi.AVCOL_SPC_BT709, 320, 240))
+        assertEquals(LibavAbi.SWS_CS_ITU601, swsCoefficientsFor(LibavAbi.AVCOL_SPC_SMPTE170M, 1920, 1080))
+        assertEquals(LibavAbi.SWS_CS_BT2020, swsCoefficientsFor(LibavAbi.AVCOL_SPC_BT2020_NCL, 640, 480))
+        // Nothing declared: the convention players agree on, by geometry.
+        assertEquals(LibavAbi.SWS_CS_ITU709, swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, 1280, 720))
+        assertEquals(LibavAbi.SWS_CS_ITU601, swsCoefficientsFor(LibavAbi.AVCOL_SPC_UNSPECIFIED, 720, 576))
+    }
+
+    @Test
+    fun `smpte240m-tagged color decodes through the 240M matrix`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = Fixtures.generate(
+            dir.resolve("smpte240m.mp4"),
+            "-f", "lavfi", "-i", "color=c=0x28B428:size=64x64:rate=5", "-t", "1",
+            "-vf", "scale=out_color_matrix=smpte240m,format=yuv420p",
+            "-colorspace", "smpte240m",
+            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast",
+        )
+        VideoDecoder.open(video).use { decoder ->
+            assertRgbNear(Triple(40, 180, 40), centerRgb(decoder.nextFrame()!!), "smpte240m")
         }
     }
 

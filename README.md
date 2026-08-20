@@ -5,8 +5,9 @@ hand-written Java FFM (Panama) bindings: frames out as raw RGBA or Skia
 images with a Compose Desktop surface on top, and frames back in to a
 muxed file. No JNI wrapper stacks, no embedded player engines. The bundled
 FFmpeg is built with `--disable-network`, so skinema performs no network
-I/O of its own -- it works on the file you hand it (or the bytes a
-`MediaSource` feeds it) and nothing more.
+I/O of its own -- it works on the file you hand it and nothing more.
+(`VideoDecoder` also opens a `MediaSource`, so bytes from anywhere can be
+decoded directly; the player itself takes a path.)
 
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)
@@ -19,7 +20,8 @@ player.acquireFrame()?.let { frame -> /* frame.rgba, frame.width, ... */ }
 ```
 
 `positionNanos()` and `durationNanos` carry a timeline (duration is
-null for animated webp, which declares none); `chapters`, `tags` and
+null for an animated webp until one lap has played, since the format
+declares none and the length is only known once it has been read); `chapters`, `tags` and
 `coverArt` carry the rest of the container's metadata -- the cover
 ships as the stored png/jpeg bytes for your own image stack. A file
 whose only video stream is the embedded cover plays frameless, art
@@ -33,16 +35,20 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
 ```
+
+Those are the coordinates Maven Central carries today. The next release
+moves the FFmpeg pin to 9.0.1 and adds the two `linux-musl-*` bundles, so
+some of what this file describes -- the musl platforms and the formats
+FFmpeg 9 brought -- is not in the versions above. Take the pair the release
+notes name.
 
 The two versions are independent, and that is deliberate. `skinema-natives`
 is versioned as the FFmpeg build it carries plus a repack revision
@@ -120,10 +126,14 @@ Ubuntu 24.04, Debian 13 and Fedora 39 upward for the desktop tiers, and not
 RHEL 9. `core-linux-x64` alone still loads on Ubuntu 22.04.
 macOS bundles are built for 14.0, so Sonoma upward. The `linux-musl-*`
 bundles have no such floor: musl does not version its symbols. The `decode`
-and `full` Linux bundles link `libva`, `libva-drm` and `libfontconfig` from
-the host and load none of their libraries without them, which is worth
-knowing before putting them in a headless container -- `core` needs only
-libc and libm and has no such requirement.
+and `full` Linux bundles want `libfontconfig` from the host -- libass's font
+provider links it, and without it none of their libraries load, which is
+worth knowing before putting them in a headless container. `core` needs only
+libc and libm and has no such requirement. VAAPI used to be a second such
+requirement and is not any more: those bundles carry `libva`, `libva-drm`
+and `libdrm` themselves, so a machine with no libva installed still loads
+them. The host's own copy is still preferred where there is one, because the
+driver on the machine is versioned against it rather than against ours.
 
 ## What it plays
 
@@ -181,10 +191,11 @@ CoreText); a fontless headless box renders blank overlays.
   as coarse as the file's keyframe spacing. Skip buttons want inexact;
   timeline scrubbing wants exact. `stepForward`/`stepBackward` move a
   single frame and leave the player paused on it.
-- **Two threads per player** (a third with audio): decode fills a small
-  frame queue, a pacer presents from it. Players are independent and
-  self-synced; play as many as your CPU affords (a desktop comfortably
-  runs dozens of 1080p30 streams).
+- **Two threads per player, four with sound.** Decode fills a small
+  frame queue and a pacer presents from it; sound adds an audio thread
+  and its watchdog, and a selected subtitle track a fifth. Players are
+  independent and self-synced; play as many as your CPU affords (a
+  desktop comfortably runs dozens of 1080p30 streams).
 - **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
   many decoded frames of inventory, so a decode stall does not stall
   the screen while inventory lasts. Each step of depth costs one full
@@ -224,7 +235,7 @@ natives takes on FFmpeg's GPL obligations, as anyone distributing a GPL
 FFmpeg build does; a consumer that needs to stay LGPL takes `core` or
 `decode`. skinema's own Apache code is unaffected either way.
 
-libwebp, libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
+libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
 the `full` build is `--enable-gpl`). libass (ISC) ships with FreeType and
 HarfBuzz folded in
 -- portions of the bundled software are copyright The FreeType Project

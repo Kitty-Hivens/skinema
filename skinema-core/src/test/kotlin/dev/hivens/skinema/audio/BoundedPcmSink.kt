@@ -24,6 +24,7 @@ class BoundedPcmSink(
     private var consumedFrames = 0L
     private var released = false
     private var opened = false
+    private var stopped = false
 
     var sampleRate = 0
         private set
@@ -37,6 +38,13 @@ class BoundedPcmSink(
         if (opened && !reopenable) throw IllegalStateException("device gone, cannot reopen")
         opened = true
         this.sampleRate = sampleRate
+        // A fresh line is empty, running, and counts from zero.
+        synchronized(lock) {
+            writtenFrames = 0
+            consumedFrames = 0
+            stopped = false
+            lock.notifyAll()
+        }
     }
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
@@ -62,9 +70,21 @@ class BoundedPcmSink(
         }
     }
 
-    override fun stop() = Unit
+    // A stopped line does not play, so the hand-driven playhead does not move
+    // either. Left as a no-op, a test could consume through a freeze the
+    // pipeline had asked for -- and the freeze-then-read ordering that keeps
+    // the mastered clock from stepping backward is exactly what such a test
+    // is usually there to prove.
+    override fun stop() {
+        synchronized(lock) { stopped = true }
+    }
 
-    override fun start() = Unit
+    override fun start() {
+        synchronized(lock) {
+            stopped = false
+            lock.notifyAll()
+        }
+    }
 
     /** Flush count; seek coalescing shows up as one flush per burst. */
     @Volatile
@@ -86,6 +106,7 @@ class BoundedPcmSink(
     /** Plays out everything queued except the last [tailFrames]. */
     fun consumeAllButTail(tailFrames: Long) {
         synchronized(lock) {
+            if (stopped) return
             val target = writtenFrames - tailFrames
             if (target > consumedFrames) {
                 consumedFrames = target
@@ -97,6 +118,7 @@ class BoundedPcmSink(
     /** Plays out at most [frames] -- a rate-limited test "DAC". */
     fun consume(frames: Long) {
         synchronized(lock) {
+            if (stopped) return
             val target = minOf(writtenFrames, consumedFrames + frames)
             if (target > consumedFrames) {
                 consumedFrames = target

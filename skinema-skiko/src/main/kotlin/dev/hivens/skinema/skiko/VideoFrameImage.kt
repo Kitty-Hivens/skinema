@@ -24,6 +24,14 @@ class VideoFrameImage : AutoCloseable {
      * caller's buffer is free for reuse immediately.
      */
     fun update(width: Int, height: Int, rgba: ByteArray): Image {
+        // Skia reads height * rowBytes out of the array and checks nothing,
+        // so a short one is a native out-of-bounds read rather than an
+        // exception. The player's own frames always match; this is a public
+        // module and the buffer can come from anywhere.
+        require(width > 0 && height > 0) { "a frame must have positive dimensions, got ${width}x$height" }
+        require(rgba.size >= width.toLong() * height * 4) {
+            "a ${width}x$height RGBA frame needs ${width * height * 4} bytes, got ${rgba.size}"
+        }
         val info = ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL)
         val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
         image?.close()

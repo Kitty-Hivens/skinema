@@ -83,7 +83,7 @@ that matter most here:
 
 If you add a downcall: bind it in `Libav.kt` with a `FunctionDescriptor`
 and a thin wrapper, near its siblings. If you read a new struct field:
-add the offset to `LibavAbi.kt` (or `AssAbi`/`WebpAbi`) from the
+add the offset to `LibavAbi.kt` (or `AssAbi`) from the
 oracle's output -- run `tools/layout-oracle.c` against the pinned
 major's headers; do not guess an offset. Respect the memory discipline:
 one confined arena per session, FFmpeg allocations freed through their

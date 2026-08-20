@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavcodec/codec_desc.h>
 #include <libavfilter/avfilter.h>
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
@@ -96,6 +97,13 @@ int main(void) {
     P(AV_CODEC_ID_MOV_TEXT);
     P(AV_CODEC_ID_WEBVTT);
     P(AV_CODEC_ID_HDMV_PGS_SUBTITLE);
+    /* Whether a subtitle codec is text or bitmap is the library's answer, not
+       a list of ours: every codec carries it, including the ones nobody
+       remembered to enumerate. */
+    P(offsetof(AVCodecDescriptor, props));
+    P(sizeof(AVCodecDescriptor));
+    P(AV_CODEC_PROP_TEXT_SUB);
+    P(AV_CODEC_PROP_BITMAP_SUB);
     P(AV_CODEC_ID_DVD_SUBTITLE);
 
     P(AV_DISPOSITION_ATTACHED_PIC);
@@ -187,6 +195,7 @@ int main(void) {
     P(offsetof(AVCodecContext, pix_fmt));
     P(offsetof(AVCodecContext, sw_pix_fmt));
     P(offsetof(AVCodecContext, hw_device_ctx));
+    P(offsetof(AVCodecContext, opaque));
     P(offsetof(AVCodecContext, hw_frames_ctx));
     P(offsetof(AVCodecContext, get_format));
     P(offsetof(AVCodecContext, coded_width));
@@ -274,6 +283,16 @@ int main(void) {
     P(AVIO_FLAG_WRITE);
     P(AV_PKT_FLAG_KEY);
     P(AV_PIX_FMT_YUV420P);
+    /* The encoder's format preference. Hand-transcribed once and one of
+       them was wrong -- GBRP was written as 168, which is GRAY10LE, so a
+       planar-RGB encoder never matched and a 10-bit grayscale one would
+       have. Emitted here so a major bump re-captures them like everything
+       else. */
+    P(AV_PIX_FMT_YUV422P);
+    P(AV_PIX_FMT_YUV444P);
+    P(AV_PIX_FMT_GBRP);
+    P(AV_PIX_FMT_RGB24);
+    P(AV_PIX_FMT_YUVA420P);
     P(AV_SAMPLE_FMT_FLTP);
     P(AV_OPT_SEARCH_CHILDREN);
     P(AV_CODEC_ID_H264);

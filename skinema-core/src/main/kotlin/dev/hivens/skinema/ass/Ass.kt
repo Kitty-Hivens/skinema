@@ -22,9 +22,11 @@ import java.lang.invoke.MethodType
  * override, an offline oracle (tools/ass-oracle.c) for the one struct
  * read directly (ASS_Image).
  *
- * Strictly optional, like the webp pair: when libass is absent
- * [available] is false, text subtitle tracks refuse selection, and
- * bitmap tracks (which never touch libass) keep working.
+ * Strictly optional: when libass is absent [available] is false, text
+ * subtitle tracks refuse selection, and bitmap tracks (which never touch
+ * libass) keep working. [available] is also what a consumer should ask --
+ * selection is asynchronous, so watching the active track for an answer is
+ * a poll with no settling point.
  *
  * libass prints every message up to INFO on stderr by default, and
  * ass_set_message_cb ignores a NULL callback -- silencing it takes a
@@ -35,7 +37,7 @@ import java.lang.invoke.MethodType
  */
 object Ass {
 
-    // libtool naming, like the webp pair: Windows DLLs keep the prefix.
+    // libtool naming: Windows DLLs keep the prefix.
     private fun fileName(base: String, major: Int): String = when (Os.current()) {
         Os.LINUX -> "lib$base.so.$major"
         Os.MAC -> "lib$base.$major.dylib"

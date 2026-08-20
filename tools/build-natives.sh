@@ -31,12 +31,22 @@ set -euo pipefail
 FFMPEG_VERSION="${FFMPEG_VERSION:-9.0.1}"
 VPX_VERSION="${VPX_VERSION:-v1.15.2}"
 DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
-X264_VERSION="${X264_VERSION:-stable}"
+# A COMMIT, not the "stable" branch it used to name. x264 publishes no
+# releases and its snapshot service was discontinued in 2019 ("please use
+# code.videolan.org to get the tarballs"), so a commit is the only fixed
+# point there is. Named this way the archive is content-addressed: the
+# tarball can be hash-pinned like every other dependency, and what a given
+# skinema revision shipped stays answerable afterwards -- which a GPL
+# encoder needs to be, since the corresponding source is owed to whoever
+# received the binary.
+X264_VERSION="${X264_VERSION:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
 X265_VERSION="${X265_VERSION:-4.1}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
 LIBASS_VERSION="${LIBASS_VERSION:-0.17.4}"
+LIBDRM_VERSION="${LIBDRM_VERSION:-2.4.123}"
+LIBVA_VERSION="${LIBVA_VERSION:-2.22.0}"
 ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
 BZIP2_VERSION="${BZIP2_VERSION:-1.0.8}"
 XZ_VERSION="${XZ_VERSION:-5.6.4}"
@@ -178,9 +188,11 @@ fi
 # keeps the check fail-closed -- if GitHub ever regenerates its archive the
 # build stops and says so, rather than accepting whatever arrives.
 #
-# x264 has no entry: X264_VERSION names a branch, so upstream moves the
-# tarball under it and there is nothing stable to pin. That also means x264
-# builds are not reproducible; pinning it to a commit is a separate decision.
+# x264 is pinned like the rest now that X264_VERSION names a commit rather
+# than the "stable" branch. GitLab generates these archives on demand, so a
+# repack upstream would fail this check even though the commit is unchanged;
+# that is the intended failure -- loud once in a while beats a silently
+# different encoder in every build, which is what the branch gave.
 sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
     case "$1" in
         zlib.tar.gz)         echo 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 ;;
@@ -193,12 +205,14 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         fribidi.tar.xz)      echo 1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c ;;
         harfbuzz.tar.xz)     echo 6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82 ;;
         libass.tar.xz)       echo 78f1179b838d025e9c26e8fef33f8092f65611444ffa1bfc0cfac6a33511a05a ;;
+        libdrm.tar.xz)       echo a2b98567a149a74b0f50e91e825f9c0315d86e7be9b74394dae8b298caadb79e ;;
+        libva.tar.gz)        echo 467c418c2640a178c6baad5be2e00d569842123763b80507721ab87eb7af8735 ;;
         ffmpeg.tar)          echo cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635 \
                                   195d54bebe1a27f84d77f4b989d193466f305b355da92292766a69f16880b18a ;;
         # "-" is the deliberate opt-out, spelled so it cannot be reached by
         # accident. Falling through to it silently would mean a new dependency,
         # or a typo in a dest name, quietly downloads unverified.
-        x264.tar.gz)         echo "-" ;;
+        x264.tar.gz)         echo cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9 ;;
         # A sentinel, not an exit: every caller runs this inside a command
         # substitution, where exiting kills only that substitution and the
         # script carries on downloading unverified.
@@ -373,6 +387,69 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
     if has av1; then license "dav1d-$DAV1D_VERSION/COPYING" "dav1d-COPYING"; fi
 
+    # libva and libdrm, SHARED and into the bundle prefix rather than static
+    # into ffmpeg. FFmpeg's configure finds libva through pkg-config and puts
+    # it on the link line -- there is no lazy path for it, unlike nvcodec or
+    # vulkan -- so libavutil, the first library the loader opens, carries a
+    # hard dependency on it. A machine without libva could therefore not load
+    # the bundle AT ALL: no hardware decode it never had, and no software
+    # decode either.
+    #
+    # These copies are the fallback, not the preferred pair. libva finds a
+    # driver's entry point by version name and walks minor versions DOWNWARD
+    # from its own, so a dispatcher older than the installed driver never
+    # finds it -- measured here, a 1.22 build against a 1.24 driver reports
+    # "Failed to initialise VAAPI connection" where the host's own 1.24 loads
+    # it. The loader maps the host's libva first for exactly that reason
+    # (Libav.preferHostVaapi); what ships here is what keeps a bare container
+    # running on the CPU.
+    #
+    # The baked driver list covers the mainstream layouts, so the bundled
+    # dispatcher can still find a driver where it is the only one: Debian and
+    # Ubuntu multiarch, Fedora's lib64, and the plain lib of Arch and Alpine.
+    # X11, GLX and Wayland are off -- the DRM backend is the one FFmpeg uses,
+    # and the others would drag a display stack into a headless bundle.
+    if [ "$HOST_OS" = linux ] && { has hwaccel || has enc-vaapi; } && [ ! -f "$PREFIX/lib/libva.so.2" ]; then
+        fetch libdrm.tar.xz "https://dri.freedesktop.org/libdrm/libdrm-$LIBDRM_VERSION.tar.xz"
+        rm -rf "libdrm-$LIBDRM_VERSION"
+        tar -xf libdrm.tar.xz
+        meson setup "libdrm-$LIBDRM_VERSION/build" "libdrm-$LIBDRM_VERSION" \
+            --prefix="$PREFIX" --libdir=lib --default-library=shared --buildtype=release \
+            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \
+            -Dvmwgfx=disabled -Dman-pages=disabled -Dtests=false -Dcairo-tests=disabled \
+            -Dvalgrind=disabled ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
+        ninja -C "libdrm-$LIBDRM_VERSION/build" install
+
+        fetch libva.tar.gz "https://github.com/intel/libva/archive/refs/tags/$LIBVA_VERSION.tar.gz"
+        rm -rf "libva-$LIBVA_VERSION"
+        tar -xzf libva.tar.gz
+        PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+        meson setup "libva-$LIBVA_VERSION/build" "libva-$LIBVA_VERSION" \
+            --prefix="$PREFIX" --libdir=lib --default-library=shared --buildtype=release \
+            -Dwith_x11=no -Dwith_glx=no -Dwith_wayland=no -Ddisable_drm=false \
+            -Ddriverdir="/usr/lib/x86_64-linux-gnu/dri:/usr/lib/aarch64-linux-gnu/dri:/usr/lib64/dri:/usr/lib/dri" \
+            ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
+        ninja -C "libva-$LIBVA_VERSION/build" install
+    fi
+    if [ "$HOST_OS" = linux ] && { has hwaccel || has enc-vaapi; }; then
+        # Ahead of the image's own libva-dev, so ffmpeg's configure detects and
+        # links against the copy that ships. Detected against 1.24 and run
+        # against a bundled 1.22, a function added in between is a symbol that
+        # resolves at build time and not at the user's.
+        export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    fi
+    if [ "$HOST_OS" = linux ] && { has hwaccel || has enc-vaapi; }; then
+        # libdrm carries no COPYING: its MIT notice lives in every source
+        # header, so the notice is lifted out of one rather than shipping a
+        # C file as if it were a licence.
+        sed -n '/Permission is hereby granted/,/DEALINGS IN THE SOFTWARE/p' \
+            "libdrm-$LIBDRM_VERSION/xf86drm.c" | sed -e 's|^ \* \?||' -e 's|^ \*$||' \
+            > "$WORK/libdrm-LICENSE"
+        [ -s "$WORK/libdrm-LICENSE" ] || { echo "build-natives: could not lift libdrm's MIT notice" >&2; exit 1; }
+        license "$WORK/libdrm-LICENSE" "libdrm-LICENSE"
+        license "libva-$LIBVA_VERSION/COPYING" "libva-COPYING"
+    fi
+
     if has vpx && [ ! -f "$DEPS/lib/libvpx.a" ]; then
         fetch libvpx.tar.gz "https://github.com/webmproject/libvpx/archive/refs/tags/$VPX_VERSION.tar.gz"
         rm -rf "libvpx-${VPX_VERSION#v}"
@@ -389,6 +466,11 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
                 export CC=clang CXX=clang++ LD=clang AR=llvm-ar NM=llvm-nm RANLIB=llvm-ranlib STRIP=llvm-strip
                 : "${VPX_TARGET:=arm64-win64-gcc}"
             fi
+            # High bit depth is not on by default, and without it this
+            # decoder refuses ten- and twelve-bit VP9 outright rather than
+            # falling back -- the player now only prefers libvpx for the
+            # eight-bit formats it is preferred FOR, but a bundle that can
+            # read the deep ones is better than one that cannot.
             # Decode-only: skinema reads vp8/vp9 through ffmpeg's libvpx decoders
             # and never encodes them. Smaller, and it drops libvpx's only C++ (the
             # encoder's ratectrl_rtc), which on CLANGARM64 would otherwise reach
@@ -396,6 +478,7 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
             ./configure --prefix="$DEPS" --disable-examples --disable-tools \
                 --disable-docs --disable-unit-tests --enable-pic --enable-vp8 \
                 --enable-vp9 --disable-vp8-encoder --disable-vp9-encoder \
+                --enable-vp9-highbitdepth \
                 --disable-shared --enable-static \
                 ${VPX_TARGET:+--target=$VPX_TARGET} \
                 || { echo "=== libvpx config.log tail ==="; tail -40 config.log 2>/dev/null; exit 1; }
@@ -990,8 +1073,15 @@ for f in "$PREFIX"/lib/lib*.dylib; do
     fi
 done
 # Plain *.dll, not *-*.dll: the MinGW runtime ships zlib1.dll (no
-# version dash), and everything in bin here is a shipping DLL.
+# version dash), and everything in bin here is a shipping DLL -- bar one.
+# harfbuzz's meson build emits libharfbuzz-subset unconditionally (no option
+# turns it off, unlike the cmake path aarch64 takes with HB_BUILD_SUBSET=OFF),
+# and nothing here imports it: libass shapes text, it does not subset fonts.
+# Copying it shipped a megabyte nothing could ever call.
 for f in "$PREFIX"/bin/*.dll; do
+    case "$(basename "$f")" in
+        libharfbuzz-subset-*.dll) continue ;;
+    esac
     cp "$f" "$BUNDLE/"
 done
 shopt -u nullglob

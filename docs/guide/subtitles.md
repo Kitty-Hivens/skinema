@@ -74,7 +74,32 @@ player the size you rasterize at with `setSubtitleCanvasSize` -- post it
 on every resize, the way `VideoSurface` does, so text is sized to the
 display rather than the coded video.
 
-`skinema-skiko` provides `SubtitleOverlayImage` to turn the overlay's
+What comes back:
+
+```kotlin
+class SubtitleOverlay {
+    val generation: Long                  // bumps on every publish -- cheap change detection
+    val canvasWidth: Int                  // the space the coordinates below live in
+    val canvasHeight: Int
+    val patches: List<SubtitlePatch>      // EMPTY means clear the screen
+}
+
+class SubtitlePatch {
+    val x: Int; val y: Int                // top-left, in canvas space
+    val width: Int; val height: Int
+    val rgba: ByteArray                   // premultiplied alpha, tight stride (width * 4)
+}
+```
+
+Three things carry it. An overlay whose `patches` are empty is a
+**clear**, not a "nothing happened" -- draw it, or the last cue stays on
+screen forever. The coordinates are in the canvas space the overlay
+announces, so map them onto wherever the video actually lands. And the
+`rgba` array is **reused** across publishes of the same slot: it is
+yours until your next `acquireSubtitles`, and anything you keep past
+that you must copy.
+
+`skinema-skiko` provides `SubtitleOverlayImage` to turn those
 positioned, premultiplied-alpha patches into placed
 `org.jetbrains.skia.Image`s, with the same close-the-previous discipline
 as `VideoFrameImage` (see [compose.md](compose.md)).
@@ -85,6 +110,14 @@ libass ships in the native bundles, but it is treated as optional. When
 it is present, text tracks render. When it is absent (a stripped
 bundle, a load failure), **text tracks refuse selection and everything
 else plays on** -- video, audio and bitmap subtitles are unaffected.
-Check by selecting a text track and seeing whether
-`activeSubtitleTrack` reflects it, or simply prefer bitmap tracks where
-both exist. Bitmap subtitles never depend on libass.
+Ask before you select:
+
+```kotlin
+dev.hivens.skinema.ass.Ass.available   // synchronous, no side effects
+```
+
+Selection is asynchronous -- `selectSubtitleTrack` queues a command for
+the decode thread -- so watching `activeSubtitleTrack` for an answer is
+a poll with no defined settling point. `Ass.available` answers straight
+away. Bitmap subtitles never depend on libass, so preferring a bitmap
+track where both exist is the other way out.

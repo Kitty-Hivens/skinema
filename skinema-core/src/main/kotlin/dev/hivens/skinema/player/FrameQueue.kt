@@ -108,7 +108,12 @@ internal class FrameQueue(depth: Int) {
         }
     }
 
-    /** Wakes and permanently releases the consumer. */
+    /**
+     * Wakes and permanently releases both sides. The decode thread calls it
+     * in its teardown; a pacer that died calls it too, because the producer's
+     * wait for a free cell asks only this question and nobody else would ever
+     * answer it.
+     */
     fun close() {
         synchronized(lock) {
             closed = true
@@ -147,6 +152,10 @@ internal class FrameQueue(depth: Int) {
     fun awaitChange(sinceTick: Long, timeoutNanos: Long) {
         synchronized(lock) {
             if (changes != sinceTick || closed) return
+            // Object.wait(0, 0) is an indefinite wait, and every caller here
+            // means "at most this long": a computed zero would park a thread
+            // on a notify that its own next act was supposed to produce.
+            if (timeoutNanos <= 0L) return
             lock.wait(timeoutNanos / 1_000_000L, (timeoutNanos % 1_000_000L).toInt())
         }
     }
@@ -157,7 +166,11 @@ internal class FrameQueue(depth: Int) {
      * emptied the queue since the peek -- re-loop, never publish stale.
      */
     fun poll(replacement: ByteArray): Frame? = synchronized(lock) {
-        if (count == 0) return null
+        // A closed queue hands out nothing, which the loop condition alone
+        // does not guarantee: a publish already under way when the decode
+        // thread closes runs to completion, and if its join then times out
+        // the frame reaches the mailbox after the player has settled Closed.
+        if (closed || count == 0) return null
         val cell = cells[head]
         val out = Frame(cell.rgba, cell.width, cell.height, cell.ptsNanos, forcedFlags[head])
         cell.rgba = replacement
@@ -168,14 +181,29 @@ internal class FrameQueue(depth: Int) {
         out
     }
 
-    /** Pops the head without taking its pixels (a dropped late frame). */
-    fun dropHead() {
+    /**
+     * Drops the head the caller judged, and only that one.
+     *
+     * [sinceTick] is the reading taken before the peek the decision was made
+     * on. Deciding to drop takes real time -- the clock reading in the middle
+     * of it reaches the audio device -- and a seek in that window clears this
+     * queue and commits its landing, so an unconditional drop discarded the
+     * landing instead of the late frame it had judged. The picture then stayed
+     * on the pre-seek frame while the position and the sound sat at the
+     * target, and on an inexact seek nothing else was ever coming.
+     *
+     * Every other consumer operation already re-validates -- poll returns null
+     * on an emptied queue, publish re-peeks -- so this one was the exception.
+     * Returns false when the queue moved on and the caller should look again.
+     */
+    fun dropHead(sinceTick: Long): Boolean {
         synchronized(lock) {
-            if (count == 0) return
+            if (changes != sinceTick || count == 0) return false
             head = (head + 1) % cells.size
             count--
             changes++
             lock.notifyAll()
+            return true
         }
     }
 }

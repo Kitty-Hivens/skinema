@@ -88,6 +88,35 @@ if [ "$gaps" -gt 0 ]; then
 fi
 echo "Import-closed: every non-system import is present."
 
+# -- 1b. no orphans ----------------------------------------------------------
+#
+# The mirror of the check above, and the one that was missing: a DLL nothing
+# imports and nothing loads by name is dead weight, and both passes here look
+# only at what IS imported, so such a file was invisible to them. It shipped
+# for months (libharfbuzz-subset, which harfbuzz's meson build emits with no
+# option to turn it off) and the counts only differed against the aarch64
+# bundle, which builds through cmake and omits it.
+#
+# Entry points are the libraries skinema opens by name itself, so nothing in
+# the bundle imports them; everything else has to be reachable from one.
+# Windows drops the lib prefix on the av* set (avformat-63.dll) and keeps it
+# on libass; accept both spellings rather than one.
+ENTRY_POINTS='^(lib)?(avutil|avcodec|avformat|avfilter|swscale|swresample|ass)-[0-9]+\.dll$'
+all_imports="$(for f in "${dlls[@]}"; do imports_of "$f"; done | sort -u)"
+orphans=0
+for f in "${dlls[@]}"; do
+    name="$(basename "$f" | lower)"
+    printf '%s\n' "$name" | grep -qE "$ENTRY_POINTS" && continue
+    printf '%s\n' "$all_imports" | grep -qx "$name" && continue
+    echo "ORPHAN: $name is bundled, imported by nothing, and not a library skinema loads by name"
+    orphans=$((orphans + 1))
+done
+if [ "$orphans" -gt 0 ]; then
+    echo "Bundle carries $orphans file(s) nothing can reach."
+    exit 1
+fi
+echo "No orphans: every bundled DLL is an entry point or is imported by one."
+
 # -- 2. preloaded ------------------------------------------------------------
 
 # Libav preloads by exact file name; Ass and Webp name a base and a soname

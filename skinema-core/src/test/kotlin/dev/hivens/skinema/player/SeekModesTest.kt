@@ -33,9 +33,91 @@ class SeekModesTest {
         return condition()
     }
 
-    private fun player(source: ScriptedFrameSource) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, 1, null,
+    private fun player(source: ScriptedFrameSource, readAheadFrames: Int = 1) = VideoPlayer(
+        Path.of("scripted"), false, false, clock, null, readAheadFrames, null,
     ) { source }
+
+    /**
+     * A backward jump in media time must flush the queued tail at once.
+     *
+     * Frames decoded ahead of a jump stand in the future the instant it
+     * happens, so a pacer that only ever waits would hold them until the
+     * timeline walked back up to their timestamps -- a whole lap later, or
+     * never. The jump is judged by direction rather than by size, because a
+     * lap shorter than a second moves the clock back by less than a second.
+     *
+     * The loop no longer produces this -- the picture drains its queue before
+     * it wraps -- but a track switch rebases the clock with frames already
+     * queued, and that is the same jump. This covers the branch directly,
+     * which the two end-to-end tests it replaces did through the old
+     * audio-driven wrap.
+     */
+    @Test
+    fun `a backward jump publishes the queued tail instead of holding it`() {
+        // A read-ahead deep enough that frames stand queued beyond the clock:
+        // with one, the pacer can have just published everything it had and
+        // the jump would have no tail to strand -- which is what made this
+        // pass or fail by timing rather than by behaviour.
+        val source = ScriptedFrameSource(frameCount = 200)
+        player(source, readAheadFrames = 8).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            // Walk media time out to 2s so the pacer publishes toward it and
+            // keeps a tail of decoded frames beyond.
+            frames.set(48_000 * 2)
+            var seen = -1L
+            assertTrue(
+                awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen >= 1_900_000_000L },
+                "the pacer must follow the clock out to 2s, saw ${seen}ns",
+            )
+            // The precondition this test used to assume: something decoded
+            // past the clock, so the jump has a tail to strand.
+            assertTrue(
+                awaitTrue { source.maxStartedIndex.get() > 21 },
+                "a tail must stand beyond the clock, decoder reached ${source.maxStartedIndex.get()}",
+            )
+            // The jump. Everything queued now stands two seconds in the future.
+            clock.seek(0)
+            assertTrue(
+                awaitTrue(deadlineMs = 5_000) { p.acquireFrame()?.let { seen = it.ptsNanos }; seen > 2_000_000_000L },
+                "the stranded tail must present at the jump, saw ${seen}ns",
+            )
+        }
+    }
+
+    /**
+     * close() must land whatever else is queued in front of it.
+     *
+     * A seek's decode-forward run watches only the head of the command queue,
+     * and anything it does not act on -- a pause, a rate change, a subtitle
+     * selection -- stood in front of the Close and hid it. The run then played
+     * itself out to the end before the player noticed it had been closed: on a
+     * real file that is seconds of decoding after close() was called, and past
+     * the join timeout close() returns while the thread and its native session
+     * are still running.
+     */
+    @Test
+    fun `close is honoured even when another command is queued in front of it`() {
+        val source = ScriptedFrameSource(frameCount = 20_000, keyframeEvery = 20_000)
+        val latch = source.blockAt(50)
+        val p = player(source)
+        assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+        p.seek(19_000 * 100_000_000L, exact = true)
+        assertTrue(awaitTrue { source.maxStartedIndex.get() >= 50 }, "the landing run must be under way")
+
+        p.pause()
+        val closer = Thread { p.close() }
+        closer.start()
+        assertTrue(awaitTrue { closer.state == Thread.State.WAITING || closer.state == Thread.State.TIMED_WAITING })
+        val decodedBeforeRelease = source.decodeCount.get()
+
+        latch.countDown()
+        closer.join(10_000)
+        assertTrue(!closer.isAlive, "close must return")
+        // Without the fix the run carries on to frame 19000 before the Close
+        // at the back of the queue is ever looked at.
+        val after = source.decodeCount.get() - decodedBeforeRelease
+        assertTrue(after < 1_000, "the run must stop at the Close, decoded $after more frames")
+    }
 
     @Test
     fun `an exact seek previews the keyframe while the run lands`() {

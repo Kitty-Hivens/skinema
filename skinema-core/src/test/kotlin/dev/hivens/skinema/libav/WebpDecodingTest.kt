@@ -38,6 +38,65 @@ class WebpDecodingTest {
         "-c:v", "libwebp", "-lossless", "0", "-loop", "0", *extra,
     )
 
+    /**
+     * The reopen escalation frees the demuxer before it tries to replace it,
+     * so a replacement that cannot happen -- the file deleted, the medium
+     * gone -- left the decoder holding a freed pointer, and close() freed it
+     * a second time. A double free here does not raise, it takes the JVM
+     * down. Animated WebP is the format that reaches this path: its demuxer
+     * answers a seek, reports success and stays drained, so every lap goes
+     * through the reopen.
+     */
+    @Test
+    fun `a reopen that cannot happen still closes safely`() {
+        assumeWebpEnvironment()
+        // The scenario is built by deleting the file out from under an open
+        // decoder, and Windows refuses that: a file mapped by a running
+        // process cannot be unlinked, so there is no way to reach the failing
+        // reopen from here. The double free this guards is not
+        // platform-specific; the other two platforms exercise it.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            Os.current() != Os.WINDOWS,
+            "an open file cannot be deleted on Windows, so the failing reopen cannot be staged",
+        )
+        val file = animated("vanishing.webp")
+        FrameSources.open(file).use { source ->
+            // Drain it, so the next read needs the restart escalation.
+            @Suppress("ControlFlowWithEmptyBody")
+            while (source.nextFrame() != null) { }
+            Files.delete(file)
+            source.seekTo(0)
+            assertFailsWith<LibavException> { source.nextFrame() }
+            // The close on the way out of `use` is the one that used to abort
+            // the process; reaching the end of this test IS the assertion.
+        }
+    }
+
+    /**
+     * The restart escalation used to be armed only by a seek to zero, so a
+     * looping player worked and a scrubbed one did not: this demuxer answers
+     * a seek, reports success and stays drained, and a seek anywhere but the
+     * beginning therefore handed back nothing at all -- for the rest of the
+     * session, since nothing else re-arms it.
+     */
+    @Test
+    fun `a scrub to any position keeps an animated webp playing`() {
+        assumeWebpEnvironment()
+        FrameSources.open(animated("scrubbed.webp")).use { source ->
+            assertTrue(source.nextFrame() != null, "playback must start before a scrub means anything")
+            source.seekTo(500_000_000L)
+            val after = generateSequence { source.nextFrame()?.ptsNanos }.take(3).toList()
+            assertTrue(after.isNotEmpty(), "a seek off zero left the demuxer drained")
+            // And again, because each escape is tried once per seek: a second
+            // scrub has to re-arm rather than inherit a spent escalation.
+            source.seekTo(200_000_000L)
+            assertTrue(
+                generateSequence { source.nextFrame()?.ptsNanos }.take(1).toList().isNotEmpty(),
+                "the second scrub found the escalation already spent",
+            )
+        }
+    }
+
     @Test
     fun `animated webp decodes every frame on the pts grid`() {
         assumeWebpEnvironment()

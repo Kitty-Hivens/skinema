@@ -2,10 +2,11 @@ package dev.hivens.skinema.libav
 
 /**
  * A pull-style RGBA frame source. [VideoDecoder] is the libav-backed
- * implementation covering every format skinema opens; the one
- * format FFmpeg cannot (animated WebP). VideoPlayer paces whichever it
- * gets from [FrameSources] -- the pacing/mailbox layers never know which
- * demuxer feeds them.
+ * implementation and covers every format skinema opens, animated WebP
+ * included -- FFmpeg 9 decodes that itself, so the second implementation
+ * this interface once existed to abstract over is gone. VideoPlayer paces
+ * what it gets from [FrameSources]; the pacing and mailbox layers never
+ * know which demuxer feeds them.
  */
 interface FrameSource : AutoCloseable {
 
@@ -32,6 +33,20 @@ interface FrameSource : AutoCloseable {
      * drained stream, which is how looping works.
      */
     fun seekTo(ptsNanos: Long)
+
+    /**
+     * Repositions strictly BEFORE [ptsNanos] -- at the last keyframe that
+     * precedes it, never the one standing on it. What a step backward needs,
+     * and the one question [seekTo] cannot be asked in nanoseconds: a source
+     * that rounds the target onto a container's timestamp grid swallows any
+     * subtraction smaller than one of its own units, so `seekTo(pts - 1)`
+     * lands right back on the frame the caller is trying to get behind.
+     *
+     * Implementors over a container MUST override this and step one whole
+     * unit of their own time base. The default here is only correct for a
+     * source whose [seekTo] truncates rather than rounds.
+     */
+    fun seekBefore(ptsNanos: Long) = seekTo((ptsNanos - 1).coerceAtLeast(0))
 
     /**
      * Container-reported total duration of one lap, or null when the

@@ -1,5 +1,6 @@
 package dev.hivens.skinema.demo
 
+import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Files
 import java.nio.file.Path
@@ -12,13 +13,23 @@ import java.nio.file.Path
  * tool that measures it.
  *
  *   ./gradlew :skinema-demo:soak -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N]
+ *                                 [-PsoakAudio=true] [-Phardware=AUTO]
  */
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: soak <video> [minutes]" })
     val minutes = args.getOrNull(1)?.toLong() ?: 10L
     val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
+    // Off by default, because the bar this tool measures is the plain looping
+    // path. Turned on it covers what that path never touches: the audio and
+    // watchdog threads, a device handle held for the whole run, and frames
+    // downloaded off the GPU rather than decoded in place.
+    val audio = System.getProperty("skinema.demo.soakAudio") == "true"
+    val hardware = System.getProperty("skinema.demo.hardware")
+        ?.let { HwAccel.valueOf(it.uppercase()) }
+        ?: HwAccel.OFF
 
-    VideoPlayer(video, loop = true, readAheadFrames = readAhead).use { player ->
+    println("soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware")
+    VideoPlayer(video, loop = true, audio = audio, readAheadFrames = readAhead, hardware = hardware).use { player ->
         val deadline = System.nanoTime() + minutes * 60_000_000_000L
         var frames = 0L
         var nextReport = System.nanoTime()
@@ -32,7 +43,10 @@ fun main(args: Array<String>) {
             }
             Thread.sleep(5)
         }
-        println("soak done: $frames frames over $minutes min, final rssMb=${rssMb() ?: "n/a"}")
+        println(
+            "soak done: $frames frames over $minutes min, audio=$audio hardware=$hardware" +
+                " hardwareActive=${player.hardwareActive} final rssMb=${rssMb() ?: "n/a"}",
+        )
         check(frames > 0) { "soak decoded nothing" }
     }
 }

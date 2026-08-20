@@ -195,6 +195,14 @@ class ReadAheadTest {
             try {
                 p.resume()
                 assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing })
+                // Time continues from where the pause froze it, so the device
+                // walking during the pause bought nothing: it has to walk
+                // again, now, for the held frames to come due. That is the
+                // pause contract -- the device advancing under a stopped
+                // clock used to count, and a timeline stopped from outside
+                // the pipeline then drifted with a line that was still
+                // draining.
+                frames.set(framesFor(600))
                 var seen = -1L
                 assertTrue(
                     awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == 300_000_000L },
@@ -294,14 +302,23 @@ class WrapStrandedTailTest {
         return condition()
     }
 
+    /**
+     * A picture longer than its sound must play out whole, every lap.
+     *
+     * This replaces two tests that staged a stranded video tail at the loop
+     * point. They were written against a design where the SOUND wrapped the
+     * clock at its own end, which left the queued picture standing a lap in
+     * the future -- and which also meant a four-second picture over a
+     * two-and-a-half-second track only ever played two and a half seconds of
+     * itself, in time, per lap. The timeline belongs to the file now: the
+     * sound simply ends, the picture finishes, and the video side restarts
+     * both. A lap therefore cannot strand a tail -- the queue is drained
+     * before the wrap -- so the situation those tests built no longer occurs,
+     * and what is worth asserting is the outcome that was actually broken.
+     */
     @Test
-    fun `a pre-wrap tail presents at the wrap instead of a lap later`() {
+    fun `a picture longer than its sound plays out whole on every lap`() {
         Fixtures.assumeDecodeEnvironment()
-        // Video outlasts audio: when the audio wraps the clock to zero,
-        // the queued video tail suddenly stands ~media-length in the
-        // future. The pacer must recognize the backward jump and show the
-        // tail now -- the old behavior held it until the NEXT lap reached
-        // those pts.
         val av = Fixtures.generate(
             dir.resolve("strand.mp4"),
             "-f", "lavfi", "-t", "4", "-i", "testsrc2=size=64x64:rate=10",
@@ -314,85 +331,27 @@ class WrapStrandedTailTest {
         sink.positionFrames.set(0)
         VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = 8).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            // Stage one pins the pacer's last clock reading near 2s: a
-            // frame due at 2s can only publish after the pacer read the
-            // clock there.
-            sink.positionFrames.set(44_100 * 2)
-            var seen = -1L
-            assertTrue(
-                awaitTrue {
-                    p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen >= 1_900_000_000L
-                },
-                "video must follow the device clock to ~2s, saw ${seen}ns",
-            )
-            // Stage two: the device reaches the audio's end; the audio
-            // thread wraps the clock to zero under the queued video tail.
+            // Walk the device to the end of the audio; from there the sound is
+            // over and the timeline runs on without it.
             sink.positionFrames.set(44_100 * 5 / 2)
-            assertTrue(
-                awaitTrue(deadlineMs = 5_000) {
-                    p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen > 2_500_000_000L
-                },
-                "the stranded tail must present at the wrap, saw ${seen}ns",
-            )
-            assertTrue(p.positionNanos() < 2_500_000_000L, "the clock must have wrapped, reads ${p.positionNanos()}ns")
-        }
-    }
-
-    @Test
-    fun `a sub-second pre-wrap tail presents at the wrap`() {
-        Fixtures.assumeDecodeEnvironment()
-        // Same stranding, but a sub-second lap: the backward jump is
-        // smaller than a second, so a fixed one-second threshold never
-        // recognized the wrap and held the tail until the next lap. The
-        // video runs to 0.9s at 60 fps (a dense tail to drain, so the
-        // stranded frames are observable past the latest-wins mailbox),
-        // the audio ends at 0.4s.
-        val av = Fixtures.generate(
-            dir.resolve("strand-short.mp4"),
-            "-f", "lavfi", "-t", "0.9", "-i", "testsrc2=size=64x64:rate=60",
-            "-f", "lavfi", "-t", "0.4", "-i", "sine=frequency=440:sample_rate=44100",
-            "-map", "0:v", "-map", "1:a",
-            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
-            "-c:a", "aac",
-        )
-        val sink = FakePcmSink()
-        sink.positionFrames.set(0)
-        VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = 8).use { p ->
-            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            // Pin the pacer's last clock reading below the audio's end.
-            sink.positionFrames.set(44_100 * 3 / 10)
             var seen = -1L
+            var maxPts = 0L
             assertTrue(
-                awaitTrue {
-                    p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen >= 300_000_000L
+                awaitTrue(deadlineMs = 15_000) {
+                    p.acquireFrame()?.let { seen = it.ptsNanos; if (seen > maxPts) maxPts = seen }
+                    maxPts >= 3_500_000_000L
                 },
-                "video must follow the device clock to ~0.3s, saw ${seen}ns",
+                "the picture past the sound's end must play in time, reached ${maxPts}ns",
             )
-            // The device reaches the audio's 0.4s end; the audio thread
-            // wraps the clock to zero under the queued sub-second video tail.
-            sink.positionFrames.set(44_100 * 4 / 10)
-            // Any pts PAST the device's frozen 0.4s proves the drain: at that
-            // clock such a frame is not due, so only the regression branch can
-            // publish it, and the frozen sink means no later lap can walk the
-            // clock up to it either. Demanding a specific tail LENGTH instead
-            // would race the pacer -- how far it advanced from the 0.3s pin
-            // before the audio thread wrapped decides how much tail exists,
-            // and that margin is only a few frames at 60 fps against a
-            // read-ahead of 8.
+            // And the lap does come round, driven by the picture rather than
+            // by a track that finished a second and a half earlier.
             assertTrue(
-                awaitTrue(deadlineMs = 5_000) {
+                awaitTrue(deadlineMs = 15_000) {
                     p.acquireFrame()?.let { seen = it.ptsNanos }
-                    seen > 400_000_000L
+                    seen in 0..1_000_000_000L
                 },
-                "the sub-second stranded tail must present at the wrap, saw ${seen}ns",
+                "the lap must restart, last pts ${seen}ns",
             )
-            // Without this the invariant above rests on an unasserted property
-            // of the fake sink (that no clock can make >400ms due); change the
-            // sink and it would start passing for the wrong reason.
-            assertTrue(p.positionNanos() < 400_000_000L, "the clock must have wrapped, reads ${p.positionNanos()}ns")
         }
     }
 }
