@@ -148,6 +148,15 @@ internal class SubtitlePipeline(
     private var repositionTargetNanos = Long.MIN_VALUE
     private var repositionAtWall = 0L
 
+    /**
+     * Repositions performed. A test observable, like [lastDemuxedPtsNanos]:
+     * a redundant one costs a demuxer seek and a preroll replay and shows up
+     * nowhere else.
+     */
+    @Volatile
+    internal var repositions = 0
+        private set
+
     private val timeBases = HashMap<Int, Pair<Int, Int>>()
 
     // Declared above the thread, and that is load-bearing: Kotlin runs
@@ -324,9 +333,26 @@ internal class SubtitlePipeline(
             var lastNow = Long.MIN_VALUE
             while (true) {
                 val now = clock.mediaNanos()
-                if (lastNow != Long.MIN_VALUE && now < lastNow - REGRESSION_NANOS) {
-                    // A backward jump with no command is a loop wrap (the
-                    // pacer's rule); treat it as a seek to now.
+                // A backward jump with no command is a loop wrap: the player
+                // announces every seek to this side, and nothing else moves
+                // the clock back. The magnitude is the difference from the
+                // pacer's rule, which judges by direction -- the pacer has a
+                // queue flush to reset against and this side does not.
+                //
+                // Suppressed while an announced reposition is still
+                // outstanding, because the announcement arrives BEFORE the
+                // clock does: the player queues it as the seek is issued,
+                // while the clock only moves once the audio thread reaches its
+                // own copy of the command, between blocking writes. So the
+                // landing looked like an unannounced backward jump and threw
+                // away everything the announced one had just built -- a second
+                // demuxer seek, a second preroll replay, and for a converted
+                // codec a second track flush, which clears the screen for a
+                // tick at the exact moment the seek completes.
+                if (lastNow != Long.MIN_VALUE &&
+                    now < lastNow - REGRESSION_NANOS &&
+                    repositionTargetNanos == Long.MIN_VALUE
+                ) {
                     reposition(now)
                 }
                 val moving = now != lastNow
@@ -610,6 +636,7 @@ internal class SubtitlePipeline(
      * native ASS never flushes, its embedded ReadOrders dedup.
      */
     private fun reposition(targetNanos: Long) {
+        repositions++
         val preroll = (targetNanos - PREROLL_NANOS).coerceAtLeast(0)
         val moved = runCatching {
             Libav.checkAv(

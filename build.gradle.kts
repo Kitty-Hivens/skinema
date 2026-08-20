@@ -96,14 +96,23 @@ subprojects {
         doLast {
             var total = 0
             var skipped = 0
+            val names = mutableListOf<String>()
             val head = Regex("<testsuite\\b[^>]*")
+            // Which ones, not just how many. The count alone said a gap had
+            // opened and left no way to find it from a CI log: the XML lives
+            // on a runner that is gone by the time anyone reads the failure.
+            val skippedCase = Regex("<testcase name=\"([^\"]*)\" classname=\"([^\"]*)\"[^>]*>\\s*<skipped")
             fun count(text: String, name: String): Int =
                 Regex("\\b" + name + "=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
             for (f in xmlDir.get().asFile.listFiles().orEmpty()) {
                 if (!f.name.endsWith(".xml")) continue
-                val suite = head.find(f.readText()) ?: continue
+                val text = f.readText()
+                val suite = head.find(text) ?: continue
                 total += count(suite.value, "tests")
                 skipped += count(suite.value, "skipped")
+                for (m in skippedCase.findAll(text)) {
+                    names += m.groupValues[2].substringAfterLast('.') + " > " + m.groupValues[1]
+                }
             }
             logger.lifecycle(label + ": " + (total - skipped) + " of " + total + " tests ran, " + skipped + " skipped")
             val ceiling = maxSkipped.get().toInt()
@@ -111,7 +120,8 @@ subprojects {
                 throw GradleException(
                     label + " skipped " + skipped + " tests, more than the " + ceiling + " allowed -- " +
                         "something the suite needs is missing rather than the suite passing. Raise it " +
-                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.",
+                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.\n" +
+                        names.sorted().joinToString("\n") { "  " + it },
                 )
             }
         }

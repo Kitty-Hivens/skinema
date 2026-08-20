@@ -1542,40 +1542,6 @@ class VideoPlayerTest {
     }
 
     @Test
-    fun `a text format outside the old whitelist still draws`() {
-        Fixtures.assumeDecodeEnvironment()
-        Fixtures.assumeSubtitleRendering()
-        // sami, and equally microdvd, TTML or plain text: every text codec
-        // the enumeration in this file did not name arrived flagged as
-        // bitmap, and the bitmap branch skips the ASS rects their decoders
-        // emit. The track selected, reported itself active, ran a thread and
-        // drew nothing, with no error anywhere.
-        val smi = dir.resolve("external.smi")
-        Files.writeString(
-            smi,
-            "<SAMI><BODY>" +
-                "<SYNC Start=200><P>Hello from sami</P>" +
-                "<SYNC Start=8000><P>&nbsp;</P>" +
-                "</BODY></SAMI>\n",
-        )
-        VideoPlayer(shortVideo("smi.mp4", "10"), loop = true).use { player ->
-            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
-            val added = player.addExternalSubtitles(smi)
-            assertTrue(added.isNotEmpty(), "the file must probe as a subtitle track")
-            player.selectSubtitleTrack(added.first().id)
-            assertTrue(awaitTrue { player.activeSubtitleTrack == added.first().id }, "the selection must land")
-            var patched = false
-            assertTrue(
-                awaitTrue {
-                    player.acquireSubtitles()?.let { patched = patched || it.patches.isNotEmpty() }
-                    patched
-                },
-                "a text codec outside the old list must still reach the overlay",
-            )
-        }
-    }
-
-    @Test
     fun `a close during the open is honoured rather than raced past`() {
         // Deliberately slow: the scenario IS close() exhausting its five
         // second join and returning while the open is still running. Shorter

@@ -547,6 +547,54 @@ class SubtitlePipelineTest {
     }
 
     /**
+     * The player announces a seek to this side before the clock reaches the
+     * target -- it queues the command as the seek is issued, while the clock
+     * only moves once the audio thread reaches its own copy, between blocking
+     * writes. So the landing arrives here as a large backward step with no
+     * command behind it, which is exactly the shape of a loop wrap, and the
+     * wrap rule repositioned a second time to a target it had already reached:
+     * another demuxer seek, another ten-second preroll replay, and for a
+     * converted codec another track flush, which blanks the screen for a tick
+     * at the moment the seek completes.
+     */
+    @Test
+    fun `an announced seek landing is not mistaken for a loop wrap`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val path = fixture("landing.mkv", writeSrt("landing.srt"), "srt", 120)
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            frames.set(framesFor(60_000))
+            assertTrue(awaitTrue { pipeline.repositions == 0 && pipeline.lastDemuxedPtsNanos > 0 }, "playback must run")
+
+            // The announcement, with the clock still standing where the
+            // landing has not moved it from.
+            pipeline.seek(5_000_000_000L)
+            assertTrue(awaitTrue { pipeline.pendingSeeks.get() == 0 }, "the seek must land")
+            val afterSeek = pipeline.repositions
+            assertEquals(1, afterSeek, "the announced seek repositions once")
+
+            // The landing: the clock arrives where it was told to go, a full
+            // 55 seconds backward and with nothing queued behind it. Both
+            // halves are needed -- the device position AND the deliberate
+            // re-anchor, because the mastered clock has a monotonic floor and
+            // a device that merely reports a lower position cannot move it
+            // back. That is what the audio pipeline does at its own landing.
+            frames.set(framesFor(5_000))
+            clock.seek(5_000_000_000L)
+            Thread.sleep(300)
+            assertEquals(
+                afterSeek,
+                pipeline.repositions,
+                "the clock arriving where it was sent is not a wrap",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
      * The read-ahead horizon bounds the schedule in time, and time is not
      * what it costs: bitmap pixels convert once, at ingest, so a horizon
      * holds however much the stream chose to put in it. Dialogue PGS is a
