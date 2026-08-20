@@ -294,8 +294,21 @@ class VideoDecoderHwTest {
             return
         }
         decoder.use { d ->
-            assertTrue(d.hardwareActive(), "a REQUIRE decoder that opened must be on the GPU")
-            assertTrue(d.nextFrame() != null, "hw decode must yield a first frame")
+            // The first frame, not the open, is where a device that accepted
+            // the stream can still hand decoding back to the CPU -- so it is
+            // the other place REQUIRE fails closed, and macOS runners take it
+            // every time: VideoToolbox opens and every frame comes back in
+            // software. Asked before hardwareActive is read, because that
+            // report is the REQUEST until a frame has come back from
+            // somewhere.
+            val first = try {
+                d.nextFrame()
+            } catch (e: LibavException) {
+                println("[hw-test] REQUIRE failed closed on the first frame: ${e.message}")
+                return@use
+            }
+            assertTrue(first != null, "hw decode must yield a first frame")
+            assertTrue(d.hardwareActive(), "a REQUIRE decoder that kept a frame must be on the GPU")
             // Read while a frame is still held: end of stream releases it, and
             // its format goes with it.
             assertDecodedOnDevice(d, "REQUIRE")
