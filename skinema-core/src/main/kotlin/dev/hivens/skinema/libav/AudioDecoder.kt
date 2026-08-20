@@ -9,6 +9,7 @@ import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The audio half of a file: demux + decode + swresample to interleaved
@@ -110,7 +111,13 @@ class AudioDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(audio flush)")
                 return
             }
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
+            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
+                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
+            ) {
+                // Empty packets are skipped, not sent: send_packet reads a
+                // NULL one as the flush signal and refuses a zero-length one
+                // carrying a data pointer with EINVAL. See VideoDecoder for
+                // the format that makes this ordinary rather than exotic.
                 Libav.avPacketUnref(packet)
                 continue
             }
@@ -185,7 +192,14 @@ class AudioDecoder private constructor(
         pcmHeap = ByteArray(outCapacitySamples * OUT_CHANNELS * 2)
     }
 
+    // The arena is closed below, and allocating from a closed one throws --
+    // so a second close() used to fail where its sibling decoder's is
+    // explicitly idempotent, which AutoCloseable requires. It went unnoticed
+    // because every call site inside the pipeline wraps it in runCatching.
+    private val closed = AtomicBoolean(false)
+
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         val ptrPtr = arena.allocate(ADDRESS)
         if (swrCtx != MemorySegment.NULL) {
             ptrPtr.set(ADDRESS, 0, swrCtx)
@@ -270,6 +284,10 @@ class AudioDecoder private constructor(
             label: String,
         ): AudioDecoder? {
             var codecCtx = MemorySegment.NULL
+            // Out here so the catch can release them; the same leak the video
+            // side carried on every throw past their allocation.
+            var packet = MemorySegment.NULL
+            var frame = MemorySegment.NULL
             try {
                 Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info")
 
@@ -317,8 +335,8 @@ class AudioDecoder private constructor(
                 Libav.checkAv(Libav.avcodecParametersToContext(codecCtx, codecpar), "avcodec_parameters_to_context(audio)")
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2(audio)")
 
-                val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
-                val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
+                frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                 if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
                     throw LibavException("av_packet_alloc/av_frame_alloc(audio) returned NULL")
                 }
@@ -336,6 +354,14 @@ class AudioDecoder private constructor(
                 )
             } catch (t: Throwable) {
                 val ptrPtr = arena.allocate(ADDRESS)
+                if (packet != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, packet)
+                    Libav.avPacketFree(ptrPtr)
+                }
+                if (frame != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, frame)
+                    Libav.avFrameFree(ptrPtr)
+                }
                 if (codecCtx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, codecCtx)
                     Libav.avcodecFreeContext(ptrPtr)

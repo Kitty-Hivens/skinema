@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -89,6 +90,35 @@ class TempoFilterTest {
                 f.process(pcm, 4096 * 4)
             }
             assertTrue(f.process(pcm, pcm.size) + f.flush() >= 0, "the graph survives many rebuilds")
+        }
+    }
+
+    /**
+     * AutoCloseable asks for idempotence, and the frame handle is a val that
+     * stays non-NULL: a second close reached for a scratch pointer in an
+     * arena the first one had already closed, so a teardown that ran twice
+     * threw from the path meant to clean up.
+     */
+    @Test
+    fun `closing twice is not an error`() {
+        Fixtures.assumeDecodeEnvironment()
+        val filter = TempoFilter(48_000, 2.0)
+        filter.close()
+        filter.close()
+    }
+
+    /**
+     * The input is S16LE stereo by contract. A count that is not whole sample
+     * frames used to size the AVFrame by the truncated number and then copy
+     * the full count into it, so the remainder landed outside the buffer --
+     * and the reinterpret in front of the copy defeats the bounds check that
+     * would have caught it.
+     */
+    @Test
+    fun `a partial sample frame is refused rather than written past the buffer`() {
+        Fixtures.assumeDecodeEnvironment()
+        TempoFilter(48_000, 2.0).use { filter ->
+            assertFailsWith<IllegalArgumentException> { filter.process(ByteArray(64), 61) }
         }
     }
 }

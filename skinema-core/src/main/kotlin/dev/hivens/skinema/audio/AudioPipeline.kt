@@ -77,7 +77,7 @@ internal class AudioPipeline(
         data class Seek(val ptsNanos: Long) : Command
         data class SwitchTrack(val streamIndex: Int) : Command
         data class SetTempo(val tempo: Double) : Command
-        data object VideoLanded : Command
+        data class VideoLanded(val atNanos: Long) : Command
         data object Close : Command
     }
 
@@ -121,15 +121,41 @@ internal class AudioPipeline(
     // pipeline for good.
     private var pendingPcm: ByteArray? = null
 
-    // End pts of the last PCM handed to the sink; the EOF tail wait runs
-    // until the clock (= the device) reaches it.
-    private var lastWrittenEndNanos = 0L
+    // How much sound the line still holds, in its own frames: a running
+    // balance, credited by what it plays and debited by what it is handed.
+    // The EOF tail wait runs on this.
+    //
+    // It used to run on timestamps -- wait until media time reached the end
+    // pts of the last chunk written. Those are two quantities that do not
+    // meet: a chunk's pts comes off the container's grid (Matroska's is a
+    // millisecond, so the last chunk's nominal end sits tens of microseconds
+    // past the last sample that exists), while media time counts frames the
+    // device consumed. The wait could never finish on its own condition and
+    // ran to its stall deadline instead -- half a second of frozen picture
+    // at the end of every lap of any normally muxed file.
+    private var queuedFrames = 0L
+    private var lastPositionSeen = 0L
 
-    // Set true around each blocking sink write so the watchdog can tell a
-    // genuinely stuck device (the write never returns, the position stays
-    // frozen) from a legitimately stopped one (pause, seek, landing).
+    // Write failures since the last write that finished. Owned by the audio
+    // thread. See [guardedWrite]: a device that reopens cleanly and then
+    // refuses every write is not an outage to wait out.
+    private var writeFailures = 0
+
+    // When the blocking write in flight started, or 0 when none is. The
+    // watchdog judges a stall by how long ONE write has been outstanding,
+    // which is a question it can answer without touching the device.
+    //
+    // It used to poll the device's frame position instead and call it stuck
+    // when that stopped advancing, which is the wrong question twice over. A
+    // frozen position is what a PAUSED line reports too, and the watchdog
+    // cannot tell those apart from outside; and the answer comes from the
+    // device this exists to rescue, so on one that has stopped answering
+    // there is no answer to judge. How long one write has been outstanding is
+    // a fact this side owns, and it is enough: a live line takes at most its
+    // buffer's length to accept a chunk, and the stall bound is an order of
+    // magnitude past that.
     @Volatile
-    private var writeInFlight = false
+    private var writeInFlightSince = 0L
 
     @Volatile
     private var watchdogStop = false
@@ -146,27 +172,92 @@ internal class AudioPipeline(
     @Volatile
     private var closing = false
 
+    /** Whether the audio thread is still there to answer a seek. */
+    @Volatile
+    var alive = true
+        private set
+
+    /**
+     * Whether the video side should still hold the end of a lap open for
+     * this side. A device in the middle of an outage is not going to answer
+     * that question: recovery retries for as long as the outage lasts, which
+     * is unbounded by design, and a lap held for it froze the picture on its
+     * last frame for the duration -- state reporting Playing, media time
+     * running on the wall clock the watchdog handed it. Sound that comes
+     * back rejoins the lap the picture chose.
+     */
+    val hasSoundLeft: Boolean
+        get() = !isEnded && !deviceLost
+
+    // Started last, after every field the thread it starts can touch.
+    // Initializers run in declaration order, so a thread started ahead of
+    // one raced the constructor for it: a file with no audio stream reaches
+    // finish() within microseconds, and the `alive = true` that used to run
+    // after this line overwrote the `alive = false` it had just set. A dead
+    // pipeline then advertised itself as live for good, and every lap fed a
+    // seek and a landing into a queue nobody would ever drain.
     private val thread = Thread(::run, "skinema-audio").apply {
         isDaemon = true
         start()
     }
 
-    fun pause() = commands.put(Command.Pause)
-    fun resume() = commands.put(Command.Resume)
+    // Nobody is left to drain the queue once the thread has gone, and the
+    // player keeps announcing to it: the video side calls seek() and
+    // videoLanded() on every press without asking whether this side is still
+    // there, so a scrubbed timeline grew two nodes per press, unbounded, for
+    // as long as the file stayed open. The loop-wrap path already asked
+    // (VideoPlayer takeIf { it.alive }); these are the entry points that did
+    // not. Close is deliberately not guarded -- it is how the thread is told
+    // to go, and a second one costs one node.
+    fun pause() {
+        if (!alive) return
+        commands.put(Command.Pause)
+    }
+
+    fun resume() {
+        if (!alive) return
+        commands.put(Command.Resume)
+    }
 
     fun seek(ptsNanos: Long) {
+        if (!alive) return
         pendingSeeks.incrementAndGet()
         commands.put(Command.Seek(ptsNanos))
     }
 
+    /**
+     * This side will say nothing more. Every exit of the audio thread goes
+     * through here, not just the one where a track played out: a file with no
+     * sound in it, a machine with no device, a device that dies, a throw on
+     * the way up. The video side waits on [isEnded] before it ends or wraps,
+     * and a thread that left without setting it parked the player forever --
+     * picture frozen on its last frame, state still reporting Playing, in
+     * exactly the configurations the player documents as degrading to silent
+     * playback.
+     */
+    private fun finish() {
+        alive = false
+        isEnded = true
+        clockFuture.complete(null)
+    }
+
     /** Switches to another audio stream of the same file, in place. */
-    fun selectTrack(streamIndex: Int) = commands.put(Command.SwitchTrack(streamIndex))
+    fun selectTrack(streamIndex: Int) {
+        if (!alive) return
+        commands.put(Command.SwitchTrack(streamIndex))
+    }
 
     /** Playback rate, pitch preserved; the caller clamps to atempo's range. */
-    fun setTempo(tempo: Double) = commands.put(Command.SetTempo(tempo))
+    fun setTempo(tempo: Double) {
+        if (!alive) return
+        commands.put(Command.SetTempo(tempo))
+    }
 
     /** The video side finished its seek landing; sound may run again. */
-    fun videoLanded() = commands.put(Command.VideoLanded)
+    fun videoLanded(atNanos: Long = -1L) {
+        if (!alive) return
+        commands.put(Command.VideoLanded(atNanos))
+    }
 
     fun setVolume(volume: Float) = sink.setVolume(volume)
 
@@ -179,14 +270,21 @@ internal class AudioPipeline(
     // -- Audio thread ----------------------------------------------------------
 
     private fun run() {
+        // Both exits are before the try/finally that owns the sink, so they
+        // close it themselves. A consumer's own sink -- the seam exists for
+        // one holding a device, a socket, a server connection -- was
+        // otherwise leaked for the life of the process by the most ordinary
+        // case there is: asking for audio on a file that has none.
         val opened = try {
             AudioDecoder.openOrNull(path, initialTrack)
         } catch (_: Throwable) {
-            clockFuture.complete(null)
+            runCatching { sink.close() }
+            finish()
             return
         }
         if (opened == null) {
-            clockFuture.complete(null)
+            runCatching { sink.close() }
+            finish()
             return
         }
         decoder = opened
@@ -209,9 +307,7 @@ internal class AudioPipeline(
             runCatching { tempoFilter?.close() }
             runCatching { decoder.close() }
             runCatching { sink.close() }
-            // A pipeline that never produced a clock must still unblock the
-            // waiting player.
-            clockFuture.complete(null)
+            finish()
         }
     }
 
@@ -222,7 +318,7 @@ internal class AudioPipeline(
             return
         }
         val theClock = try {
-            sink.open(first.sampleRate)
+            openLine(first.sampleRate)
             AudioClock(first.sampleRate) { sink.framePosition() }
         } catch (_: Throwable) {
             // No audio device: silent playback on the player's wall clock.
@@ -242,7 +338,6 @@ internal class AudioPipeline(
         clockFuture.complete(theClock)
         startWatchdog()
         sampleRate = first.sampleRate
-        lastWrittenEndNanos = first.ptsNanos + (first.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / first.sampleRate
         guardedWrite(first.pcm, 0, first.byteCount)
 
         while (true) {
@@ -252,6 +347,16 @@ internal class AudioPipeline(
                 if (!handle(cmd)) return
                 cmd = commands.poll()
             }
+            // A command can lose the device. A track switch whose line refuses
+            // the new track's rate leaves that line stopped and hands the
+            // reopen to recovery -- and the check at the top of the loop ran
+            // before the command was read, while the writes below never ask.
+            // So the pump handed a chunk to a line it had just stopped itself:
+            // a stopped line never drains, and the start() that would revive it
+            // is on this very thread. On a real device that write either blocks
+            // for good or throws its way out of the pump and ends this side,
+            // which is the outcome the refusal path exists to avoid.
+            if (deviceLost) continue
             if (paused || isEnded || awaitingLanding) {
                 val idle = commands.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 if (!handle(idle)) return
@@ -274,20 +379,37 @@ internal class AudioPipeline(
                     if (n > 0) guardedWrite(f.output, 0, n)
                     f.reset()
                 }
+                // That write is the only one whose return does not pass the
+                // loop top's recovery check on its way to the tail wait, and
+                // a device lost inside it leaves a closed line reporting no
+                // position at all -- which reads as a tail that never plays.
+                // Recovery first; the end of the track keeps until after it.
+                if (deviceLost) continue
                 // Let the buffered tail play out before deciding the time.
                 when (awaitTailPlayedOut()) {
-                    TailWait.PLAYED_OUT -> if (loop) {
-                        decoder.seekTo(0)
-                        checkNotNull(clock).seek(0)
-                    } else {
+                    // The end of the track is the end of the track, laps or
+                    // not. Wrapping here used to make the sound decide where a
+                    // lap ends, and a track shorter than the picture then sawed
+                    // media time back to zero while the picture still had
+                    // seconds to run. The player owns the lap and restarts this
+                    // side with the other one.
+                    TailWait.PLAYED_OUT -> {
                         isEnded = true
+                        // The sink is never fed again from here, so its frame
+                        // position -- and media time with it -- is frozen. A
+                        // file whose audio is shorter than its video would
+                        // strand the picture there forever, still reporting
+                        // Playing, because video waits on a clock that stopped.
+                        // Hand the rest of the timeline to the wall clock: the
+                        // same hatch a dead device takes, for the same reason,
+                        // and there is no sound left to synchronise to.
+                        checkNotNull(clock).detachToWallTime()
                     }
                     TailWait.INTERRUPTED -> {}
                     TailWait.CLOSE -> return
                 }
                 continue
             }
-            lastWrittenEndNanos = chunk.ptsNanos + (chunk.byteCount / BYTES_PER_FRAME) * 1_000_000_000L / chunk.sampleRate
             // Blocking write -- this IS the pacing.
             writeOut(chunk.pcm, chunk.byteCount)
         }
@@ -309,17 +431,135 @@ internal class AudioPipeline(
     }
 
     /**
-     * The blocking write, watched. [writeInFlight] tells [runWatchdog] a
-     * write is in progress, so a stalled one detaches the clock; off the
-     * write the device may legitimately sit still (pause, seek, landing).
+     * The blocking write, watched. [writeInFlightSince] tells [runWatchdog]
+     * when this write started, so one that never returns detaches the clock;
+     * off the write the device may legitimately sit still (pause, seek,
+     * landing) and nothing is being waited on.
      */
     private fun guardedWrite(data: ByteArray, offset: Int, length: Int) {
-        writeInFlight = true
+        writeInFlightSince = System.nanoTime()
         try {
             sink.write(data, offset, length)
+            queuedFrames += length / BYTES_PER_FRAME
+            writeFailures = 0
+        } catch (t: Throwable) {
+            // A write that did not finish is a device that stopped taking
+            // sound, and this pipeline has a path for exactly that. Two ways
+            // in: the watchdog's rescue closes the line out from under a
+            // write that will not return, and a line whose device vanished
+            // reports a short write of its own accord. Neither is the end of
+            // the audio side -- left to travel, the throw reached run()'s
+            // handler and finished this side for good, so a device that came
+            // back found a [recover] that was never going to run.
+            //
+            // [deviceLost] already standing means the watchdog got there
+            // first and has detached the clock; otherwise this is the first
+            // notice and the detach belongs here, or the picture would wait
+            // on a device that stopped.
+            if (deviceLost) {
+                Debug.trace("audio write released by the device-loss rescue", t)
+            } else {
+                writeFailures++
+                // Bounded, because recovery answers an OUTAGE and this may not
+                // be one. A device that reopens cleanly and then refuses the
+                // very next write would be retried forever, and every round
+                // rebases the mastered clock onto a line that plays nothing --
+                // so the picture stops at the landing while this side keeps
+                // reporting itself alive. A few rounds, then the throw travels
+                // as it used to and the player runs the rest on wall time,
+                // which is what it documents for a device that will not come
+                // back.
+                if (writeFailures > MAX_WRITE_FAILURES) throw t
+                Debug.trace("audio write did not finish; treating the device as lost", t)
+                clock?.detachToWallTime(readDevice = false)
+                deviceLost = true
+            }
         } finally {
-            writeInFlight = false
+            writeInFlightSince = 0L
         }
+    }
+
+    /**
+     * Opens the line and starts the tail accounting on it -- a fresh line
+     * restarts its frame position, so the count restarts with it. The one
+     * way this pipeline opens a line: an open that skipped the anchor would
+     * leave the tail wait owed a whole previous line's worth of frames.
+     */
+    private fun openLine(rate: Int) {
+        sink.open(rate)
+        // open() starts the device by contract, so the clock may fill the
+        // gaps between its position refreshes again. Null on the very first
+        // open, which happens before the clock exists.
+        clock?.setDeviceRunning(true)
+        anchorTail()
+    }
+
+    /**
+     * Freezes the line, and says so, because the two are one act. The clock
+     * fills the gaps between the device's position refreshes with wall time,
+     * and a line that is not consuming has no gaps to fill -- every
+     * nanosecond added past this call is sound that was never played. Every
+     * freeze here outlives its own statement: a seek's lasts until the
+     * picture lands, a switch's until the new decoder is cropped.
+     */
+    private fun freezeSink() {
+        // Declared BEFORE the line stops, which is the opposite order to
+        // [runSink] and deliberately so. Between the two statements the line
+        // has already stopped while the clock still believes it is
+        // consuming, so any reader in that window fills the gap with wall
+        // time the device never played -- and the monotonic floor latches it,
+        // so the playhead the switch or the rate change then reads is ahead
+        // of the sound by as much as the fill's ceiling. Declaring first
+        // costs the mirror case: a reader in the window under-fills a line
+        // that is still draining, which the next device refresh corrects.
+        clock?.setDeviceRunning(false)
+        sink.stop()
+    }
+
+    /** The other half of [freezeSink]. */
+    private fun runSink() {
+        sink.start()
+        clock?.setDeviceRunning(true)
+    }
+
+    /**
+     * Flushes the line and restates what it is still owed. The flush throws
+     * away sound this side had already counted as handed over, and how much
+     * is a question only the device could answer -- by then it has
+     * forgotten. Every flush here re-anchors the clock too, so this is the
+     * one way the pipeline flushes.
+     */
+    private fun flushLine() {
+        sink.flush()
+        anchorTail()
+    }
+
+    private fun anchorTail() {
+        queuedFrames = 0
+        lastPositionSeen = sink.framePosition()
+    }
+
+    /**
+     * Frames handed to the line that it has not played yet, settled against
+     * the device as of now.
+     *
+     * A running balance rather than a difference from one fixed anchor,
+     * because the anchor cannot be trusted for the life of a track: around a
+     * flush some backends reconcile their frame counter non-monotonically --
+     * the same behaviour [AudioClock]'s monotonic floor exists for -- and one
+     * that settles BELOW the anchor taken at that flush leaves the balance
+     * permanently in credit. The wait could then never finish on its own
+     * condition again, which is precisely the failure this accounting
+     * replaced, re-entered through the device instead of the container.
+     * Crediting only forward motion costs at worst a tail called played
+     * early, which stops nothing and cannot compound.
+     */
+    private fun framesQueued(): Long {
+        val position = sink.framePosition()
+        val played = position - lastPositionSeen
+        lastPositionSeen = position
+        if (played > 0) queuedFrames = (queuedFrames - played).coerceAtLeast(0)
+        return queuedFrames
     }
 
     private fun startWatchdog() {
@@ -334,17 +574,27 @@ internal class AudioPipeline(
      * [PcmSink.write] that blocks without throwing -- a vanished ALSA sink,
      * a yanked USB DAC, a popped-out jack -- never reaches the catch in
      * [run], so a frozen frame position would freeze the picture with it.
-     * While a write is in flight this watches the device's frame position;
-     * if it stops advancing for [writeStallNanos] the clock detaches to
-     * wall time (video keeps moving) and the line is closed so the stuck
-     * write returns -- which lets the audio thread run [recover]. The
-     * watchdog stays alive across the outage to catch a second loss once
-     * the device is back.
+     * A single write outstanding for [writeStallNanos] is the signal: the
+     * clock detaches to wall time (video keeps moving) and the line is
+     * closed so the stuck write returns -- which lets the audio thread run
+     * [recover]. The watchdog stays alive across the outage to catch a
+     * second loss once the device is back.
+     *
+     * It deliberately asks the device nothing, and the reason is that the
+     * answer would be worthless rather than that the question would hang.
+     * (It was written up as the latter: a line does answer position queries
+     * under the same native monitor its write takes, but the write is a Java
+     * polling loop that holds that monitor for one non-blocking native call
+     * at a time and waits out the rest elsewhere, so a query is delayed by
+     * an iteration and not by the write.) The device this exists to rescue
+     * is one that has stopped answering honestly, and a frozen position
+     * reads identically to a line that is merely paused. How long its own
+     * write has been outstanding is a fact this side owns outright, and it
+     * is enough: a live line takes at most its buffer's length to accept a
+     * chunk, and the stall bound is an order of magnitude past that.
      */
     private fun runWatchdog() {
         val pollMs = (writeStallNanos / 4_000_000L).coerceIn(20L, 250L)
-        var lastFrames = Long.MIN_VALUE
-        var lastProgressWall = System.nanoTime()
         while (!watchdogStop) {
             try {
                 Thread.sleep(pollMs)
@@ -353,23 +603,14 @@ internal class AudioPipeline(
             }
             val theClock = clock ?: continue
             // While recovery is in flight the audio thread is reopening the
-            // line; do not read its position or fire a second time.
-            if (deviceLost || !writeInFlight) {
-                lastFrames = Long.MIN_VALUE
-                continue
-            }
-            val pos = sink.framePosition()
-            if (lastFrames == Long.MIN_VALUE || pos != lastFrames) {
-                lastFrames = pos
-                lastProgressWall = System.nanoTime()
-                continue
-            }
-            if (System.nanoTime() - lastProgressWall >= writeStallNanos) {
-                theClock.detachToWallTime()
-                deviceLost = true
-                runCatching { sink.close() }.onFailure { Debug.trace("audio sink close on stall", it) }
-                lastFrames = Long.MIN_VALUE
-            }
+            // line; do not fire a second time.
+            if (deviceLost) continue
+            // Nothing outstanding: the device may legitimately sit still.
+            val since = writeInFlightSince
+            if (since == 0L || System.nanoTime() - since < writeStallNanos) continue
+            theClock.detachToWallTime(readDevice = false)
+            deviceLost = true
+            runCatching { sink.close() }.onFailure { Debug.trace("audio sink close on stall", it) }
         }
     }
 
@@ -383,15 +624,23 @@ internal class AudioPipeline(
      * onto the fresh line so sound rejoins in step. Returns false when
      * close() intervenes, so the thread exits instead of parking in the
      * loop (#19).
+     *
+     * The wait between attempts is spent on the command queue rather than
+     * asleep. An outage is unbounded by design -- a jack can come back in
+     * seconds or never -- and a deaf wait made the whole of it dead time for
+     * the player: seeks queued up unanswered, so the video side saw landings
+     * it was owed and held every frame it had, and the state the reopen
+     * restores was stale by exactly the commands nobody read.
      */
     private fun recover(): Boolean {
         while (!closing) {
             if (tryReopen()) return true
-            try {
-                Thread.sleep(recoveryIntervalMs)
+            val cmd = try {
+                commands.poll(recoveryIntervalMs, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 return false
-            }
+            } ?: continue
+            if (!handle(cmd)) return false
         }
         return false
     }
@@ -404,11 +653,11 @@ internal class AudioPipeline(
             val resumeAt = theClock.mediaNanos()
             decoder.seekTo(resumeAt)
             pendingPcm = null
-            sink.open(sampleRate)
+            openLine(sampleRate)
             theClock.rebase(resumeAt, sampleRate)
             // open() starts the device by contract; honour a pause, landing
             // or end-of-stream that began during the outage.
-            if (paused || awaitingLanding || isEnded) sink.stop()
+            if (paused || awaitingLanding || isEnded) freezeSink()
             deviceLost = false
             true
         }.getOrElse {
@@ -421,7 +670,7 @@ internal class AudioPipeline(
         Command.Close -> false
         Command.Pause -> {
             if (!paused) {
-                sink.stop()
+                freezeSink()
                 checkNotNull(clock).pause()
                 paused = true
             }
@@ -430,7 +679,7 @@ internal class AudioPipeline(
         Command.Resume -> {
             if (paused) {
                 // Mid-landing the sink must stay frozen; VideoLanded starts it.
-                if (!awaitingLanding) sink.start()
+                if (!awaitingLanding) runSink()
                 checkNotNull(clock).resume()
                 paused = false
             }
@@ -445,6 +694,7 @@ internal class AudioPipeline(
             var target = cmd.ptsNanos
             var consumed = 1
             var landedAfter = false
+            var landedAt = -1L
             while (true) {
                 when (val next = commands.peek()) {
                     is Command.Seek -> {
@@ -453,20 +703,17 @@ internal class AudioPipeline(
                         consumed++
                         landedAfter = false
                     }
-                    Command.VideoLanded -> {
+                    is Command.VideoLanded -> {
                         commands.poll()
                         landedAfter = true
+                        landedAt = next.atNanos
                     }
                     else -> break
                 }
             }
             performSeek(target)
             pendingSeeks.addAndGet(-consumed)
-            if (landedAfter) {
-                awaitingLanding = false
-                if (!paused && !isEnded) sink.start()
-                if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
-            }
+            if (landedAfter) finishLanding(landedAt)
             true
         }
         is Command.SwitchTrack -> {
@@ -477,14 +724,22 @@ internal class AudioPipeline(
             applyTempo(cmd.tempo)
             true
         }
-        Command.VideoLanded -> {
-            if (awaitingLanding) {
-                awaitingLanding = false
-                if (!paused && !isEnded) sink.start()
-                if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
-            }
+        is Command.VideoLanded -> {
+            if (awaitingLanding) finishLanding(cmd.atNanos)
             true
         }
+    }
+
+    /**
+     * The picture reported its landing. When this side has nothing left to
+     * play, the picture's own pts is where the timeline belongs: the seek
+     * that got here could not be cropped, so nothing anchored it.
+     */
+    private fun finishLanding(atNanos: Long) {
+        awaitingLanding = false
+        if (isEnded && atNanos >= 0) clock?.seek(atNanos)
+        if (!paused && !isEnded) runSink()
+        if (DEBUG_SEEK) System.err.println("[audio-seek] landed posAtStart=${sink.framePosition()}")
     }
 
     /**
@@ -498,29 +753,44 @@ internal class AudioPipeline(
      */
     private fun performSeek(targetNanos: Long) {
         val theClock = checkNotNull(clock)
-        sink.stop()
-        sink.flush()
+        freezeSink()
+        flushLine()
         if (DEBUG_SEEK) System.err.println("[audio-seek] target=${targetNanos / 1_000_000}ms posAtFlush=${sink.framePosition()}")
         pendingPcm = null
         // Whatever the stretcher buffered belongs to the old position.
         tempoFilter?.reset()
         awaitingLanding = true
+        // Coming back from the end of the track: the clock was handed to the
+        // wall when the sound ran out, and a seek that starts it again has to
+        // hand it back to the device. Left detached it would pace the picture
+        // off wall time while the DAC plays -- the two drift apart with
+        // nothing to pull them together, which is the opposite of what an
+        // audio-mastered clock is for.
+        val wasEnded = isEnded
         isEnded = false
         val crop = cropAt(decoder, targetNanos)
         if (crop == null) {
-            // Seeked past the last sample.
-            if (loop) {
-                decoder.seekTo(0)
-                theClock.seek(0)
-            } else {
-                theClock.seek(targetNanos)
-                isEnded = true
-            }
+            // Seeked past the last sample, laps or not: this side is done.
+            // Wrapping the sound to zero here made the SOUND decide where a
+            // lap ends -- the mistake the orderly end of the track was already
+            // cured of. A seek into a file's picture-only tail restarted the
+            // track from the beginning under a picture that had legitimately
+            // jumped forward, sawing media time back to zero with it.
+            //
+            // It does NOT place the timeline either: the target can be any
+            // distance past the end of the file, and anchoring there put the
+            // position beyond the duration, three times it for a seek that
+            // overshot by that much. Where a finished file rests is the
+            // player's to say, and it says so through [finishLanding].
+            // Handing the clock to the wall is the same thing the orderly end
+            // of the track does, so a picture still running is not stranded
+            // on a device that stopped.
+            isEnded = true
+            theClock.detachToWallTime()
             return
         }
-        theClock.seek(crop.anchorNanos)
+        if (wasEnded) theClock.rebase(crop.anchorNanos, crop.sampleRate) else theClock.seek(crop.anchorNanos)
         pendingPcm = crop.remainder
-        lastWrittenEndNanos = crop.chunkEndNanos
         if (DEBUG_SEEK) {
             System.err.println(
                 "[audio-seek] anchored=${crop.anchorNanos / 1_000_000}ms posAtAnchor=${sink.framePosition()} pending=${crop.remainder.size}B",
@@ -533,8 +803,10 @@ internal class AudioPipeline(
      * the correctness: FREEZE FIRST (the line keeps playing its buffered
      * tail through any slower path, and a position read before the freeze
      * would rebase the mastered clock backward -- the one move the video
-     * side's invariants forbid), and OPEN-NEW-BEFORE-CLOSE-OLD (every
-     * failure below leaves the old decoder, line and clock untouched).
+     * side's invariants forbid), and OPEN-NEW-BEFORE-CLOSE-OLD, decoder and
+     * line alike: a refused track leaves the old decoder and clock playing,
+     * and a device that refuses the new rate degrades to the device-loss
+     * path rather than ending this side.
      */
     private fun switchTrack(streamIndex: Int) {
         val theClock = clock ?: return
@@ -542,10 +814,16 @@ internal class AudioPipeline(
         if (tracks.none { it.streamIndex == streamIndex }) return
 
         val wasAwaiting = awaitingLanding
-        sink.stop()
-        sink.flush()
-        pendingPcm = null
+        freezeSink()
+        // Read the playhead between the freeze and the flush. The freeze is
+        // what makes the reading safe to take; the flush is what destroys
+        // the evidence, because a line that has dropped its queue can no
+        // longer say how much of it was played and reports the lot. Taken
+        // after it, this landed up to a whole line buffer ahead of the sound
+        // the listener was on, and the new track was cropped that far in.
         val pos = theClock.mediaNanos()
+        flushLine()
+        pendingPcm = null
 
         val next = try {
             AudioDecoder.openOrNull(path, streamIndex)
@@ -553,7 +831,7 @@ internal class AudioPipeline(
             null
         }
         if (next == null) {
-            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            if (!wasAwaiting && !paused && !isEnded) runSink()
             return
         }
         val crop = cropAt(next, pos)
@@ -562,19 +840,40 @@ internal class AudioPipeline(
             // wrap the mastered clock mid-lap or strand a non-looping
             // player at a frozen anchor.
             runCatching { next.close() }
-            if (!wasAwaiting && !paused && !isEnded) sink.start()
+            if (!wasAwaiting && !paused && !isEnded) runSink()
             return
         }
 
+        // Open-new-before-close-old runs all the way down to the device. The
+        // line is what fails here in practice -- a device that cannot take
+        // the new track's rate -- and the throw used to travel out of the
+        // command handler and end the audio thread for good: the file went
+        // silent, and the video side read the dead pipeline as a track that
+        // had finished. The fresh line also restarts its frame position and
+        // may run at another rate, which is why the rebase below reads both
+        // at one anchor; between open and rebase the old base makes raw
+        // readings negative, and the not-yet-reset monotonic floor clamps
+        // that window.
+        val opened = runCatching { openLine(crop.sampleRate) }
+        if (opened.isFailure) {
+            Debug.trace("audio line open for track switch", opened.exceptionOrNull() ?: Throwable())
+            runCatching { next.close() }
+            // The failed open may have dropped the old line on its way out,
+            // so the sink is not necessarily playable any more. Hand that to
+            // the recovery path, which reopens at the old rate against the
+            // decoder still in hand.
+            theClock.detachToWallTime()
+            deviceLost = true
+            return
+        }
         runCatching { decoder.close() }
         decoder = next
         durationNanos = next.durationNanos
-        // The fresh line starts at frame position zero and may run at a
-        // different rate; rebase reads both at one anchor. Between open
-        // and rebase the old base makes raw readings negative -- the
-        // not-yet-reset monotonic floor clamps that window.
-        sink.open(crop.sampleRate)
-        if (wasAwaiting || paused || isEnded) sink.stop() // open() starts the device by contract
+        // The new track has samples at the playhead, so this side is not
+        // finished any more -- left set, the pump never feeds the fresh line
+        // and the rebase below pins the mastered clock to a stopped device.
+        isEnded = false
+        if (wasAwaiting || paused) freezeSink() // open() starts the device by contract
         theClock.rebase(crop.anchorNanos, crop.sampleRate)
         // The stretcher is rate-bound; the new track may run at another.
         val oldFilter = tempoFilter
@@ -586,7 +885,6 @@ internal class AudioPipeline(
         }
         sampleRate = crop.sampleRate
         pendingPcm = crop.remainder
-        lastWrittenEndNanos = crop.chunkEndNanos
         activeAudioTrack = next.streamIndex
         if (DEBUG_SEEK) {
             System.err.println(
@@ -607,9 +905,13 @@ internal class AudioPipeline(
         if (newTempo == tempo) return
         val theClock = checkNotNull(clock)
         val wasAwaiting = awaitingLanding
-        sink.stop()
-        sink.flush()
+        freezeSink()
+        // Between the freeze and the flush, for the reason [switchTrack]
+        // gives -- and here the cost was the very thing this method exists
+        // to avoid: a re-anchor over the buffered tail, leaving a permanent
+        // A/V offset.
         val pos = theClock.mediaNanos()
+        flushLine()
 
         // Open-new-before-close-old: a stretcher that cannot build leaves
         // tempo, clock and stream untouched.
@@ -619,7 +921,7 @@ internal class AudioPipeline(
             try {
                 TempoFilter(sampleRate, newTempo)
             } catch (_: Throwable) {
-                if (!wasAwaiting && !paused && !isEnded) sink.start()
+                if (!wasAwaiting && !paused && !isEnded) runSink()
                 return
             }
         }
@@ -636,9 +938,8 @@ internal class AudioPipeline(
         } else {
             theClock.seek(crop.anchorNanos)
             pendingPcm = crop.remainder
-            lastWrittenEndNanos = crop.chunkEndNanos
         }
-        if (!wasAwaiting && !paused && !isEnded) sink.start()
+        if (!wasAwaiting && !paused && !isEnded) runSink()
         if (DEBUG_SEEK) {
             System.err.println("[audio-tempo] tempo=$newTempo anchored=${pos / 1_000_000}ms")
         }
@@ -647,7 +948,6 @@ internal class AudioPipeline(
     private class Crop(
         val anchorNanos: Long,
         val remainder: ByteArray,
-        val chunkEndNanos: Long,
         val sampleRate: Int,
     )
 
@@ -675,7 +975,6 @@ internal class AudioPipeline(
             return Crop(
                 anchorNanos = anchorNanos,
                 remainder = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount),
-                chunkEndNanos = chunkEnd,
                 sampleRate = chunk.sampleRate,
             )
         }
@@ -684,19 +983,23 @@ internal class AudioPipeline(
     private enum class TailWait { PLAYED_OUT, INTERRUPTED, CLOSE }
 
     /**
-     * Waits until the clock -- and therefore the device -- reaches the end
-     * of the last written chunk, while staying on the command queue. The
-     * old sink.drain() deafened this thread for the whole buffered tail,
-     * so a seek pressed near a loop wrap waited the tail out for nothing
-     * (its first act is flushing that tail). A wall deadline bounds the
-     * wait against a stalled device; past it the tail is declared played.
+     * Waits until the line has no sound left in it, while staying on the
+     * command queue. The old sink.drain() deafened this thread for the
+     * whole buffered tail, so a seek pressed near a loop wrap waited the
+     * tail out for nothing (its first act is flushing that tail). A wall
+     * deadline bounds the wait against a stalled device; past it the tail
+     * is declared played.
+     *
+     * The question is "is there sound left", not "has the pipeline finished
+     * its own shutdown": the player holds the end of a lap open until this
+     * says yes, and every microsecond it overstays is a frozen picture.
      */
     private fun awaitTailPlayedOut(): TailWait {
-        val theClock = checkNotNull(clock)
-        // The remaining tail is media time; the wall pays it at 1/tempo.
-        val deadline = System.nanoTime() +
-            ((lastWrittenEndNanos - theClock.mediaNanos()).coerceAtLeast(0) / tempo).toLong() + TAIL_GRACE_NANOS
-        while (theClock.mediaNanos() < lastWrittenEndNanos) {
+        // The queued frames are the line's own, already stretched, and they
+        // leave it at the line's rate -- tempo does not enter the wall
+        // estimate the way it did when the wait was denominated in media time.
+        val deadline = System.nanoTime() + queuedWallNanos() + TAIL_GRACE_NANOS
+        while (framesQueued() > 0) {
             if (System.nanoTime() >= deadline) break
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
             return if (handle(cmd)) TailWait.INTERRUPTED else TailWait.CLOSE
@@ -704,16 +1007,39 @@ internal class AudioPipeline(
         return TailWait.PLAYED_OUT
     }
 
+    /** How long the queued tail takes to leave the line, at its rate. */
+    private fun queuedWallNanos(): Long {
+        val frames = framesQueued()
+        val rate = sampleRate.coerceAtLeast(1).toLong()
+        // Quotient plus remainder, never a 64-bit product: frames * 1e9
+        // overflows past a few hours of one uninterrupted anchor.
+        return (frames / rate) * 1_000_000_000L + (frames % rate) * 1_000_000_000L / rate
+    }
+
     private companion object {
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
         const val BYTES_PER_FRAME = 4
 
-        /** Slack past the tail's nominal duration before giving up on the device. */
+        /**
+         * Slack past the queued tail's own length before a device that
+         * stopped consuming is declared finished. Only a stalled line ever
+         * spends it: a live one empties on its own and ends the wait there.
+         */
         const val TAIL_GRACE_NANOS = 500_000_000L
 
         /**
-         * A write blocked this long with the device's frame position frozen
-         * is a dead device; the watchdog detaches the clock to wall time.
+         * Rounds of reopen-and-fail before this side gives up on the device
+         * and lets the player fall back to wall-clock playback. Three, because
+         * one is a hiccup a reopen fixes and a fourth would be the same answer
+         * as the third.
+         */
+        const val MAX_WRITE_FAILURES = 3
+
+        /**
+         * One write outstanding this long is a dead device; the watchdog
+         * detaches the clock to wall time. A live line accepts a chunk
+         * within its own buffer's length -- a fifth of a second here -- so
+         * the bound is an order of magnitude clear of honest slowness.
          */
         const val DEFAULT_WRITE_STALL_NANOS = 3_000_000_000L
 

@@ -1,6 +1,7 @@
 package dev.hivens.skinema.libav
 
 import dev.hivens.skinema.ass.Ass
+import dev.hivens.skinema.audio.JavaSoundSink
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -45,7 +46,7 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats")
+    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats", "audio")
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -65,7 +66,35 @@ object Fixtures {
         // The broad legacy/extended decode set (the formats feature): mpeg2
         // is its canonical member, present whenever the feature is on.
         "formats" -> libavHasDecoder("mpeg2video")
+        // Not a property of the bundle but of the machine: whether a real
+        // output line opens at all. Named here so a runner that is SUPPOSED
+        // to have sound fails loudly instead of skipping its way to green.
+        "audio" -> audioLineOpens
         else -> error("unknown capability '$cap'")
+    }
+
+    private val audioLineOpens: Boolean by lazy {
+        runCatching {
+            JavaSoundSink().use { it.open(48_000) }
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * A real audio output line. Opt-in exactly like hardware decode: a
+     * headless runner has no device, and a suite that quietly skips its
+     * hardware reads exactly like one that passed. Listed in
+     * SKINEMA_REQUIRE_CAPS its absence is a loud failure instead.
+     */
+    fun assumeAudioDevice() {
+        if (requires("audio")) {
+            check(capLoads("audio")) { "SKINEMA_REQUIRE_CAPS lists 'audio' but no output line would open here" }
+            return
+        }
+        assumeTrue(
+            System.getenv("SKINEMA_TEST_AUDIO") == "1" && capLoads("audio"),
+            "audio device acceptance is opt-in (SKINEMA_TEST_AUDIO=1) and needs a real output line",
+        )
     }
 
     fun assumeDecodeEnvironment() {
@@ -154,6 +183,13 @@ object Fixtures {
      * is the environment's business (brew ships ffmpeg without
      * libaom/libwebp), not part of skinema's decode contract.
      */
+    /**
+     * Whether the fixture CLI has [encoder], for a test that sweeps several
+     * containers and wants to include one more when it can rather than skip
+     * the lot when it cannot.
+     */
+    fun hasCliEncoder(encoder: String): Boolean = encoder in encoders
+
     fun assumeEncoder(encoder: String) {
         assumeTrue(encoder in encoders, "CLI lacks encoder $encoder -- fixture impossible, skipping")
     }
@@ -172,8 +208,23 @@ object Fixtures {
     /** Whether the loaded libav exposes encoder [name] (avcodec_find_encoder_by_name). */
     private fun libavHasEncoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindEncoderByName)
 
+    /**
+     * The same question asked of one encoder among several, for a test that
+     * sweeps whatever the runner carries rather than skipping wholesale.
+     */
+    fun libraryHasEncoder(name: String): Boolean = libavHasEncoder(name)
+
     /** Whether the loaded libav exposes decoder [name] (avcodec_find_decoder_by_name). */
     private fun libavHasDecoder(name: String): Boolean = libavResolves(name, Libav::avcodecFindDecoderByName)
+
+    /**
+     * The same question for a sweep over many codecs. What the fixture CLI
+     * can ENCODE and what the loaded library can DECODE are different sets --
+     * the shipped bundles carry a deliberately narrow decoder list, and a
+     * sweep gated on the CLI alone asserts against codecs the bundle was
+     * built without.
+     */
+    fun libraryHasDecoder(name: String): Boolean = libavHasDecoder(name)
 
     private fun libavResolves(name: String, find: (MemorySegment) -> MemorySegment): Boolean = runCatching {
         Arena.ofConfined().use { a -> find(a.allocateFrom(name)) != MemorySegment.NULL }

@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.maven.publish) apply false
+    alias(libs.plugins.kover)
 }
 
 // Releases pass -PappVersion=<tag> (tag first, then publish -- the
@@ -42,7 +43,17 @@ allprojects {
 
 // CI logs carry only the console; without the message a failed assertion
 // is a bare file:line, on every module that ever fails.
+// Coverage rides every module that carries Kotlin, so the aggregate below can
+// pick the ones worth reporting on. What it is FOR is the zero column: a
+// hardware-decode path was negotiated away on every open for two months and
+// the suite stayed green, because a test that never reaches a line cannot
+// fail on it. A percentage is not the deliverable; "no test has ever executed
+// this" is.
 subprojects {
+    plugins.withId("org.jetbrains.kotlin.jvm") {
+        apply(plugin = "org.jetbrains.kotlinx.kover")
+    }
+
     tasks.withType<Test>().configureEach {
         testLogging {
             events("failed")
@@ -85,14 +96,23 @@ subprojects {
         doLast {
             var total = 0
             var skipped = 0
+            val names = mutableListOf<String>()
             val head = Regex("<testsuite\\b[^>]*")
+            // Which ones, not just how many. The count alone said a gap had
+            // opened and left no way to find it from a CI log: the XML lives
+            // on a runner that is gone by the time anyone reads the failure.
+            val skippedCase = Regex("<testcase name=\"([^\"]*)\" classname=\"([^\"]*)\"[^>]*>\\s*<skipped")
             fun count(text: String, name: String): Int =
                 Regex("\\b" + name + "=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
             for (f in xmlDir.get().asFile.listFiles().orEmpty()) {
                 if (!f.name.endsWith(".xml")) continue
-                val suite = head.find(f.readText()) ?: continue
+                val text = f.readText()
+                val suite = head.find(text) ?: continue
                 total += count(suite.value, "tests")
                 skipped += count(suite.value, "skipped")
+                for (m in skippedCase.findAll(text)) {
+                    names += m.groupValues[2].substringAfterLast('.') + " > " + m.groupValues[1]
+                }
             }
             logger.lifecycle(label + ": " + (total - skipped) + " of " + total + " tests ran, " + skipped + " skipped")
             val ceiling = maxSkipped.get().toInt()
@@ -100,7 +120,8 @@ subprojects {
                 throw GradleException(
                     label + " skipped " + skipped + " tests, more than the " + ceiling + " allowed -- " +
                         "something the suite needs is missing rather than the suite passing. Raise it " +
-                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.",
+                        "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.\n" +
+                        names.sorted().joinToString("\n") { "  " + it },
                 )
             }
         }
@@ -114,6 +135,13 @@ subprojects {
 subprojects {
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions.allWarningsAsErrors.set(true)
+        // The floor the README promises, enforced instead of asserted. Every
+        // module targets 22 while the toolchain is 25, so without this Kotlin
+        // compiles against 25's class library: an API added after 22 would
+        // build here, ship, and fail at the consumer on the very version the
+        // documentation tells them is enough. The Java half already does this
+        // through options.release.
+        compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
     }
 }
 
@@ -179,4 +207,25 @@ tasks.register("publishLibraries") {
         ":skinema-skiko:publishToMavenCentral",
         ":skinema-compose:publishToMavenCentral",
     )
+}
+
+// The library modules only. skinema-demo is a harness (its own code is not the
+// product) and skinema-natives carries no Kotlin at all.
+dependencies {
+    kover(project(":skinema-core"))
+    kover(project(":skinema-skiko"))
+    kover(project(":skinema-compose"))
+}
+
+kover {
+    reports {
+        filters {
+            excludes {
+                // The FFM binding surface is one declaration per libav symbol,
+                // executed only when that symbol is called; counting it as
+                // covered code drowns the signal from the logic around it.
+                classes("dev.hivens.skinema.libav.LibavAbi*")
+            }
+        }
+    }
 }

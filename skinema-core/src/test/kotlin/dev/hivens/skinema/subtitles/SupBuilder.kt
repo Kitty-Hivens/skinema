@@ -21,13 +21,30 @@ internal object SupBuilder {
      * A 320x240 screen with a 32x16 white rectangle at (10,20), shown at
      * [showMs], cleared at [clearMs].
      */
-    fun build(showMs: Long, clearMs: Long): ByteArray {
+    fun build(showMs: Long, clearMs: Long): ByteArray =
+        ByteArrayOutputStream().also { it.pair(showMs, clearMs, 0) }.toByteArray()
+
+    /**
+     * [count] show/clear pairs, one every [periodMs], each visible for
+     * [visibleMs]. Built for the retention question: what a schedule
+     * holds is only measurable against a stream that keeps producing.
+     */
+    fun buildMany(count: Int, periodMs: Long, visibleMs: Long): ByteArray {
         val out = ByteArrayOutputStream()
+        for (i in 0 until count) {
+            val show = i * periodMs
+            out.pair(show, show + visibleMs, i * 2)
+        }
+        return out.toByteArray()
+    }
+
+    private fun ByteArrayOutputStream.pair(showMs: Long, clearMs: Long, composition: Int) {
+        val out = this
 
         // Display set: composition + window + palette + object + end.
         out.segment(showMs, PCS) {
             u16(320); u16(240); u8(0x10)
-            u16(0) // composition number
+            u16(composition) // composition number
             u8(0x80) // epoch start
             u8(0) // no palette update
             u8(0) // palette id
@@ -62,13 +79,12 @@ internal object SupBuilder {
         // Clear set: an empty composition.
         out.segment(clearMs, PCS) {
             u16(320); u16(240); u8(0x10)
-            u16(1)
+            u16(composition + 1)
             u8(0x00) // normal case
             u8(0); u8(0)
             u8(0) // zero objects = clear
         }
         out.segment(clearMs, END) {}
-        return out.toByteArray()
     }
 
     private class Payload {

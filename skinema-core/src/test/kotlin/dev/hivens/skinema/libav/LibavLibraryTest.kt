@@ -1,6 +1,7 @@
 package dev.hivens.skinema.libav
 
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -113,5 +114,24 @@ class LibavLibraryTest {
 
         assertEquals(8, platforms.size, "expected 8 published platform tags, got $platforms")
         assertTrue(nativesPlatform() in platforms, "unknown platform tag ${nativesPlatform()} (published: $platforms)")
+    }
+
+    @Test
+    fun `a load failure names the escape a store-based distribution needs`() {
+        // NixOS and Guix install the libraries and keep them out of every
+        // directory the loader searches, so "cannot load libavcodec.so.63"
+        // reads as absent when it is present (#23). The message has to carry
+        // the way out, because nothing about the failure suggests one.
+        val system = Libav.loadFailureMessage(LibavLibrary.AVCODEC, "libavcodec.so.63", null)
+        assertTrue("SKINEMA_LIBAV_DIR" in system, "the directory override must be named: $system")
+        assertTrue("LD_LIBRARY_PATH" in system, "the loader path must be named: $system")
+        assertTrue("NixOS" in system, "the distributions this bites must be named: $system")
+        assertTrue("63" in system, "the pinned major must be named: $system")
+
+        // Off a bundle the same escape is noise: the directory was named
+        // deliberately and the file is either missing from it or broken.
+        val bundled = Libav.loadFailureMessage(LibavLibrary.AVCODEC, "/opt/n/libavcodec.so.63", "/opt/n")
+        assertTrue("/opt/n" in bundled, "the directory under test must be named: $bundled")
+        assertFalse("LD_LIBRARY_PATH" in bundled, "a named directory needs no loader-path advice: $bundled")
     }
 }

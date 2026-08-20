@@ -100,6 +100,9 @@ object LibavAbi {
         const val EXTRADATA_SIZE = 24L
         const val CODED_SIDE_DATA = 32L
         const val NB_CODED_SIDE_DATA = 40L
+
+        /** enum AVPixelFormat for video, AVSampleFormat for audio. */
+        const val FORMAT = 44L
         const val WIDTH = 72L
         const val HEIGHT = 76L
         const val CH_LAYOUT = 128L
@@ -109,6 +112,9 @@ object LibavAbi {
 
     object PacketSideData {
         const val DATA = 0L
+
+        /** size_t; av_display_rotation_get reads 9 int32 and checks nothing. */
+        const val SIZE = 8L
         const val SIZEOF = 24L
     }
 
@@ -135,7 +141,7 @@ object LibavAbi {
         const val WIDTH = 112L
         const val HEIGHT = 116L
 
-        /** AVPixelFormat the encoder takes (set to YUV420P). */
+        /** AVPixelFormat the encoder takes, negotiated against what it advertises. */
         const val PIX_FMT = 136L
         const val MAX_B_FRAMES = 200L
         const val GOP_SIZE = 332L
@@ -150,6 +156,13 @@ object LibavAbi {
 
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
+
+        /**
+         * void* reserved for the caller, untouched by libav and carried into
+         * every worker context frame threading clones -- which is what makes
+         * it the only place a per-decoder fact reaches [GET_FORMAT].
+         */
+        const val OPAQUE = 48L
 
         /** AVBufferRef* to the AVHWFramesContext the encoder pulls GPU surfaces from (M13). */
         const val HW_FRAMES_CTX = 552L
@@ -277,13 +290,37 @@ object LibavAbi {
     const val AV_CODEC_ID_SSA = 94212
     const val AV_CODEC_ID_MOV_TEXT = 94213
     const val AV_CODEC_ID_HDMV_PGS_SUBTITLE = 94214
+
+    /**
+     * AVCodecDescriptor: only its property bits are read, to ask the library
+     * whether a subtitle codec is text or bitmap rather than keeping a list.
+     */
+    object CodecDescriptor {
+        const val PROPS = 24L
+        const val SIZEOF = 48L
+    }
+
+    const val AV_CODEC_PROP_BITMAP_SUB = 65536
+    const val AV_CODEC_PROP_TEXT_SUB = 131072
     const val AV_CODEC_ID_SUBRIP = 94225
     const val AV_CODEC_ID_WEBVTT = 94226
     const val AV_CODEC_ID_ASS = 94230
     const val AV_SAMPLE_FMT_S16 = 1
+    const val AV_SAMPLE_FMT_S32 = 2
+    const val AV_SAMPLE_FMT_FLT = 3
+    const val AV_SAMPLE_FMT_S16P = 6
+    const val AV_SAMPLE_FMT_S32P = 7
 
     /** Planar 32-bit float -- the native AAC encoder's input format. */
     const val AV_SAMPLE_FMT_FLTP = 8
+
+    /**
+     * enum AVCodecConfig, for avcodec_get_supported_config. Each list is
+     * NULL when the codec accepts anything of that kind.
+     */
+    const val AV_CODEC_CONFIG_PIX_FORMAT = 0
+    const val AV_CODEC_CONFIG_SAMPLE_RATE = 2
+    const val AV_CODEC_CONFIG_SAMPLE_FORMAT = 3
     const val AV_PIX_FMT_RGBA = 26
 
     /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */
@@ -321,7 +358,12 @@ object LibavAbi {
     const val AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX = 2
 
     // -- M12 encode + mux --
+    const val AV_PIX_FMT_YUV422P = 4
+    const val AV_PIX_FMT_YUV444P = 5
+    const val AV_PIX_FMT_GBRP = 71
+    const val AV_PIX_FMT_RGB24 = 2
     const val AV_PIX_FMT_YUV420P = 0
+    const val AV_PIX_FMT_YUVA420P = 33
 
     /** AVOutputFormat.flags: NOFILE skips avio_open; GLOBALHEADER moves extradata into the header. */
     const val AVFMT_NOFILE = 1
@@ -370,6 +412,20 @@ object LibavAbi {
     const val AV_CODEC_ID_VP9 = 166
     const val AV_LOG_QUIET = -8
     const val AVERROR_EOF = -541478725
+
+    /**
+     * av_find_best_stream found no stream of the requested type. Distinct
+     * from AVERROR_DECODER_NOT_FOUND, which means the stream is there and
+     * unplayable -- one is a shape of file, the other is a failure.
+     */
+    const val AVERROR_STREAM_NOT_FOUND = -1381258232
+
+    /**
+     * av_find_best_stream found the stream but no decoder for it. Still
+     * "nothing this can show" from the player's side -- a trimmed bundle
+     * carries a deliberately narrow decoder set -- so it is not a failure.
+     */
+    const val AVERROR_DECODER_NOT_FOUND = -1128613112
     const val AV_NOPTS_VALUE = Long.MIN_VALUE
 
     /**

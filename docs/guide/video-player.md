@@ -1,9 +1,10 @@
 # VideoPlayer
 
 `dev.hivens.skinema.player.VideoPlayer` is the whole player for one
-file. It owns a decode thread (and, with sound, an audio thread and a
-pacer thread), opens the file asynchronously, and exposes its progress
-through volatile fields you read on any thread. It is `AutoCloseable`.
+file. It owns a decode thread and a pacer thread (and, with sound, an
+audio thread and its watchdog; a selected subtitle track adds a fifth),
+opens the file asynchronously, and exposes its progress through volatile
+fields you read on any thread. It is `AutoCloseable`.
 
 ## Constructing
 
@@ -16,6 +17,7 @@ VideoPlayer(
     sink: PcmSink? = null,
     readAheadFrames: Int = 1,
     audioTrack: Int? = null,
+    hardware: HwAccel = HwAccel.OFF,
 )
 ```
 
@@ -33,6 +35,24 @@ VideoPlayer(
   [formats-and-behavior.md](formats-and-behavior.md).
 - `audioTrack` -- start on a specific audio stream index instead of the
   container default.
+- `hardware` -- GPU decode policy. `HwAccel.OFF` (default) is pure
+  software decode, the historical behaviour. `HwAccel.AUTO` uses the
+  platform's GPU decoder when one is present and falls back to software
+  per file otherwise; `HwAccel.REQUIRE` fails the open (`Failed`) when
+  hardware decode cannot be set up. The RGBA frame contract is identical
+  on every path -- frames still come back through system memory, so this
+  buys decode cost, not a zero-copy path.
+
+Whether the GPU actually took the stream is only knowable once a frame
+has come back from it, so read it rather than assume it:
+
+```kotlin
+val hardwareActive: Boolean   // @Volatile
+```
+
+It answers false for a file the GPU opened and then fell back on -- a
+4:4:4 H.264 stream, say, which a device advertises and refuses in
+practice.
 
 The constructor returns immediately; the file opens on the decode
 thread. It never throws for a bad file -- watch `state`.
@@ -51,9 +71,14 @@ val state: VideoPlayer.State   // @Volatile, read anywhere
 | `Playing`    | Frames are advancing.                                       |
 | `Paused`     | Frozen; the last frame stays on screen.                     |
 | `Seeking`    | A landing is in flight (a loading affordance can show).     |
-| `Ended`      | A non-looping file reached EOF.                             |
+| `Ended`      | EOF with nothing left to play -- see below.                 |
 | `Failed`     | `Failed(cause: Throwable)` -- open or mid-decode error.     |
 | `Closed`     | `close()` has run.                                          |
+
+`Ended` is not only for non-looping files: a looping player ends too
+when a lap produces no frames at all, because the next lap has nothing
+to produce either. `Failed` is terminal -- the decode thread is gone, so
+a later `close()` finds nothing to join and the state stays `Failed`.
 
 On Compose, wrap this in observable state with `rememberPlayerState`
 (see [compose.md](compose.md)) instead of polling the volatile
@@ -69,8 +94,15 @@ fun positionNanos(): Long   // current media position; 0 until playback starts
 
 `pause` freezes on the current frame; `resume` continues without a
 jump. `close()` tears the player down -- it stops the threads and frees
-native memory, blocking up to five seconds for the decode thread to
-exit. After `close()` the state is `Closed`.
+native memory, waiting up to five seconds for the decode thread to exit.
+
+That wait is a bound on `close()`, not on the teardown: the decode
+thread's own shutdown joins the pacer, the audio pipeline and the
+subtitle pipeline in turn, and a device in the middle of an outage can
+hold the audio join for seconds. So `close()` can return while the last
+of that is still running. The state settles `Closed` once it finishes --
+and stays `Failed` if the player had already failed, since a failure is
+the more useful thing to have been told.
 
 ## Frames
 
@@ -179,8 +211,17 @@ Those surfaces have their own pages:
 
 ## Threading note
 
-Every field above is `@Volatile` and safe to read from any thread;
-every method is safe to call from any thread (commands are marshalled
-onto the decode thread internally). You do not synchronize around the
-player. The only rule is the `FrameSlot` ownership window: the slot
-from `acquireFrame` is yours only until the next `acquireFrame`.
+Every field above is `@Volatile` and safe to read from any thread, and
+every method is safe to call from any thread. You do not synchronize
+around the player.
+
+Most methods work by queueing a command for the decode thread, which is
+why order is preserved and nothing races. A few act on the spot instead
+-- `setVolume` goes straight to the audio sink, and the track and
+subtitle selectors publish before they announce -- so a caller's own
+thread does the work. Both are safe; the distinction only matters if you
+are reasoning about when an effect lands.
+
+The one rule is the ownership window: the `FrameSlot` from
+`acquireFrame` is yours only until the next `acquireFrame`, and the same
+holds for the overlay from `acquireSubtitles`.

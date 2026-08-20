@@ -10,11 +10,14 @@ import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.foreign.ValueLayout.JAVA_SHORT
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One open video file: demux + decode + RGBA conversion, pull-style via
- * [nextFrame]. Spike-grade (M0): best video stream only, software decode,
- * blocking calls. The backing Arena is confined -- the thread that called
+ * [nextFrame]. Best video stream only, blocking calls, software decode
+ * unless a [HwAccel] policy asks otherwise -- and the RGBA that comes out
+ * is the same either way, since a hardware frame is mapped back to system
+ * memory here. The backing Arena is confined -- the thread that called
  * [open] owns the session, which is the design intent (one decode thread).
  */
 class VideoDecoder private constructor(
@@ -37,6 +40,10 @@ class VideoDecoder private constructor(
     // AV_PIX_FMT_NONE for software; otherwise the GPU surface format decoded
     // frames arrive in, downloaded to a CPU frame before conversion.
     private val hwPixFmt: Int,
+    // The policy the caller asked for, kept because REQUIRE has to be
+    // enforced past the open: a device can accept the stream and then hand
+    // decoding back to the CPU on the first frame.
+    private val hardware: HwAccel,
     // AVBufferRef* to the hw device this decoder owns, unref'd at close; NULL
     // for software.
     private val hwDeviceCtx: MemorySegment,
@@ -63,7 +70,50 @@ class VideoDecoder private constructor(
     override fun rotationDegrees(): Int = rotationDegrees
     override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
     override fun videoSize(): Pair<Int, Int>? = videoSize
-    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE
+    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE && !hwFellBack
+
+    /**
+     * Whether a decoder that opened a device ended up decoding without it.
+     * avcodec asks for a format again with the hardware entry removed when
+     * the hwaccel cannot initialise for this stream -- an unsupported
+     * profile, a driver that refuses the geometry -- and decodes on the CPU
+     * from there. That fallback is legal ([HwAccel.AUTO] promises it); saying
+     * it is hardware is not, and a report derived from the REQUEST rather
+     * than from a frame is how a negotiation that never chose the GPU went
+     * unnoticed for two months.
+     */
+    @Volatile
+    private var hwFellBack = false
+
+    private fun noteHwEngagement() {
+        if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE || hwFellBack) return
+        if (frame.get(JAVA_INT, LibavAbi.Frame.FORMAT) == hwPixFmt) return
+        hwFellBack = true
+        // REQUIRE says a file that cannot decode on the GPU fails, and until
+        // now it could only say that at open time -- where the device
+        // accepting the stream looks like success. The fallback avcodec takes
+        // when the hwaccel cannot initialise for a profile happens on the
+        // FIRST FRAME, past every check the open made, so REQUIRE quietly
+        // became AUTO for exactly the streams it exists to refuse: 4:4:4
+        // H.264 on a device that advertises a config no consumer driver
+        // honours is the case that reaches it.
+        if (hardware == HwAccel.REQUIRE) {
+            throw LibavException(
+                "the device opened but decoded this stream in software (HwAccel.REQUIRE)",
+            )
+        }
+    }
+
+    /** The GPU surface a device was opened for; AV_PIX_FMT_NONE for software. */
+    internal fun negotiatedSurfaceFormat(): Int = hwPixFmt
+
+    /**
+     * What the last decoded frame actually arrived in. The pair with
+     * [negotiatedSurfaceFormat] is the only proof the negotiation took: a
+     * decoder that loses it decodes in software and says nothing, because
+     * every other signal is read off the request rather than off a frame.
+     */
+    internal fun lastFrameFormat(): Int = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -93,6 +143,16 @@ class VideoDecoder private constructor(
     private var swsFormat = Int.MIN_VALUE
     private var swsColorspace = Int.MIN_VALUE
     private var swsRange = Int.MIN_VALUE
+    /**
+     * Holds the buffers whose size is the current geometry's, so they can be
+     * released when it changes. The session arena cannot free one segment, and
+     * these were taken from it: a stream that switches resolution -- MPEG-TS,
+     * an adaptive segment boundary -- kept every buffer it had ever used for
+     * the life of the decoder, several megabytes a switch and no ceiling. That
+     * ends as a native out-of-memory, which arrives as a killed process rather
+     * than an exception something could catch.
+     */
+    private var swsArena = Arena.ofConfined()
     private var dstData = MemorySegment.NULL
     private var dstStride = MemorySegment.NULL
     private var rgbaNative = MemorySegment.NULL
@@ -112,6 +172,8 @@ class VideoDecoder private constructor(
     private var hdrColorspace = Int.MIN_VALUE
     private var hdrRange = Int.MIN_VALUE
     private var hdrTrc = Int.MIN_VALUE
+    /** The same, for the tone-mapping path's own geometry-sized buffers. */
+    private var hdrArena = Arena.ofConfined()
     private var hdrNative = MemorySegment.NULL
     private var hdrDstData = MemorySegment.NULL
     private var hdrDstStride = MemorySegment.NULL
@@ -131,6 +193,7 @@ class VideoDecoder private constructor(
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> {
                     noteFrameEnd()
+                    noteHwEngagement()
                     return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
                 }
                 LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
@@ -182,20 +245,43 @@ class VideoDecoder private constructor(
     override fun seekTo(ptsNanos: Long) {
         // Re-apply the container start_time the timeline was normalized
         // against before handing the target to the demuxer.
-        val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
+        seekToUnit(nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen))
+    }
+
+    /**
+     * One whole time-base unit earlier, which is the smallest step that
+     * actually moves the demuxer. [nanosToPts] rounds to the nearest unit, so
+     * a target expressed a nanosecond earlier maps to the very same unit --
+     * and AVSEEK_FLAG_BACKWARD then lands on the keyframe standing on it,
+     * which for a step backward is the frame it is trying to get behind.
+     */
+    override fun seekBefore(ptsNanos: Long) {
+        val unit = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen) - 1
+        seekToUnit(unit.coerceAtLeast(0))
+    }
+
+    private fun seekToUnit(ts: Long) {
         val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
         avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
         Libav.checkAv(seeked, "av_seek_frame")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
-        restartStage = if (ptsNanos == 0L) 0 else 2
+        restartStage = 0
     }
 
     /**
      * How far the restart escalation has gone for the seek in flight: 0 before
      * either escape, 1 after the byte rewind, 2 after the demuxer replacement.
-     * Parked at 2 outside a seek to the start, so an ordinary end of stream is
-     * an end of stream.
+     *
+     * Armed by every seek and disarmed by the first packet that follows one,
+     * which is what keeps an ordinary end of stream an end of stream: a seek
+     * that landed somewhere real reads something, and from that packet on a
+     * read that fails is the file running out. It used to be armed only by a
+     * seek to zero, on the same reasoning applied one step too early -- so
+     * the loop wrap worked and every other seek did not. Measured on animated
+     * WebP, whose demuxer answers a seek, reports success and stays drained:
+     * a scrub to any position but the beginning handed back nothing at all,
+     * for the rest of the session.
      */
     private var restartStage = 2
 
@@ -212,8 +298,13 @@ class VideoDecoder private constructor(
     private fun rewindToStart(): Boolean {
         val pb = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB)
         if (pb == MemorySegment.NULL) return false
-        if (Libav.avioSeek(pb, 0L, 0) < 0) return false
-        Libav.avformatFlush(fmtCtx)
+        val sought = Libav.avioSeek(pb, 0L, 0)
+        // That seek runs the source's own upcall, which stashes rather than
+        // raises: without this the refusal reads only as "not restartable"
+        // and the cause is deferred to whatever asks next.
+        avioSource?.throwIfFailed()
+        if (sought < 0) return false
+        Libav.checkAv(Libav.avformatFlush(fmtCtx), "avformat_flush(rewind)")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
         return true
@@ -234,14 +325,27 @@ class VideoDecoder private constructor(
      * consumer's own callbacks, and reopening a path it never had is not a
      * thing this can do.
      */
+    // Allocated once, not per reopen. A looping animated WebP takes this path
+    // on every lap, and a fresh scratch slot and path string each time is a
+    // slow leak out of an arena that only frees when the session does.
+    private val reopenScratch: MemorySegment by lazy { arena.allocate(ADDRESS) }
+    private val reopenPathNative: MemorySegment by lazy { arena.allocateFrom(reopenPath!!) }
+
     private fun reopenDemuxer(): Boolean {
         val path = reopenPath ?: return false
-        val ptrPtr = arena.allocate(ADDRESS)
+        val ptrPtr = reopenScratch
         ptrPtr.set(ADDRESS, 0, fmtCtx)
         Libav.avformatCloseInput(ptrPtr)
 
-        val ctxOut = arena.allocate(ADDRESS)
-        if (Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path)) < 0) {
+        // avformat_close_input freed the context; the field still points at
+        // it, and close() frees whatever it finds there. Drop the handle
+        // before anything can leave this function -- the throw below above
+        // all, which a deleted or unmounted file reaches on a format that
+        // takes this path every lap. Left dangling it was a double free, and
+        // a double free here takes the JVM down rather than raising.
+        fmtCtx = MemorySegment.NULL
+        val ctxOut = ptrPtr
+        if (Libav.avformatOpenInput(ctxOut, reopenPathNative) < 0) {
             // The old context is gone either way; a decoder that cannot
             // reopen its own file is finished, and saying so beats handing
             // back a silently empty stream.
@@ -272,6 +376,21 @@ class VideoDecoder private constructor(
             // the demuxer. Each is tried once, so a demuxer that seeks
             // properly never reaches either and a broken one cannot spin.
             if (ret < 0 && restartStage < 2) {
+                // A source that RAISED is not a stream that ended, and here
+                // the two look identical: AvioSource turns any throwable out
+                // of the consumer's read into AVERROR_EOF to get off the
+                // native stack, and the escalation below answers an EOF by
+                // rewinding the byte stream to zero. Asked before escalating
+                // rather than after it, so the cause surfaces where it
+                // happened instead of against whatever asks next.
+                //
+                // Unproven, deliberately recorded as such: a container the
+                // rewind cannot revive -- mp4 was tried -- fails again at
+                // once and the error comes out promptly either way, and no
+                // reproduction was found for the one format the rewind does
+                // revive. The ordering is right on its own terms; no
+                // behaviour difference was demonstrated.
+                avioSource?.throwIfFailed()
                 restartStage++
                 val restarted = if (restartStage == 1) rewindToStart() else reopenDemuxer()
                 if (restarted) continue
@@ -286,7 +405,17 @@ class VideoDecoder private constructor(
                 return
             }
             restartStage = 2
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex) {
+            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
+                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
+            ) {
+            // An empty packet is not a packet. avcodec_send_packet takes a
+            // NULL one as the flush signal and refuses a zero-length one that
+            // still carries a data pointer -- EINVAL, which this loop turned
+            // into a decode failure. Formats emit them: Theora writes one per
+            // repeated frame, so nine of the ten packets of a static clip are
+            // empty and playback died on the second. FFmpeg reports one frame
+            // for that file and so do we now, by skipping them the way a
+            // packet from another stream is skipped.
                 Libav.avPacketUnref(packet)
                 continue
             }
@@ -309,14 +438,24 @@ class VideoDecoder private constructor(
         ensureSws(width, height, format)
         ensureColorspaceDetails(src, width, height)
 
-        Libav.swsScale(
-            swsCtx,
-            src.asSlice(LibavAbi.Frame.DATA),
-            src.asSlice(LibavAbi.Frame.LINESIZE),
-            0,
-            height,
-            dstData,
-            dstStride,
+        // Checked, because the destination is not empty when this fails.
+        // The arena zero-fills, so a refusal on the first frame publishes a
+        // fully transparent black picture; on any later one it re-publishes
+        // whatever the buffer still holds -- the PREVIOUS frame -- as if it
+        // were newly decoded. Either way the picture stops while the position
+        // runs on and the state stays Playing, which is the one failure this
+        // pipeline is built never to produce.
+        Libav.checkAv(
+            Libav.swsScale(
+                swsCtx,
+                src.asSlice(LibavAbi.Frame.DATA),
+                src.asSlice(LibavAbi.Frame.LINESIZE),
+                0,
+                height,
+                dstData,
+                dstStride,
+            ),
+            "sws_scale(decode)",
         )
         val out = target?.takeIf { it.size == rgbaHeap.size } ?: rgbaHeap
         MemorySegment.copy(rgbaNative, JAVA_BYTE, 0, out, 0, out.size)
@@ -368,6 +507,26 @@ class VideoDecoder private constructor(
         if (swsCtx == MemorySegment.NULL) {
             throw LibavException("sws_getContext refused ${width}x$height format=$format")
         }
+        swsArena.close()
+        swsArena = Arena.ofConfined()
+        val bytes = width.toLong() * height * 4
+        // swscale's packed-output writer emits whole SIMD blocks, rounding the
+        // row width up to the block, so it spills past the last row for a width
+        // that is not block-aligned (e.g. 1080). Pad the native destination so
+        // the spill lands in slack, not the next heap allocation -- an unpadded
+        // buffer corrupts the heap, surfacing as an abort far from here.
+        rgbaNative = swsArena.allocate(bytes + SWS_WRITE_PADDING)
+        rgbaHeap = ByteArray(bytes.toInt())
+        // sws_scale takes plane arrays; RGBA is single-plane, slots 1..7 NULL/0.
+        dstData = swsArena.allocate(ADDRESS, 8)
+        dstData.setAtIndex(ADDRESS, 0, rgbaNative)
+        dstStride = swsArena.allocate(JAVA_INT, 8)
+        dstStride.setAtIndex(JAVA_INT, 0, width * 4)
+        // Cached LAST, once everything it describes exists. Published first,
+        // an OutOfMemoryError on the heap buffer above -- 33 MB at 4K, 132 at
+        // 8K -- left the cache saying "this context matches" while dstData
+        // still pointed into an arena that had just been closed, so every
+        // later frame took the early return and died on sws_scale instead.
         swsWidth = width
         swsHeight = height
         swsFormat = format
@@ -375,20 +534,6 @@ class VideoDecoder private constructor(
         // ensureColorspaceDetails to reapply the stream's own values.
         swsColorspace = Int.MIN_VALUE
         swsRange = Int.MIN_VALUE
-
-        val bytes = width.toLong() * height * 4
-        // swscale's packed-output writer emits whole SIMD blocks, rounding the
-        // row width up to the block, so it spills past the last row for a width
-        // that is not block-aligned (e.g. 1080). Pad the native destination so
-        // the spill lands in slack, not the next heap allocation -- an unpadded
-        // buffer corrupts the heap, surfacing as an abort far from here.
-        rgbaNative = arena.allocate(bytes + SWS_WRITE_PADDING)
-        rgbaHeap = ByteArray(bytes.toInt())
-        // sws_scale takes plane arrays; RGBA is single-plane, slots 1..7 NULL/0.
-        dstData = arena.allocate(ADDRESS, 8)
-        dstData.setAtIndex(ADDRESS, 0, rgbaNative)
-        dstStride = arena.allocate(JAVA_INT, 8)
-        dstStride.setAtIndex(JAVA_INT, 0, width * 4)
     }
 
     /**
@@ -401,14 +546,22 @@ class VideoDecoder private constructor(
         val colorspace = src.get(JAVA_INT, LibavAbi.Frame.COLORSPACE)
         val range = src.get(JAVA_INT, LibavAbi.Frame.COLOR_RANGE)
         if (colorspace == swsColorspace && range == swsRange) return
-        swsColorspace = colorspace
-        swsRange = range
         val coefficients = Libav.swsGetCoefficients(swsCoefficientsFor(colorspace, width, height))
         val srcFullRange = if (range == LibavAbi.AVCOL_RANGE_JPEG) 1 else 0
         // RGBA output is always full range. Sources without a YUV matrix
         // (paletted gif, rgba apng) answer a negative and swscale keeps
         // its defaults, which is correct there.
-        Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
+        val applied = Libav.swsSetColorspaceDetails(swsCtx, coefficients, srcFullRange, coefficients, 1, 0, SWS_UNIT, SWS_UNIT)
+        // Cached AFTER the call, not before it. Written first, a refusal for
+        // any reason other than the no-matrix case above left the cache
+        // saying "applied" for a geometry where it never was, and every later
+        // frame took the early return -- so one refused call meant the whole
+        // stream converted with swscale's defaults instead of the file's own
+        // matrix. The tone-map path next door already checked its return.
+        if (applied >= 0) {
+            swsColorspace = colorspace
+            swsRange = range
+        }
     }
 
     /** PQ and HLG are the only transfers the tone-mapper handles. */
@@ -451,23 +604,26 @@ class VideoDecoder private constructor(
             return fallBackFromHdr("sws_setColorspaceDetails(RGBA64) refused")
         }
         hdrCtx = ctx
+        val pixels = width.toLong() * height
+        hdrArena.close()
+        hdrArena = Arena.ofConfined()
+        hdrNative = hdrArena.allocate(pixels * 8 + SWS_WRITE_PADDING) // RGBA64 (4ch x 2B) + swscale block spill
+        hdrShorts = ShortArray((pixels * 4).toInt())
+        hdrOutHeap = ByteArray((pixels * 4).toInt())
+        hdrDstData = hdrArena.allocate(ADDRESS, 8)
+        hdrDstData.setAtIndex(ADDRESS, 0, hdrNative)
+        hdrDstStride = hdrArena.allocate(JAVA_INT, 8)
+        hdrDstStride.setAtIndex(JAVA_INT, 0, width * 8)
+        toneMapper = ToneMapper(
+            if (trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67) ToneMapper.HdrTransfer.HLG else ToneMapper.HdrTransfer.PQ,
+        )
+        // Cached last, for the reason ensureSws gives.
         hdrWidth = width
         hdrHeight = height
         hdrFormat = format
         hdrTrc = trc
         hdrColorspace = colorspace
         hdrRange = range
-        val pixels = width.toLong() * height
-        hdrNative = arena.allocate(pixels * 8 + SWS_WRITE_PADDING) // RGBA64 (4ch x 2B) + swscale block spill
-        hdrShorts = ShortArray((pixels * 4).toInt())
-        hdrOutHeap = ByteArray((pixels * 4).toInt())
-        hdrDstData = arena.allocate(ADDRESS, 8)
-        hdrDstData.setAtIndex(ADDRESS, 0, hdrNative)
-        hdrDstStride = arena.allocate(JAVA_INT, 8)
-        hdrDstStride.setAtIndex(JAVA_INT, 0, width * 8)
-        toneMapper = ToneMapper(
-            if (trc == LibavAbi.AVCOL_TRC_ARIB_STD_B67) ToneMapper.HdrTransfer.HLG else ToneMapper.HdrTransfer.PQ,
-        )
         return true
     }
 
@@ -479,14 +635,17 @@ class VideoDecoder private constructor(
 
     /** swscale to 16-bit RGBA, then the pure-Kotlin tone-map to 8-bit RGBA. */
     private fun toneMappedFrame(src: MemorySegment, width: Int, height: Int, target: ByteArray?): RgbaFrame {
-        Libav.swsScale(
-            hdrCtx,
-            src.asSlice(LibavAbi.Frame.DATA),
-            src.asSlice(LibavAbi.Frame.LINESIZE),
-            0,
-            height,
-            hdrDstData,
-            hdrDstStride,
+        Libav.checkAv(
+            Libav.swsScale(
+                hdrCtx,
+                src.asSlice(LibavAbi.Frame.DATA),
+                src.asSlice(LibavAbi.Frame.LINESIZE),
+                0,
+                height,
+                hdrDstData,
+                hdrDstStride,
+            ),
+            "sws_scale(tone-map)",
         )
         MemorySegment.copy(hdrNative, JAVA_SHORT, 0, hdrShorts, 0, hdrShorts.size)
         val out = target?.takeIf { it.size == hdrOutHeap.size } ?: hdrOutHeap
@@ -494,7 +653,20 @@ class VideoDecoder private constructor(
         return RgbaFrame(width, height, currentPtsNanos(src), out)
     }
 
+    /**
+     * Idempotent, which AutoCloseable requires and this did not honour. The
+     * scaler contexts are released before the arena is touched and were not
+     * cleared, so a second call freed them again: a double free that aborts
+     * the JVM rather than throwing. The later frees are shielded by the arena
+     * refusing a closed session, which is why only the first two ever bit --
+     * and why the guard belongs here rather than on each of them.
+     */
+    private val closed = AtomicBoolean(false)
+
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        swsArena.close()
+        hdrArena.close()
         if (swsCtx != MemorySegment.NULL) Libav.swsFreeContext(swsCtx)
         if (hdrCtx != MemorySegment.NULL) Libav.swsFreeContext(hdrCtx)
         // The free functions take T** and null the pointer; one scratch slot.
@@ -549,6 +721,18 @@ class VideoDecoder private constructor(
                 LibavAbi.AV_CODEC_ID_VP8 -> "libvpx"
                 LibavAbi.AV_CODEC_ID_VP9 -> "libvpx-vp9"
                 else -> return defaultDecoder
+            }
+            // libvpx is preferred for ONE reason -- the webm alpha
+            // side-channel, which the native decoders drop -- and that is an
+            // eight-bit yuva420p feature. Past those two formats the
+            // preference only costs: libvpx decodes ten and twelve bits only
+            // when it was configured with --enable-vp9-highbitdepth, the
+            // shipped bundle was not, and forcing it there refused the stream
+            // outright where FFmpeg's own decoder, compiled in beside it,
+            // reads it. Ten-bit VP9 did not play at all.
+            val format = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.FORMAT)
+            if (format != LibavAbi.AV_PIX_FMT_YUV420P && format != LibavAbi.AV_PIX_FMT_YUVA420P) {
+                return defaultDecoder
             }
             val libvpx = Libav.avcodecFindDecoderByName(arena.allocateFrom(libvpxName))
             return if (libvpx == MemorySegment.NULL) defaultDecoder else libvpx
@@ -615,8 +799,27 @@ class VideoDecoder private constructor(
                 val device = deviceOut.get(ADDRESS, 0)
                 // The context owns the ref it is handed (avcodec_free_context
                 // releases it); we keep the original to unref at close.
-                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, Libav.avBufferRef(device))
+                //
+                // av_buffer_ref answers NULL when it cannot allocate, and a
+                // NULL written into hw_device_ctx opens the codec with no
+                // device while the surface format still names a GPU one -- so
+                // the negotiation pins a format nothing can back and every
+                // receive fails, for a reason nothing reports.
+                val deviceRef = Libav.avBufferRef(device)
+                if (deviceRef == MemorySegment.NULL) {
+                    Libav.avBufferUnref(deviceOut)
+                    continue
+                }
+                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, deviceRef)
                 ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
+                // The surface to negotiate for, travelling with the context so
+                // the upcall finds it whichever thread avcodec calls it on.
+                // Written before avcodec_open2, which is where frame threading
+                // clones the context for its workers. Freed with the session
+                // arena, which outlives avcodec_free_context.
+                val target = arena.allocate(JAVA_INT)
+                target.set(JAVA_INT, 0, hwPixFmt)
+                ctx.set(ADDRESS, LibavAbi.CodecContext.OPAQUE, target)
                 return HwSetup(hwPixFmt, device)
             }
             if (hardware == HwAccel.REQUIRE) {
@@ -688,21 +891,32 @@ class VideoDecoder private constructor(
         ): VideoDecoder {
             var codecCtx = MemorySegment.NULL
             var hwDevice = MemorySegment.NULL
+            // Declared out here so the catch can release them: every throw
+            // past their allocation -- the no-dimensions guard, the metadata
+            // readers, the duration arithmetic -- used to leak both.
+            var packet = MemorySegment.NULL
+            var frame = MemorySegment.NULL
             try {
                 Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info")
 
                 val decoderOut = arena.allocate(ADDRESS)
-                val streamIndex = Libav.checkAv(
-                    Libav.avFindBestStream(fmtCtx, LibavAbi.AVMEDIA_TYPE_VIDEO, decoderOut),
-                    "av_find_best_stream(video)",
-                )
+                val best = Libav.avFindBestStream(fmtCtx, LibavAbi.AVMEDIA_TYPE_VIDEO, decoderOut)
+                // No stream, or a stream nothing here can decode: both mean
+                // there is no picture to show, and the bundle carrying a
+                // deliberately narrow decoder set is a supported configuration
+                // -- such a file played its sound before and must keep doing
+                // so. Anything else negative is a genuine failure.
+                if (best == LibavAbi.AVERROR_STREAM_NOT_FOUND || best == LibavAbi.AVERROR_DECODER_NOT_FOUND) {
+                    throw NoVideoStreamException("$label carries no video this build can decode")
+                }
+                val streamIndex = Libav.checkAv(best, "av_find_best_stream(video)")
                 val stream = streamAt(fmtCtx, streamIndex)
                 if (stream.get(JAVA_INT, LibavAbi.Stream.DISPOSITION) and LibavAbi.AV_DISPOSITION_ATTACHED_PIC != 0) {
                     // The only "video" is the cover art (an mp3/flac with a
                     // picture): playing it would end the player at its one
                     // frame while the sound runs on. Refuse, so the player
                     // takes the frameless path; the cover ships as bytes.
-                    throw LibavException("the only video stream of $label is an attached picture")
+                    throw NoVideoStreamException("the only video stream of $label is an attached picture")
                 }
                 val timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
                 val timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
@@ -729,14 +943,10 @@ class VideoDecoder private constructor(
                     setupHwAccel(arena, codecCtx, decoder, hardware)
                 }
                 hwDevice = hw.deviceCtx
-                // Tell the get_format upcall which surface this device backs, so
-                // it returns exactly that rather than the first hardware format
-                // avcodec happens to offer (#2).
-                Libav.setNegotiatedHwFormat(hw.pixFmt)
                 Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
 
-                val packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
-                val frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
+                frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                 if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
                     throw LibavException("av_packet_alloc/av_frame_alloc returned NULL")
                 }
@@ -765,6 +975,7 @@ class VideoDecoder private constructor(
                     enumerateSubtitleTracks(fmtCtx, arena),
                     (codedWidth to codedHeight).takeIf { codedWidth > 0 && codedHeight > 0 },
                     hw.pixFmt,
+                    hardware,
                     hwDevice,
                     avioSource,
                     reopenPath,
@@ -774,6 +985,14 @@ class VideoDecoder private constructor(
                 if (codecCtx != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, codecCtx)
                     Libav.avcodecFreeContext(ptrPtr)
+                }
+                if (packet != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, packet)
+                    Libav.avPacketFree(ptrPtr)
+                }
+                if (frame != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, frame)
+                    Libav.avFrameFree(ptrPtr)
                 }
                 // free_context released the codec's ref; release ours.
                 if (hwDevice != MemorySegment.NULL) {
@@ -815,14 +1034,23 @@ internal fun swsCoefficientsFor(colorspace: Int, width: Int, height: Int): Int =
  * matrices exist in theory, never in the consumer's files (ROADMAP
  * section 8).
  */
+private const val DISPLAY_MATRIX_BYTES = 9L * Int.SIZE_BYTES
+
 internal fun displayRotationDegrees(codecpar: MemorySegment): Int {
     val sideData = codecpar.get(ADDRESS, LibavAbi.CodecParameters.CODED_SIDE_DATA)
     val count = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.NB_CODED_SIDE_DATA)
     if (sideData == MemorySegment.NULL || count == 0) return 0
     val entry = Libav.avPacketSideDataGet(sideData, count, LibavAbi.AV_PKT_DATA_DISPLAYMATRIX)
     if (entry == MemorySegment.NULL) return 0
-    val matrix = entry.reinterpret(LibavAbi.PacketSideData.SIZEOF).get(ADDRESS, LibavAbi.PacketSideData.DATA)
+    val sized = entry.reinterpret(LibavAbi.PacketSideData.SIZEOF)
+    val matrix = sized.get(ADDRESS, LibavAbi.PacketSideData.DATA)
     if (matrix == MemorySegment.NULL) return 0
+    // av_display_rotation_get takes int32_t[9] and reads all thirty-six
+    // bytes unconditionally. The pointer arrives from the container with no
+    // length attached and reinterpret does not give it one, so a truncated
+    // or hostile entry reads past whatever FFmpeg allocated. FFmpeg guards
+    // its own callers the same way (libavutil/dump.c).
+    if (sized.get(JAVA_LONG, LibavAbi.PacketSideData.SIZE) < DISPLAY_MATRIX_BYTES) return 0
     val ccw = Libav.avDisplayRotationGet(matrix)
     if (ccw.isNaN()) return 0
     val quarters = Math.round(-ccw / 90.0).toInt()
@@ -847,9 +1075,30 @@ internal fun formatStartTimeNanos(fmtCtx: MemorySegment): Long {
  * Container-reported duration: the AVFormatContext value (microseconds)
  * when present, the stream's own (its time_base) as the fallback, null
  * when the container does not know. Unknowns appear as AV_NOPTS or
- * non-positive values depending on the demuxer; both read as null. This
- * is the playable SPAN and already excludes start_time, so it is NOT
- * normalized -- the zero-based position runs 0..span as-is.
+ * non-positive values depending on the demuxer; both read as null.
+ *
+ * The playable SPAN, so that the zero-based position runs 0..span. That is
+ * what the value usually already is, and for one family of containers it is
+ * not. FFmpeg only computes a duration of its own when the demuxer left one
+ * unset, and it computes `end_time - start_time` (libavformat/demux.c,
+ * update_stream_timings) -- a span by construction. A demuxer that DID set
+ * one is taken verbatim and start_time is never subtracted from it, and
+ * Matroska's is the last timestamp rather than the length: measured on a
+ * five-second clip muxed with a ten-second offset, mkv and webm declare
+ * 15 s where mp4 and mpegts declare 5.
+ *
+ * The tell is the per-stream duration. Where a container states one, it
+ * states a length in that stream's own time base, and the format-level value
+ * agrees with it; where none is stated -- matroska -- the format-level value
+ * came from the container verbatim and carries the offset with it.
+ *
+ * The residual: a matroska file whose Duration element really is a length
+ * (the spec's reading, and what mkvmerge writes) AND which also carries a
+ * nonzero start_time would be understated here by that offset. It is the
+ * cheaper way to be wrong. Overstating holds the end of every lap open until
+ * media time reaches a mark it never will -- ten seconds of frozen picture
+ * per lap, on the measurement above -- while understating ends the lap on
+ * time and costs a progress bar the last moments of its travel.
  */
 internal fun containerDurationNanos(
     fmtCtx: MemorySegment,
@@ -858,10 +1107,24 @@ internal fun containerDurationNanos(
     timeBaseDen: Int,
 ): Long? {
     val container = fmtCtx.get(JAVA_LONG, LibavAbi.FormatContext.DURATION)
-    if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) return container * 1_000L
+    if (container != LibavAbi.AV_NOPTS_VALUE && container > 0) {
+        val nanos = container * 1_000L
+        val start = formatStartTimeNanos(fmtCtx)
+        if (start > 0 && nanos > start && !anyStreamDeclaresDuration(fmtCtx)) return nanos - start
+        return nanos
+    }
     val own = stream.get(JAVA_LONG, LibavAbi.Stream.DURATION)
     if (own != LibavAbi.AV_NOPTS_VALUE && own > 0) return ptsToNanos(own, timeBaseNum, timeBaseDen)
     return null
+}
+
+/** Whether any stream states a length of its own -- see [containerDurationNanos]. */
+private fun anyStreamDeclaresDuration(fmtCtx: MemorySegment): Boolean {
+    for (i in 0 until fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)) {
+        val d = streamAt(fmtCtx, i).get(JAVA_LONG, LibavAbi.Stream.DURATION)
+        if (d != LibavAbi.AV_NOPTS_VALUE && d > 0) return true
+    }
+    return false
 }
 
 /** The stream at [index] of an opened format context. */
@@ -923,7 +1186,30 @@ internal fun containerChapters(fmtCtx: MemorySegment, arena: Arena, startTimeNan
 }
 
 /** Codec ids whose subtitle decoders emit ASS event lines (text path). */
-private val TEXT_SUBTITLE_CODECS = setOf(
+/**
+ * Whether a subtitle codec produces text or a picture.
+ *
+ * Asked of the library, because a list of ours is a list of the codecs
+ * somebody remembered. Everything outside it fell to the bitmap branch,
+ * whose decoders emit ASS rects that branch skips -- so microdvd, sami,
+ * plain text, TTML and the rest selected cleanly, reported themselves
+ * active, ran a demux thread and drew nothing at all, with no error
+ * anywhere. The descriptor answers for every codec, including the ones
+ * added after this was written.
+ *
+ * The old list survives as the fallback for an id the library does not
+ * describe, which is not a case that should arise.
+ */
+internal fun isTextSubtitleCodec(codecId: Int): Boolean {
+    val descriptor = Libav.avcodecDescriptorGet(codecId)
+    if (descriptor == MemorySegment.NULL) return codecId in FALLBACK_TEXT_SUBTITLE_CODECS
+    val props = descriptor.reinterpret(LibavAbi.CodecDescriptor.SIZEOF)
+        .get(JAVA_INT, LibavAbi.CodecDescriptor.PROPS)
+    if (props and LibavAbi.AV_CODEC_PROP_BITMAP_SUB != 0) return false
+    return props and LibavAbi.AV_CODEC_PROP_TEXT_SUB != 0
+}
+
+private val FALLBACK_TEXT_SUBTITLE_CODECS = setOf(
     LibavAbi.AV_CODEC_ID_ASS,
     LibavAbi.AV_CODEC_ID_SSA,
     LibavAbi.AV_CODEC_ID_SUBRIP,
@@ -986,7 +1272,7 @@ internal fun enumerateSubtitleTracks(
             language = dictValue(metadata, languageKey),
             title = dictValue(metadata, titleKey),
             codecName = Libav.avcodecGetName(codecId).reinterpret(Long.MAX_VALUE).getString(0),
-            isText = codecId in TEXT_SUBTITLE_CODECS,
+            isText = isTextSubtitleCodec(codecId),
             isDefault = disposition and LibavAbi.AV_DISPOSITION_DEFAULT != 0,
             isForced = disposition and LibavAbi.AV_DISPOSITION_FORCED != 0,
             externalPath = externalPath,

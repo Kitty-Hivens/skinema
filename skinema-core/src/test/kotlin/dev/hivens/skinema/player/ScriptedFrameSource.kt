@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.VideoDecoder
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -64,14 +65,23 @@ class ScriptedFrameSource(
 
     override fun convertLast(target: ByteArray?): VideoDecoder.RgbaFrame = fill(target, lastIndex)
 
+    /** Seeks asked for; a lap that turns without producing anything shows up here. */
+    val seekCount = AtomicInteger(0)
+
     override fun seekTo(ptsNanos: Long) {
+        seekCount.incrementAndGet()
         // At-or-before on the keyframe grid; also reopens a drained
         // stream, per the FrameSource contract.
         val frame = (ptsNanos / periodNanos).toInt()
         index = (frame / keyframeEvery * keyframeEvery).coerceIn(0, frameCount)
     }
 
-    override fun close() = Unit
+    /** Set by [close]; a teardown that never ran shows up here. */
+    val closed = AtomicBoolean(false)
+
+    override fun close() {
+        closed.set(true)
+    }
 
     private fun fill(target: ByteArray?, i: Int): VideoDecoder.RgbaFrame {
         convertCount.incrementAndGet()

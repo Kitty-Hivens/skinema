@@ -39,6 +39,8 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
     @Volatile
     private var pendingError: Throwable? = null
 
+    private val freed = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val readStub: MemorySegment = linker.upcallStub(
         MethodHandles.lookup().bind(
             this, "readPacket",
@@ -82,6 +84,16 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
             val want = if (bufSize < scratch.size) bufSize else scratch.size
             val n = source.read(scratch, 0, want)
             if (n <= 0) return LibavAbi.AVERROR_EOF
+            // [buf] is FFmpeg's and is exactly [bufSize] long, while the copy
+            // below reinterprets it to whatever count comes back -- which
+            // turns off the bounds check. A source that answers with more
+            // than it was asked for therefore writes past the end of an
+            // FFmpeg allocation, silently, and the damage surfaces later as a
+            // crash with no connection to the source that caused it. The
+            // interface says "up to length"; one that says otherwise fails
+            // this session closed, through the same channel a read that
+            // raised would take.
+            if (n > want) throw LibavException("MediaSource.read returned $n bytes for a request of $want")
             MemorySegment.copy(scratch, 0, buf.reinterpret(n.toLong()), JAVA_BYTE, 0, n)
             position += n
             return n
@@ -134,6 +146,12 @@ internal class AvioSource(arena: Arena, private val source: MediaSource) {
      * free the buffer, so the current one is released first.
      */
     fun free(ptrPtr: MemorySegment) {
+        // Once. Every caller today is exclusive of the others, and the day one
+        // is not, a second pass would av_free a released buffer and free a
+        // released context -- which aborts the JVM rather than raising, the
+        // one failure a caller cannot contain. Both close() paths in this
+        // package guard themselves the same way.
+        if (!freed.compareAndSet(false, true)) return
         val current = context.reinterpret(LibavAbi.AvioContext.BUFFER + ADDRESS.byteSize())
             .get(ADDRESS, LibavAbi.AvioContext.BUFFER)
         if (current != MemorySegment.NULL) Libav.avFree(current)

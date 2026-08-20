@@ -13,6 +13,47 @@ class DestinationRectTest {
         assertEquals(expected.bottom, actual.bottom, absoluteTolerance = 0.1f)
     }
 
+    /**
+     * Subtitles are laid out in what a viewer can see, not in the whole of
+     * the video's rect. Under Cover that rect deliberately overflows the
+     * bounds, and text placed in the overflow is clipped away -- a portrait
+     * clip in a square surface put a bottom-anchored line below the edge, so
+     * turning subtitles on showed nothing.
+     */
+    @Test
+    fun `the subtitle canvas is the part of the video the bounds contain`() {
+        // Fit: the video is already inside, so nothing changes.
+        assertRect(
+            Rect.makeXYWH(0f, 125f, 500f, 250f),
+            visibleRect(Rect.makeXYWH(0f, 125f, 500f, 250f), 500f, 500f, 0),
+        )
+        // Cover, portrait source in a square surface: 480x640 scaled by
+        // 1000/480 is 1000x1333 centred, so a third of it hangs off. What
+        // stays is the square.
+        assertRect(
+            Rect.makeXYWH(0f, 0f, 1000f, 1000f),
+            visibleRect(Rect.makeXYWH(0f, -166.7f, 1000f, 1333.3f), 1000f, 1000f, 0),
+        )
+        // Cover the other way: a landscape source overflows left and right.
+        assertRect(
+            Rect.makeXYWH(0f, 0f, 400f, 400f),
+            visibleRect(Rect.makeXYWH(-100f, 0f, 600f, 400f), 400f, 400f, 0),
+        )
+        // A quarter turn: the clip is in screen space and the subtitles are
+        // placed in the video's pre-rotation space, so the bounds' sides swap
+        // about the same centre the rotation turns around. Bounds 400x800
+        // against a pre-rotation rect of 800x400 leaves the whole of it.
+        assertRect(
+            Rect.makeXYWH(0f, 0f, 800f, 400f),
+            visibleRect(Rect.makeXYWH(0f, 0f, 800f, 400f), 400f, 800f, 90),
+        )
+        // And the same rect against narrow bounds keeps only the middle.
+        assertRect(
+            Rect.makeXYWH(100f, 0f, 600f, 400f),
+            visibleRect(Rect.makeXYWH(0f, 0f, 800f, 400f), 400f, 600f, 270),
+        )
+    }
+
     @Test
     fun `matching aspect fills the bounds exactly under both modes`() {
         for (scale in VideoScale.entries) {

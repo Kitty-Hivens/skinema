@@ -2,16 +2,24 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
+import dev.hivens.skinema.audio.PacedPcmSink
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
+import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.libav.Fixtures
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import dev.hivens.skinema.libav.LibavException
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.concurrent.thread
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -85,6 +93,32 @@ class VideoPlayerTest {
         }
     }
 
+    /**
+     * A video that cannot be opened must fail the player, sound or no sound.
+     * Every throw out of the open used to take the frameless door when the
+     * file had audio -- an undecodable codec, a truncated stream with no
+     * dimensions, a hardware-decode request the machine could not honour --
+     * so the player played on as audio-only with the cause dropped, and the
+     * fallback a consumer was told to build never ran. Only "there is no
+     * video here" is frameless; the covered-audio test above pins that side.
+     */
+    @Test
+    fun `a video that cannot be opened fails even when the file has sound`() {
+        Fixtures.assumeDecodeEnvironment()
+        val tone = Fixtures.generate(
+            dir.resolve("failopen.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
+        )
+        val boom = LibavException("no decoder for this video stream")
+        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null) { throw boom }.use { player ->
+            assertTrue(
+                awaitTrue { player.state is VideoPlayer.State.Failed },
+                "an unopenable video must surface as Failed, state=${player.state}",
+            )
+            assertEquals(boom, (player.state as VideoPlayer.State.Failed).cause, "the cause must reach the consumer")
+        }
+    }
+
     @Test
     fun `a missing file surfaces as Failed, not an exception`() {
         Fixtures.assumeDecodeEnvironment()
@@ -135,6 +169,265 @@ class VideoPlayerTest {
                 d != null && d in 900_000_000L..1_300_000_000L,
                 "frameless playback reports the audio side's duration, got ${d}ns",
             )
+        }
+    }
+
+    private fun silent(name: String, seconds: String = "0.5") = Fixtures.generate(
+        dir.resolve(name),
+        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=$seconds",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+    )
+
+    /**
+     * Asking for sound a file does not have, or a machine cannot play, must
+     * not stop the picture. The player documents both as degrading to silent
+     * playback; a gate that waited for the audio side to say it was finished
+     * hung on them instead, because a side that never started never said so.
+     */
+    @Test
+    fun `a file with no sound still finishes when audio was asked for`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(silent("mute.mp4"), loop = false, audio = true, sink = FakePcmSink()).use { player ->
+            assertTrue(
+                awaitTrue(deadlineMs = 15_000) { player.acquireFrame(); player.state is VideoPlayer.State.Ended },
+                "silent playback must end, state ${player.state} at ${player.positionNanos() / 1_000_000}ms",
+            )
+        }
+    }
+
+    @Test
+    fun `a file with no sound still loops when audio was asked for`() {
+        Fixtures.assumeDecodeEnvironment()
+        VideoPlayer(silent("mute-loop.mp4"), loop = true, audio = true, sink = FakePcmSink()).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            var last = -1L
+            assertTrue(
+                awaitTrue(deadlineMs = 15_000) {
+                    val pts = player.acquireFrame()?.ptsNanos ?: return@awaitTrue false
+                    val wrapped = pts < last
+                    last = pts
+                    wrapped
+                },
+                "the lap must come round, state ${player.state}",
+            )
+        }
+    }
+
+    /**
+     * A pause near the end of a lap has to stop the lap, not wrap it. The wait
+     * for the file's own time to run out reported the lap complete when the
+     * state merely changed, so the wrap ran anyway: the decoder rewound, the
+     * sound restarted and the clock came off pause under a paused player.
+     */
+    @Test
+    fun `pausing while a lap plays out leaves the player paused and still`() {
+        Fixtures.assumeDecodeEnvironment()
+        val still = Fixtures.generate(
+            dir.resolve("still-lap.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoPlayer(still, loop = true, audio = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            player.pause()
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "the pause must land")
+            val at = player.positionNanos()
+            Thread.sleep(400)
+            assertIs<VideoPlayer.State.Paused>(player.state, "a paused player must stay paused")
+            assertEquals(at, player.positionNanos(), "a paused player's position must stand")
+        }
+    }
+
+    /**
+     * Reaching the end stops the clock, so leaving the end has to start it
+     * again -- including when the seek that leaves lands past the end and
+     * comes straight back, which took a different door out and left the
+     * timeline running away from a file nothing was playing.
+     */
+    @Test
+    fun `seeking out of the end revives playback, and seeking past it does not`() {
+        Fixtures.assumeDecodeEnvironment()
+        val video = silent("revive.mp4", seconds = "1")
+        VideoPlayer(video, loop = false, audio = false).use { player ->
+            assertTrue(
+                awaitTrue(deadlineMs = 15_000) { player.acquireFrame(); player.state is VideoPlayer.State.Ended },
+                "playback must end first",
+            )
+            player.seek(0)
+            var seen = -1L
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.let { seen = it.ptsNanos }; seen > 300_000_000L },
+                "a seek out of the end must play again, reached ${seen}ns",
+            )
+
+            assertTrue(
+                awaitTrue(deadlineMs = 15_000) { player.acquireFrame(); player.state is VideoPlayer.State.Ended },
+                "playback must end again",
+            )
+            player.seek(30_000_000_000L)
+            // Ended is no handshake for a seek issued FROM Ended: the state
+            // never leaves it. A seek out of the end starts the clock -- that
+            // is what revives a player whose clock was stopped -- and one that
+            // lands on nothing stops it again, so a reading taken between the
+            // two is of a running clock. Wait for it to stand still first; a
+            // runner where the file's declared duration is not exactly the
+            // last frame plus its own display time caught this reading 12.8us
+            // past the end, which is the seek in flight and not a timeline
+            // running away.
+            var at = -1L
+            assertTrue(
+                awaitTrue {
+                    val now = player.positionNanos()
+                    val settled = now == at
+                    at = now
+                    settled
+                },
+                "the timeline must come to a stop after a seek past the end",
+            )
+            Thread.sleep(300)
+            assertEquals(at, player.positionNanos(), "the timeline must not run on past the end")
+        }
+    }
+
+    /**
+     * A lap is over when the file's time is up, not when the decoder runs dry.
+     * A file that decodes faster than it plays -- a single frame, a still
+     * handed to the player, a truncated stream -- looped on itself as fast as
+     * the machine allowed and burned a whole core on content nobody was
+     * watching. loop = true is the documented default of the headline example,
+     * so an image dropped in where a video was expected did this silently.
+     */
+    @Test
+    fun `a one-frame looping file does not spin the decode thread`() {
+        Fixtures.assumeDecodeEnvironment()
+        val still = Fixtures.generate(
+            dir.resolve("one-frame.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        val threads = java.lang.management.ManagementFactory.getThreadMXBean()
+        VideoPlayer(still, loop = true, audio = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val decode = threads.allThreadIds.first { threads.getThreadInfo(it)?.getThreadName() == "skinema-decode" }
+            val before = threads.getThreadCpuTime(decode)
+            val wall = System.nanoTime()
+            var frames = 0
+            while (System.nanoTime() - wall < 2_000_000_000L) {
+                if (player.acquireFrame() != null) frames++
+                Thread.sleep(10)
+            }
+            val cores = (threads.getThreadCpuTime(decode) - before).toDouble() / (System.nanoTime() - wall)
+            assertTrue(frames > 0, "the file must keep looping, saw no frames")
+            // Measured: healthy is a few thousandths of a core, the spin this
+            // guards was just under half of one. The old bar sat at 0.5,
+            // calibrated from the broken measurement, so it passed either way
+            // -- a check that could not fail on the machine that set it.
+            assertTrue(cores < 0.05, "the decode thread must not spin on a short lap, used $cores of a core")
+        }
+    }
+
+    /**
+     * Neither stream's end is the file's end on its own. A short picture over
+     * a long track ended the player mid-track; a short track under a long
+     * picture stranded the picture where the sound stopped, still reporting
+     * Playing. Both are ordinary files, and both are the same mistake read
+     * from opposite sides.
+     */
+    @Test
+    fun `playback ends when both streams do, not when the first one does`() {
+        Fixtures.assumeDecodeEnvironment()
+        for ((name, videoSeconds, audioSeconds) in listOf(
+            Triple("short-audio.mp4", "3", "1"),
+            Triple("short-video.mp4", "1", "3"),
+        )) {
+            val file = Fixtures.generate(
+                dir.resolve(name),
+                "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=$videoSeconds",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=$audioSeconds",
+                "-map", "0:v", "-map", "1:a",
+                "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+                "-c:a", "aac",
+            )
+            VideoPlayer(file, loop = false, audio = true, sink = FakePcmSink()).use { player ->
+                val deadline = System.nanoTime() + 30_000_000_000L
+                while (player.state !is VideoPlayer.State.Ended && System.nanoTime() < deadline) {
+                    player.acquireFrame()
+                    Thread.sleep(10)
+                }
+                assertIs<VideoPlayer.State.Ended>(player.state, "$name must finish")
+                val end = player.positionNanos()
+                assertTrue(
+                    end >= 2_500_000_000L,
+                    "$name should play out both streams, stopped at ${end / 1_000_000}ms",
+                )
+                // On the duration exactly, not a frame period short of it and
+                // not past it: a progress bar has to be able to reach its end
+                // and has to stop there.
+                assertEquals(player.durationNanos, end, "$name: the end is the duration")
+                Thread.sleep(120)
+                assertEquals(end, player.positionNanos(), "$name: position must freeze at Ended")
+            }
+        }
+    }
+
+    /**
+     * A lap of a file whose picture and sound end together -- practically
+     * every normally muxed clip -- must cost the file's own time. It cost a
+     * quarter more: the wrap waits for the sound to finish, and the sound's
+     * end-of-track wait was measured against a container timestamp its
+     * device-frame clock could never reach, so it ran to its stall deadline
+     * instead. The picture stood on its last frame for that grace, state
+     * reporting Playing throughout.
+     */
+    @Test
+    fun `a looping file whose streams end together laps in its own time`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("equal-ends.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "flac",
+        )
+        // A line that plays in real time. FakePcmSink accepts a whole file
+        // between two clock readings and calls it played, which makes every
+        // question about when a lap ends unanswerable.
+        val sink = PacedPcmSink(bufferFrames = 8_820)
+        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+            try {
+                val wrapWall = mutableListOf<Long>()
+                val wrapGapMs = mutableListOf<Long>()
+                var lastPts = -1L
+                var lastPublish = 0L
+                val deadline = System.nanoTime() + 25_000_000_000L
+                while (wrapWall.size < 4 && System.nanoTime() < deadline) {
+                    val pts = player.acquireFrame()?.ptsNanos
+                    if (pts != null) {
+                        val now = System.nanoTime()
+                        if (pts < lastPts) {
+                            wrapWall += now
+                            wrapGapMs += (now - lastPublish) / 1_000_000
+                        }
+                        lastPts = pts
+                        lastPublish = now
+                    }
+                    Thread.sleep(2)
+                }
+                assertEquals(4, wrapWall.size, "four wraps must come round inside the deadline")
+                val laps = wrapWall.zipWithNext { a, b -> (b - a) / 1_000_000 }
+                // The shortest lap and the shortest wrap gap, not the average
+                // of either: a stalled runner lengthens individual laps, while
+                // the defect lengthened every one by the same fixed grace.
+                // Three laps, so one stalled one still leaves a clean minimum.
+                assertTrue(laps.min() < 2_350, "a 2s lap must not carry the tail wait's grace, laps=$laps ms")
+                assertTrue(
+                    wrapGapMs.min() < 400,
+                    "the picture must not stand still across the wrap, gaps=$wrapGapMs ms",
+                )
+            } finally {
+                sink.release()
+            }
         }
     }
 
@@ -396,6 +689,49 @@ class VideoPlayerTest {
         }
     }
 
+    /**
+     * A seek landing inside the window where a lap is playing itself out.
+     * The wait reports that the wrap was superseded -- the seek has already
+     * put the decoder and the clock where the user asked -- and the caller
+     * then restored the end-of-stream mark it had just voided. The picture
+     * stood on the landing frame until the clock walked the rest of the lap
+     * out and wrapped: the seek honoured by the clock and thrown away by the
+     * picture. One frame per second widens the window to a whole second; at
+     * ordinary frame rates it is one frame period, and the defect is the
+     * same size as the lap.
+     */
+    @Test
+    fun `a seek while the lap plays out is not undone by the wrap`() {
+        Fixtures.assumeDecodeEnvironment()
+        val slow = Fixtures.generate(
+            dir.resolve("slowlap.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1", "-t", "3",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        VideoPlayer(slow, loop = true, audio = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // Past the last frame (pts 2s) but inside the file's 3s: the
+            // decode thread is waiting the lap out.
+            assertTrue(
+                awaitTrue { player.positionNanos() > 2_100_000_000L },
+                "the lap must reach its play-out window, at ${player.positionNanos() / 1_000_000}ms",
+            )
+            player.seek(500_000_000L)
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 1_000_000_000L },
+                "the landing must publish",
+            )
+            var next = -1L
+            assertTrue(
+                awaitTrue(deadlineMs = 1_500) {
+                    player.acquireFrame()?.let { next = it.ptsNanos }
+                    next == 2_000_000_000L
+                },
+                "playback must carry on from the landing, saw ${next / 1_000_000}ms",
+            )
+        }
+    }
+
     @Test
     fun `a clock jump far ahead is caught up and frames keep flowing`() =
         chaseLivenessScenario(readAheadFrames = 1)
@@ -602,6 +938,99 @@ class VideoPlayerTest {
         }
     }
 
+    /**
+     * The audio side can leave in the middle of a file: a device that dies
+     * for good, a track switch onto a rate the machine refuses. Which side
+     * masters the clock was decided once, at the open, so the player went on
+     * deferring to a thread that was no longer there -- its own seeks stopped
+     * re-anchoring the clock, and the landing counter the dead thread left
+     * owed made the pacer hold every frame it had. The picture stopped on the
+     * landing frame while state reported Playing.
+     */
+    @Test
+    fun `a seek keeps the picture moving after the audio thread has died`() {
+        Fixtures.assumeDecodeEnvironment()
+        val paced = PacedPcmSink(bufferFrames = 8_820)
+        val gone = java.util.concurrent.atomic.AtomicBoolean(false)
+        // A device that works and then does not, the way a yanked one throws.
+        val sink = object : PcmSink by paced {
+            override fun write(data: ByteArray, offset: Int, length: Int) {
+                if (gone.get()) throw IllegalStateException("device gone")
+                paced.write(data, offset, length)
+            }
+        }
+        VideoPlayer(twoAudioTracks("audiodeath.mkv"), loop = false, audio = true, sink = sink).use { player ->
+            try {
+                assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+                gone.set(true)
+                // The next write throws and takes the audio thread with it.
+                Thread.sleep(300)
+
+                player.seek(10_000_000_000L)
+                var landed = -1L
+                assertTrue(
+                    awaitTrue {
+                        player.acquireFrame()?.let { landed = it.ptsNanos }
+                        landed >= 10_000_000_000L
+                    },
+                    "the landing must publish, saw ${landed / 1_000_000}ms",
+                )
+                var next = -1L
+                assertTrue(
+                    awaitTrue(deadlineMs = 3_000) {
+                        player.acquireFrame()?.let { next = it.ptsNanos }
+                        next > landed
+                    },
+                    "the picture must keep moving past the landing, stuck at ${landed / 1_000_000}ms",
+                )
+            } finally {
+                paced.release()
+            }
+        }
+    }
+
+    /**
+     * A device that stopped consuming has nothing left to say about when a
+     * lap ends, and recovery retries for as long as the outage lasts --
+     * which is unbounded by design. Holding the wrap for it froze the
+     * picture on the last frame of the lap for the whole outage, state
+     * reporting Playing, media time running on the wall clock the watchdog
+     * had handed it.
+     */
+    @Test
+    fun `a looping file wraps its lap even while the audio device is gone`() {
+        Fixtures.assumeDecodeEnvironment()
+        val av = Fixtures.generate(
+            dir.resolve("gonedevice.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "flac",
+        )
+        // Nothing ever consumes, and the device cannot be reopened: the
+        // writer parks, the watchdog declares the loss, and recovery keeps
+        // failing for the rest of the test.
+        val sink = BoundedPcmSink(capacityFrames = 4_410, reopenable = false)
+        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+            try {
+                assertTrue(awaitTrue { sink.writerParked }, "the writer must park on the frozen device")
+                var last = -1L
+                assertTrue(
+                    awaitTrue(deadlineMs = 20_000) {
+                        val pts = player.acquireFrame()?.ptsNanos ?: return@awaitTrue false
+                        val wrapped = pts < last
+                        last = pts
+                        wrapped
+                    },
+                    "the lap must come round with the device gone, state=${player.state}",
+                )
+            } finally {
+                sink.release()
+            }
+        }
+    }
+
     @Test
     fun `rate clamps to the supported envelope`() {
         Fixtures.assumeDecodeEnvironment()
@@ -661,11 +1090,17 @@ class VideoPlayerTest {
             )
             val anchor = player.positionNanos()
             // A quarter second of device frames covers half a second of
-            // media at tempo 2.
+            // media at tempo 2 -- as a band, not a point. This device steps
+            // once and then stands still, and the clock fills the gap after
+            // a step with wall time up to its ceiling; which thread reads
+            // first after the step decides how much of that is in this
+            // reading. A rate that never reached the pipeline lands 250 ms
+            // out, nowhere near the band.
             sink.positionFrames.addAndGet(11_025)
+            val due = anchor + 500_000_000L
             assertTrue(
-                awaitTrue { player.positionNanos() == anchor + 500_000_000L },
-                "the mastered clock must run at the tempo, got ${player.positionNanos()}",
+                awaitTrue { player.positionNanos() in due..(due + AudioClock.MAX_INTERPOLATION_NANOS) },
+                "the mastered clock must run at the tempo, got ${player.positionNanos()} against $due",
             )
         }
     }
@@ -865,6 +1300,134 @@ class VideoPlayerTest {
         }
     }
 
+    /** A font from the host, or null when this machine ships none to attach. */
+    private fun hostFont(): Path? = runCatching {
+        val p = ProcessBuilder("fc-match", "-f", "%{file}", "sans").redirectErrorStream(true).start()
+        val out = p.inputStream.readAllBytes().decodeToString().trim()
+        p.waitFor()
+        Path.of(out).takeIf { out.endsWith(".ttf", true) || out.endsWith(".otf", true) }
+    }.getOrNull()?.takeIf { Files.isReadable(it) }
+
+    @Test
+    fun `a file whose fonts ride inside it still renders its subtitles`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // Anime releases ship their typesetting faces as attachments, and the
+        // extraction that hands them to libass had never executed in any test
+        // -- no fixture carried one. This proves the path runs and leaves the
+        // render working; it does NOT prove the glyphs came from the attached
+        // face, which would need a font this machine does not otherwise have.
+        val font = hostFont()
+        assumeTrue(font != null, "no host font to attach")
+        val srt = dir.resolve("attached.srt")
+        Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nTypeset\n")
+        val video = Fixtures.generate(
+            dir.resolve("attached.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-attach", font.toString(),
+            "-metadata:s:t", "mimetype=application/x-truetype-font",
+            "-map", "0:v", "-map", "1", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "ass",
+        )
+        VideoPlayer(video, loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val id = player.subtitleTracks.single().id
+            player.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == id }, "the selection must land")
+            var patched = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { patched = patched || it.patches.isNotEmpty() }
+                    patched
+                },
+                "text must reach the overlay with an attachment present",
+            )
+        }
+    }
+
+    @Test
+    fun `a seek burst carries the subtitles to the final target`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // What a consumer scrubbing a timeline sees: the text has to match
+        // where the presses stopped, not where one of them was overtaken.
+        //
+        // The line that retargets the subtitle side inside the supersede had
+        // never executed -- that branch runs in other tests, always without a
+        // pipeline attached -- and covering it is how this test started. It
+        // does NOT guard that line: removing it still passes, because the
+        // pipeline repairs itself from a clock that moved under it. So the
+        // line is promptness rather than correctness, and what is asserted
+        // here is the property, which no other test covers.
+        val srt = dir.resolve("burst.srt")
+        // One cue, and it sits where the burst ends rather than where it
+        // starts, so text on screen means the subtitle side followed the
+        // final target and not a superseded one.
+        Files.writeString(srt, "1\n00:00:04,000 --> 00:00:08,000\nFinal\n")
+        val video = Fixtures.generate(
+            dir.resolve("burst.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", srt.toString(),
+            "-map", "0:v", "-map", "1", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+        )
+        VideoPlayer(video, loop = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val id = player.subtitleTracks.single().id
+            player.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { player.activeSubtitleTrack == id }, "the selection must land")
+            player.pause()
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "the pause must land")
+
+            // Rapid enough that later presses supersede a landing in flight.
+            for (step in 1..10) player.seek(step * 500_000_000L)
+            assertTrue(
+                awaitTrue { player.acquireFrame()?.ptsNanos == 5_000_000_000L },
+                "the final target must land, pos=${player.positionNanos()}",
+            )
+            var patched = false
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let { patched = patched || it.patches.isNotEmpty() }
+                    patched
+                },
+                "the cue covering the final target must reach the overlay",
+            )
+        }
+    }
+
+    @Test
+    fun `the canvas size a consumer announces reaches the rasterizer`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        // The player's forwarder had never been called by any test -- the
+        // pipeline's own setCanvasSize was covered, the way through the
+        // player was not, and text rasterized at the wrong size is exactly
+        // the kind of defect that shows up only on a resized window.
+        VideoPlayer(subbedFixture("subcanvas"), loop = true).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            // Announced right after asking for the track, which is the order
+            // a consumer writes and the one that used to lose it: the
+            // selection builds the pipeline on the decode thread, so the
+            // announcement arrives before there is anything to receive it.
+            player.selectSubtitleTrack(player.subtitleTracks.single().id)
+            player.setSubtitleCanvasSize(800, 600)
+            var canvas: Pair<Int, Int>? = null
+            assertTrue(
+                awaitTrue {
+                    player.acquireSubtitles()?.let {
+                        if (it.patches.isNotEmpty()) canvas = it.canvasWidth to it.canvasHeight
+                    }
+                    canvas == 800 to 600
+                },
+                "the overlay must rasterize at the announced size, got $canvas",
+            )
+        }
+    }
+
     @Test
     fun `a subtitle selection queued before playback works`() {
         Fixtures.assumeDecodeEnvironment()
@@ -975,6 +1538,113 @@ class VideoPlayerTest {
                 "the seeked frame must be published",
             )
             assertIs<VideoPlayer.State.Playing>(player.state)
+        }
+    }
+
+    @Test
+    fun `a looping source that yields nothing ends instead of turning forever`() {
+        // Measured before this was guarded: a full core, indefinitely, with
+        // the state reporting Playing. Each turn is a seek, and for a source
+        // whose demuxer cannot seek it is a reopen from disk.
+        val source = ScriptedFrameSource(frameCount = 0)
+        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null) { source }.use { player ->
+            assertTrue(
+                awaitTrue(3_000) { player.state is VideoPlayer.State.Ended },
+                "a lap with no frames must end, state was ${player.state}",
+            )
+            val turns = source.seekCount.get()
+            Thread.sleep(200)
+            assertEquals(turns, source.seekCount.get(), "nothing may keep turning the lap after it ended")
+        }
+    }
+
+    @Test
+    fun `a close during the open is honoured rather than raced past`() {
+        // Deliberately slow: the scenario IS close() exhausting its five
+        // second join and returning while the open is still running. Shorter
+        // than that and the thread finishes on its own, both builds settle
+        // Closed, and the test proves nothing -- which is what the first
+        // version of it did.
+        val opening = CountDownLatch(1)
+        val source = ScriptedFrameSource(frameCount = 50)
+        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null) {
+            opening.await(20, TimeUnit.SECONDS)
+            source
+        }
+        assertTrue(awaitTrue(2_000) { player.state is VideoPlayer.State.Opening }, "must start out opening")
+
+        val closeReturned = AtomicLong(0)
+        val closer = thread {
+            player.close()
+            closeReturned.set(System.nanoTime())
+        }
+        assertTrue(awaitTrue(8_000) { closeReturned.get() != 0L }, "close must return on its own timeout")
+
+        // From here the caller has been told the player is gone. Nothing it
+        // does afterwards may contradict that.
+        opening.countDown()
+        var sawPlaying = false
+        val deadline = System.currentTimeMillis() + 3_000
+        while (System.currentTimeMillis() < deadline) {
+            if (player.state is VideoPlayer.State.Playing) sawPlaying = true
+            Thread.sleep(2)
+        }
+        closer.join(5_000)
+        assertFalse(sawPlaying, "a player must not announce itself Playing after close() returned")
+        assertTrue(player.state is VideoPlayer.State.Closed, "and must settle Closed, saw ${player.state}")
+    }
+
+    /**
+     * The pacer reads the clock, and with an explicit clock that is the
+     * caller's own code -- so the pacer can throw like any other thread here.
+     * It was the only one that did not catch, and its death was the quietest
+     * failure the player had: the decode thread's wait for a free cell ends
+     * only when the queue closes, and only the decode thread closes it, so
+     * the producer parked on a consumer that was already gone. close() then
+     * spent its whole budget joining a thread that was never coming back and
+     * returned having freed nothing -- decoder, native session and device all
+     * still open, and with sound, still playing.
+     *
+     * The seek is what reaches the park: normal fill checks for room before
+     * it decodes, while a seek commits a preview and a landing back to back
+     * and at depth 1 the landing must wait out the preview's pop.
+     */
+    @Test
+    fun `a pacer that dies fails the player instead of parking the decode thread`() {
+        val inner = PlaybackClock()
+        val clock = object : MediaClock {
+            override val isPaused: Boolean get() = inner.isPaused
+            override fun start(atMediaNanos: Long) = inner.start(atMediaNanos)
+            override fun pause() = inner.pause()
+            override fun resume() = inner.resume()
+            override fun seek(mediaNanos: Long) = inner.seek(mediaNanos)
+            override fun mediaNanos(): Long {
+                // Only the pacer's reading throws. The decode thread reads the
+                // same clock to judge lateness, and a throw there is a
+                // different failure with its own path.
+                if (Thread.currentThread().name == "skinema-pace") error("the clock is gone")
+                return inner.mediaNanos()
+            }
+        }
+        val source = ScriptedFrameSource(frameCount = 500)
+        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null) { source }
+        try {
+            assertTrue(
+                awaitTrue(5_000) { player.state is VideoPlayer.State.Failed },
+                "a dead pacer must reach the caller as Failed, saw ${player.state}",
+            )
+            // A caller does press on after the picture stops. A Failed
+            // player refuses the commands that could park its decode thread,
+            // so this is the press that used to reach the park and now does
+            // not -- and close() below is where that shows.
+            player.seek(1_000_000_000L)
+            val startedAt = System.nanoTime()
+            player.close()
+            val tookMs = (System.nanoTime() - startedAt) / 1_000_000
+            assertTrue(tookMs < 3_000, "close() must not spend its join budget on a parked thread, took ${tookMs}ms")
+            assertTrue(source.closed.get(), "close() must actually tear the decoder down")
+        } finally {
+            player.close()
         }
     }
 }
