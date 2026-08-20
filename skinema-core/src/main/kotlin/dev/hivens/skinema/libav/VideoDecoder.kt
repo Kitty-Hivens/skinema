@@ -40,6 +40,10 @@ class VideoDecoder private constructor(
     // AV_PIX_FMT_NONE for software; otherwise the GPU surface format decoded
     // frames arrive in, downloaded to a CPU frame before conversion.
     private val hwPixFmt: Int,
+    // The policy the caller asked for, kept because REQUIRE has to be
+    // enforced past the open: a device can accept the stream and then hand
+    // decoding back to the CPU on the first frame.
+    private val hardware: HwAccel,
     // AVBufferRef* to the hw device this decoder owns, unref'd at close; NULL
     // for software.
     private val hwDeviceCtx: MemorySegment,
@@ -83,7 +87,21 @@ class VideoDecoder private constructor(
 
     private fun noteHwEngagement() {
         if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE || hwFellBack) return
-        if (frame.get(JAVA_INT, LibavAbi.Frame.FORMAT) != hwPixFmt) hwFellBack = true
+        if (frame.get(JAVA_INT, LibavAbi.Frame.FORMAT) == hwPixFmt) return
+        hwFellBack = true
+        // REQUIRE says a file that cannot decode on the GPU fails, and until
+        // now it could only say that at open time -- where the device
+        // accepting the stream looks like success. The fallback avcodec takes
+        // when the hwaccel cannot initialise for a profile happens on the
+        // FIRST FRAME, past every check the open made, so REQUIRE quietly
+        // became AUTO for exactly the streams it exists to refuse: 4:4:4
+        // H.264 on a device that advertises a config no consumer driver
+        // honours is the case that reaches it.
+        if (hardware == HwAccel.REQUIRE) {
+            throw LibavException(
+                "the device opened but decoded this stream in software (HwAccel.REQUIRE)",
+            )
+        }
     }
 
     /** The GPU surface a device was opened for; AV_PIX_FMT_NONE for software. */
@@ -937,6 +955,7 @@ class VideoDecoder private constructor(
                     enumerateSubtitleTracks(fmtCtx, arena),
                     (codedWidth to codedHeight).takeIf { codedWidth > 0 && codedHeight > 0 },
                     hw.pixFmt,
+                    hardware,
                     hwDevice,
                     avioSource,
                     reopenPath,

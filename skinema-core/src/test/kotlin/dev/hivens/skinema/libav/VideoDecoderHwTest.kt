@@ -194,6 +194,36 @@ class VideoDecoderHwTest {
         }
     }
 
+    /**
+     * REQUIRE promises that a file which cannot decode on the GPU surfaces as
+     * a failure, and until now it could only say so at OPEN time -- where a
+     * device accepting the stream looks like success. The fallback avcodec
+     * takes when the hwaccel cannot initialise for a profile happens on the
+     * first frame, past every check the open made, so REQUIRE quietly became
+     * AUTO for exactly the streams it exists to refuse.
+     */
+    @Test
+    fun `REQUIRE refuses a stream the device hands back to the CPU`() {
+        assumeHwAcceptance()
+        val video = Fixtures.generate(
+            dir.resolve("high444-require.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "1",
+            "-pix_fmt", "yuv444p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        )
+        // Whether this device falls back at all is a property of the driver,
+        // so the AUTO run decides whether there is anything to assert.
+        val fellBack = VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            d.nextFrame()
+            d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE &&
+                d.lastFrameFormat() != d.negotiatedSurfaceFormat()
+        }
+        assumeTrue(fellBack, "this device decodes 4:4:4 -- no fallback for REQUIRE to refuse")
+
+        VideoDecoder.open(video, HwAccel.REQUIRE).use { d ->
+            assertFailsWith<LibavException>("REQUIRE must not decode this in software") { d.nextFrame() }
+        }
+    }
+
     @Test
     fun `the downloaded picture is the software picture`() {
         assumeHwAcceptance()
