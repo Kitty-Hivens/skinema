@@ -13,6 +13,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
+import kotlinx.coroutines.CancellationException
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
@@ -67,23 +68,65 @@ fun VideoSurface(
         }
     }
     LaunchedEffect(player) {
+        var subtitled = player.activeSubtitleTrack != null
         while (true) {
             withFrameNanos { }
-            player.acquireFrame()?.let { slot ->
-                frames.update(slot.width, slot.height, slot.rgba)
+            val state = player.state
+            try {
+                player.acquireFrame()?.let { slot ->
+                    frames.update(slot.width, slot.height, slot.rgba)
+                    frameStamp++
+                }
+                player.acquireSubtitles()?.let { overlay ->
+                    subtitles.update(
+                        overlay.patches.map {
+                            SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
+                        },
+                    )
+                    subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
+                    frameStamp++
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                // Both updates raster-copy into native memory -- 8 MB a frame
+                // at 1080p, four times that at 4K -- and Skia answers a
+                // refusal by throwing. Left to travel, that throw goes into
+                // the Recomposer's effect job and cancels every LaunchedEffect
+                // in the composition, not only this surface's, while the
+                // player it came from still reports itself Playing. Stop
+                // drawing the way a failed player does and leave the rest of
+                // the UI alone.
+                // Said out loud rather than traced behind a flag: the
+                // player's own state is not Failed here, so nothing else in
+                // the API can tell the consumer why the picture stopped, and
+                // an uncaught throw would have printed anyway.
+                System.err.println("skinema: the video surface could not raster a frame: $t")
+                failed = true
+                frames.close()
+                subtitles.close()
+                return@LaunchedEffect
+            }
+            // A track turned off publishes nothing, so nothing invalidates
+            // the draw and the last cue stays painted -- on a paused player
+            // indefinitely, which is exactly where a viewer toggles them.
+            val nowSubtitled = player.activeSubtitleTrack != null
+            if (nowSubtitled != subtitled) {
+                subtitled = nowSubtitled
+                if (!nowSubtitled) subtitles.close()
                 frameStamp++
             }
-            val nowFailed = player.state is VideoPlayer.State.Failed
-            if (nowFailed != failed) failed = nowFailed
-            player.acquireSubtitles()?.let { overlay ->
-                subtitles.update(
-                    overlay.patches.map {
-                        SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
-                    },
-                )
-                subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
-                frameStamp++
+            val nowFailed = state is VideoPlayer.State.Failed
+            if (nowFailed != failed) {
+                failed = nowFailed
+                // The draw stops at the failure; the frame it was holding
+                // does not have to stay in native memory behind it.
+                if (nowFailed) frames.close()
             }
+            // A closed player publishes nothing ever again, so the frame
+            // clock has nothing left to poll for. A paused one still can --
+            // a seek landing, a frame step -- so it keeps its loop.
+            if (state is VideoPlayer.State.Closed) return@LaunchedEffect
         }
     }
 

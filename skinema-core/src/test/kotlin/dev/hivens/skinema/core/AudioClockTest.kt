@@ -35,6 +35,12 @@ class AudioClockTest {
         watched.resume()
         watched.seek(2_000_000_000L)
         watched.setTempo(2.0)
+        // start() belongs in this list and was missing from it, which is how
+        // it went on reading the line raw. It is reachable detached: the
+        // player starts the clock when it owns it, and it owns it once the
+        // audio side has gone -- which is what a device that stopped
+        // answering causes in the first place.
+        watched.start(3_000_000_000L)
         assertEquals(before, reads, "a detached clock read the line $reads times, was $before")
 
         // Re-attaching is the one call that must read it: it anchors on the
