@@ -265,8 +265,25 @@ class VideoPlayerTest {
                 "playback must end again",
             )
             player.seek(30_000_000_000L)
-            assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "a seek past the end ends")
-            val at = player.positionNanos()
+            // Ended is no handshake for a seek issued FROM Ended: the state
+            // never leaves it. A seek out of the end starts the clock -- that
+            // is what revives a player whose clock was stopped -- and one that
+            // lands on nothing stops it again, so a reading taken between the
+            // two is of a running clock. Wait for it to stand still first; a
+            // runner where the file's declared duration is not exactly the
+            // last frame plus its own display time caught this reading 12.8us
+            // past the end, which is the seek in flight and not a timeline
+            // running away.
+            var at = -1L
+            assertTrue(
+                awaitTrue {
+                    val now = player.positionNanos()
+                    val settled = now == at
+                    at = now
+                    settled
+                },
+                "the timeline must come to a stop after a seek past the end",
+            )
             Thread.sleep(300)
             assertEquals(at, player.positionNanos(), "the timeline must not run on past the end")
         }
