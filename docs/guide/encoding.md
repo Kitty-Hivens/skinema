@@ -103,6 +103,45 @@ disk is the realistic case -- the failure is what every later `finish()`
 reports, because the container has no index and no second attempt can
 give it one. Freeing the disk and retrying will not save that file.
 
+## Transcoding a file
+
+`Transcoder` is the join between the two halves: it reads a file with the
+decoders and writes another with `MediaWriter`.
+
+```kotlin
+Transcoder.open(
+    Path.of("in.mkv"),
+    Path.of("out.mp4"),
+    TranscodeConfig(videoCodec = "libx264", audioCodec = "aac"),
+).use { it.run() }
+```
+
+Geometry is not in the config on purpose -- it comes from the source,
+because this converts a file rather than resizing one. `fps = 0` (the
+default) measures the source's own cadence from its first two frames;
+either way it is a rate-control hint, since the timing that reaches the
+file is each frame's own timestamp. `audioCodec = null` drops the sound.
+
+`run()` blocks until the source ends. `cancel()` stops it at the next
+frame and still writes the trailer, so a cancelled transcode leaves a
+shorter file that plays rather than a broken one. `framesWritten` and
+`positionNanos` are volatile and readable from another thread; against
+`durationNanos` the second one is your progress bar.
+
+**It re-renders; it does not copy streams.** Frames leave the decoder as
+RGBA and enter the encoder as RGBA, so each one is converted twice --
+out of the source's chroma layout and back into the encoder's. That
+costs a chroma generation and two swscale passes per frame. If what you
+want is the same codec you already have, the fastest correct answer is
+not to decode it at all, and that is a thing this cannot do.
+
+What it does carry is the timing, which is the part you cannot get right
+from outside: the audio origin and the interleave cadence, both described
+above. It also applies the source's rotation rather than passing it on --
+the writer has no orientation tag, and a silently sideways file is the
+worse answer -- so a quarter-turned source comes out upright with its
+sides swapped.
+
 ## Hardware encode
 
 Naming a GPU encoder (`h264_vaapi`, `hevc_vaapi`) switches the path: the
