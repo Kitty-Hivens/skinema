@@ -64,8 +64,8 @@ class AudioClock(
 
     /**
      * Bumped by every re-anchor. A device reading is taken OUTSIDE [lock] --
-     * it has to be, the line answers under the same native monitor its
-     * blocking write holds -- and is then applied under the lock against an
+     * it has to be, the line answers under a native monitor its blocking
+     * write also takes -- and is then applied under the lock against an
      * anchor that may have moved in between. It usually has not; when it has,
      * the reading belongs to a line that no longer exists.
      *
@@ -84,17 +84,27 @@ class AudioClock(
     /**
      * The device's position, or null when the clock is not driven by it.
      *
-     * Never called under [lock], and never at all once detached. Both halves
-     * matter for the same reason: [positionFrames] goes into the audio
-     * backend, and a JavaSound line answers it under the same native monitor
-     * that its blocking write holds -- so on a device that has stopped
-     * draining the call parks for as long as the write does. Under the lock
-     * that dragged in every reader (the pacer, the decode thread, the
-     * subtitle thread, the consumer's render loop), and detaching to wall
-     * time was no escape while the readers still asked the line where it
-     * was. A player whose device died wedged whole instead of degrading to
-     * silence, which is the one thing this clock's failure hatch exists to
-     * prevent.
+     * Never called under [lock], and never at all once detached.
+     *
+     * The first half is about cost, and the cost is smaller than it was
+     * written up as. [positionFrames] goes into the audio backend, and a
+     * JavaSound line does answer under the same native monitor its write
+     * takes -- but the write is a Java polling loop (DirectAudioDevice.write:
+     * `while (!flushing) { synchronized (lockNative) { nWrite(...) } ... }`),
+     * so it holds that monitor for one non-blocking native write at a time
+     * and waits out the rest on a different monitor entirely. A reader is
+     * delayed by one iteration, not by the write: measured here at 3 to 31 ms
+     * against writes that blocked for 154 ms and for two seconds alike. That
+     * is inside the gap-fill this clock already allows. Taking the reading
+     * outside [lock] is still right -- there is no reason to serialise every
+     * reader behind the slowest one -- but it is a courtesy, not a rescue.
+     *
+     * The second half is the rescue. Once the clock is detached the device is
+     * not asked at all, so a line whose native call is genuinely wedged --
+     * which nothing in Java can break -- takes down only the readers already
+     * inside it, and every later one lives on wall time. A player whose
+     * device died degrades to silence instead of wedging whole, which is the
+     * one thing this clock's failure hatch exists to prevent.
      */
     private fun sampleDevice(): Long? = if (deviceDetached) null else positionFrames()
 

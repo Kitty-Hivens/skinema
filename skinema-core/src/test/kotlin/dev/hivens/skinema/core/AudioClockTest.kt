@@ -252,10 +252,9 @@ class AudioClockTest {
     }
 
     /**
-     * The device is asked OUTSIDE the lock -- it has to be, a JavaSound line
-     * answers under the same native monitor its blocking write holds -- and
-     * the answer is applied under the lock, against an anchor that may have
-     * moved in between. A track switch and a device-loss recovery both reopen
+     * The device is asked OUTSIDE the lock -- there is no reason to serialise
+     * every reader behind the slowest one -- and the answer is applied under
+     * the lock, against an anchor that may have moved in between. A track switch and a device-loss recovery both reopen
      * the line, so its counter restarts at zero while a reading already in
      * flight still carries the old one's total.
      *

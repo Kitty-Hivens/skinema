@@ -559,6 +559,48 @@ class AudioPipelineTest {
         }
     }
 
+    /**
+     * A JavaSound write does not raise when it cannot finish -- specification
+     * and implementation agree that it returns the count written so far, both
+     * when the line is taken away under it and when the backend gives up on
+     * the device. The sink turns that short count into a throw, and this is
+     * what the pipeline must then do with it: a device that stopped taking
+     * sound is a device loss, which this side has a recovery path for, and
+     * not the end of the track.
+     *
+     * What it must not do is nothing. The blocking write IS the pacing here,
+     * so a write that returns instantly and is counted as done leaves the
+     * thread running the rest of the file at decode speed against a line
+     * accepting nothing, while the frame position it masters stands still and
+     * holds the picture with it.
+     */
+    @Test
+    fun `a write the device could not finish is a loss, not the end of the sound`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        // A device that plays nothing: media time can only move if the clock
+        // was handed to the wall.
+        sink.positionFrames.set(44_100L)
+        val pipeline = AudioPipeline(twoTracks("shortwrite.mka"), sink, loop = true)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.opens == 1 && sink.totalBytes > 0 }, "the first track must be playing")
+
+            sink.failNextWrite = true
+            assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
+            assertFalse(pipeline.isEnded, "a device that stopped taking sound is not the end of the track")
+            assertTrue(pipeline.alive, "and not the end of this side either")
+
+            // Not the clock: a recovery that succeeded puts it back on the
+            // device, and this device is pinned, so it rightly stands still
+            // again. The wall-time hatch belongs to the outage, and this
+            // outage lasted one reopen.
+            assertEquals(0, sink.writesWhileStopped, "recovery must not write into a frozen line")
+        } finally {
+            pipeline.close()
+        }
+    }
+
     @Test
     fun `a switch to an unknown index is a no-op`() {
         Fixtures.assumeDecodeEnvironment()
