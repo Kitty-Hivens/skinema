@@ -298,8 +298,13 @@ class VideoDecoder private constructor(
     private fun rewindToStart(): Boolean {
         val pb = fmtCtx.get(ADDRESS, LibavAbi.FormatContext.PB)
         if (pb == MemorySegment.NULL) return false
-        if (Libav.avioSeek(pb, 0L, 0) < 0) return false
-        Libav.avformatFlush(fmtCtx)
+        val sought = Libav.avioSeek(pb, 0L, 0)
+        // That seek runs the source's own upcall, which stashes rather than
+        // raises: without this the refusal reads only as "not restartable"
+        // and the cause is deferred to whatever asks next.
+        avioSource?.throwIfFailed()
+        if (sought < 0) return false
+        Libav.checkAv(Libav.avformatFlush(fmtCtx), "avformat_flush(rewind)")
         Libav.avcodecFlushBuffers(codecCtx)
         draining = false
         return true
@@ -371,6 +376,21 @@ class VideoDecoder private constructor(
             // the demuxer. Each is tried once, so a demuxer that seeks
             // properly never reaches either and a broken one cannot spin.
             if (ret < 0 && restartStage < 2) {
+                // A source that RAISED is not a stream that ended, and here
+                // the two look identical: AvioSource turns any throwable out
+                // of the consumer's read into AVERROR_EOF to get off the
+                // native stack, and the escalation below answers an EOF by
+                // rewinding the byte stream to zero. Asked before escalating
+                // rather than after it, so the cause surfaces where it
+                // happened instead of against whatever asks next.
+                //
+                // Unproven, deliberately recorded as such: a container the
+                // rewind cannot revive -- mp4 was tried -- fails again at
+                // once and the error comes out promptly either way, and no
+                // reproduction was found for the one format the rewind does
+                // revive. The ordering is right on its own terms; no
+                // behaviour difference was demonstrated.
+                avioSource?.throwIfFailed()
                 restartStage++
                 val restarted = if (restartStage == 1) rewindToStart() else reopenDemuxer()
                 if (restarted) continue
