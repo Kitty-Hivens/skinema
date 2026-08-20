@@ -255,6 +255,13 @@ object Libav {
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+
+    // Not used by the runtime: it is how a test asks the LOADED library what
+    // a pixel-format number means. The formats in LibavAbi are transcribed
+    // from the oracle, and one of them was transcribed wrong -- GBRP as 168,
+    // which is GRAY10LE -- with every test that used it naming the same
+    // constant on both sides and so proving nothing.
+    private val hAvGetPixFmtName = fn(LibavLibrary.AVUTIL, "av_get_pix_fmt_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecDescriptorGet =
         fn(LibavLibrary.AVCODEC, "avcodec_descriptor_get", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
@@ -534,6 +541,9 @@ object Libav {
 
     /** A static string owned by avcodec; never "unknown_codec"-null. */
     fun avcodecGetName(codecId: Int): MemorySegment = hAvcodecGetName.invoke(codecId) as MemorySegment
+
+    /** A static string owned by avutil, or NULL for a number no format has. */
+    fun avGetPixFmtName(pixFmt: Int): MemorySegment = hAvGetPixFmtName.invoke(pixFmt) as MemorySegment
     fun avPacketSideDataGet(sideData: MemorySegment, count: Int, type: Int): MemorySegment =
         hAvPacketSideDataGet.invoke(sideData, count, type) as MemorySegment
     fun avcodecFindDecoderByName(name: MemorySegment): MemorySegment = hAvcodecFindDecoderByName.invoke(name) as MemorySegment
