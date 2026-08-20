@@ -35,16 +35,20 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
 ```
+
+Those are the coordinates Maven Central carries today. The next release
+moves the FFmpeg pin to 9.0.1 and adds the two `linux-musl-*` bundles, so
+some of what this file describes -- the musl platforms and the formats
+FFmpeg 9 brought -- is not in the versions above. Take the pair the release
+notes name.
 
 The two versions are independent, and that is deliberate. `skinema-natives`
 is versioned as the FFmpeg build it carries plus a repack revision
