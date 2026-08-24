@@ -11,8 +11,10 @@ mavenPublish = "0.37.0"
 kover        = "0.9.9"
 
 [libraries]
-kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
-skiko-awt   = { group = "org.jetbrains.skiko", name = "skiko-awt", version.ref = "skiko" }
+compose-foundation = { group = "org.jetbrains.compose.foundation", name = "foundation", version.ref = "compose" }
+compose-runtime    = { group = "org.jetbrains.compose.runtime", name = "runtime", version.ref = "compose" }
+kotlin-test        = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+skiko-awt          = { group = "org.jetbrains.skiko", name = "skiko-awt", version.ref = "skiko" }
 
 [plugins]
 kotlin-jvm              = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
