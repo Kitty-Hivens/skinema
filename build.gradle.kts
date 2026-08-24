@@ -103,7 +103,7 @@ subprojects {
             // on a runner that is gone by the time anyone reads the failure.
             val skippedCase = Regex("<testcase name=\"([^\"]*)\" classname=\"([^\"]*)\"[^>]*>\\s*<skipped")
             fun count(text: String, name: String): Int =
-                Regex("\\b" + name + "=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
+                Regex("\\b$name=\"(\\d+)\"").find(text)?.groupValues?.get(1)?.toInt() ?: 0
             for (f in xmlDir.get().asFile.listFiles().orEmpty()) {
                 if (!f.name.endsWith(".xml")) continue
                 val text = f.readText()
@@ -121,7 +121,7 @@ subprojects {
                     label + " skipped " + skipped + " tests, more than the " + ceiling + " allowed -- " +
                         "something the suite needs is missing rather than the suite passing. Raise it " +
                         "deliberately with -PmaxSkippedTests or SKINEMA_MAX_SKIPPED if the gap is real.\n" +
-                        names.sorted().joinToString("\n") { "  " + it },
+                        names.sorted().joinToString("\n") { "  $it" },
                 )
             }
         }
