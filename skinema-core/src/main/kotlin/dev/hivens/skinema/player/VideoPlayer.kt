@@ -1396,12 +1396,6 @@ class VideoPlayer internal constructor(
     }
 
     /**
-     * Resolves [State.Seeking] back to the lifecycle. A seek that landed
-     * resumes whatever was running before the burst started (a paused
-     * player stays paused at the new frame); [ended]/[playing] only chooses
-     * the fallback when there was no prior state to restore.
-     */
-    /**
      * Puts every side back at the start of the file.
      *
      * The picture owns the lap, so it restarts both others -- including the
@@ -1431,6 +1425,14 @@ class VideoPlayer internal constructor(
         if (resume) clock.resume()
     }
 
+    /**
+     * Resolves [State.Seeking] back to the lifecycle.
+     *
+     * What a burst interrupted is what it returns to, so a paused player stays
+     * paused on the frame it landed on. [landed] answers for one that was
+     * playing, and outranks the restored pause when the landing ended the
+     * stream -- there is nothing left there to be paused on.
+     */
     private fun finishSeek(landed: State) {
         seekInFlight = false
         val prior = stateBeforeSeek.getAndSet(null)
