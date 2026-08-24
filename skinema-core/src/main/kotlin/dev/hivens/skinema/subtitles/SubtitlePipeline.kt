@@ -702,7 +702,7 @@ internal class SubtitlePipeline(
         // from any free above it -- a libass handle a partial open left in an
         // odd state -- leaked the whole confined arena, the codec context and
         // the format context with it, once per track switch.
-        try {
+        arena.use { arena ->
             if (assTrack != MemorySegment.NULL) Ass.freeTrack(assTrack)
             if (assRenderer != MemorySegment.NULL) Ass.rendererDone(assRenderer)
             if (assLibrary != MemorySegment.NULL) Ass.libraryDone(assLibrary)
@@ -715,8 +715,6 @@ internal class SubtitlePipeline(
                 ptrPtr.set(ADDRESS, 0, fmtCtx)
                 Libav.avformatCloseInput(ptrPtr)
             }
-        } finally {
-            arena.close()
         }
     }
 
@@ -796,7 +794,7 @@ internal class SubtitlePipeline(
             if (width <= 0 || height <= 0 || linesize < width) return null
             if (width.toLong() * height > MAX_RECT_PIXELS) return null
             val bytes = linesize.toLong() * (height - 1) + width
-            if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
+            if (bytes !in 1..MAX_RECT_BYTES) return null
             return bytes.toInt()
         }
 
