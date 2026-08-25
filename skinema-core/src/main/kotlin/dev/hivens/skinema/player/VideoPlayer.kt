@@ -564,10 +564,65 @@ class VideoPlayer internal constructor(
         commands.put(command)
     }
 
-    override fun close() {
+    /**
+     * The moment the whole teardown must be done by, published by [closeAsync]
+     * so every join inside it spends the one budget the caller is counting.
+     * Zero until a close is asked for.
+     */
+    @Volatile
+    private var closeDeadlineNanos = 0L
+
+    /**
+     * Tears the player down without waiting for it: every side is told at
+     * once and this returns.
+     *
+     * The door for a consumer that cannot block at all -- a dispose on a UI
+     * thread. What it gives up against [close] is only the certainty that the
+     * native memory has gone by the time it returns; the daemon threads free
+     * it either way. What it keeps is the half a caller taking its own
+     * resources back actually needs: no PCM enters the sink after this
+     * returns, and a write already inside the sink is broken out of rather
+     * than waited on. [state] settles [State.Closed] when the teardown
+     * finishes.
+     */
+    fun closeAsync() {
         closing = true
+        if (closeDeadlineNanos == 0L) closeDeadlineNanos = System.nanoTime() + CLOSE_BUDGET_NANOS
         commands.put(Command.Close)
-        thread.join(5_000)
+        // Told from here rather than left to the decode thread, so their exits
+        // overlap with its own -- and so a decode thread still inside an open
+        // does not hold the announcement for the length of one.
+        audioPipeline?.announceClose()
+        subtitlePipeline?.announceClose()
+    }
+
+    override fun close() {
+        closeAsync()
+        joinWithin(thread, closeDeadlineNanos)
+    }
+
+    /**
+     * The teardown's deadline: the one [closeAsync] published, or a fresh
+     * budget when the teardown began somewhere else -- a pacer failure puts
+     * its own Close in the queue, and nobody promised anything for that.
+     */
+    private fun teardownDeadline(): Long =
+        closeDeadlineNanos.takeIf { it != 0L } ?: (System.nanoTime() + CLOSE_BUDGET_NANOS)
+
+    /** Tells both sides to go, then waits for them inside [deadlineNanos]. */
+    private fun tearDownSides(deadlineNanos: Long = teardownDeadline()) {
+        audioPipeline?.announceClose()
+        subtitlePipeline?.announceClose()
+        runCatching { audioPipeline?.awaitExit(deadlineNanos) }
+        runCatching { subtitlePipeline?.awaitExit(deadlineNanos) }
+    }
+
+    private fun joinWithin(thread: Thread?, deadlineNanos: Long) {
+        val ms = (deadlineNanos - System.nanoTime()) / 1_000_000
+        // join(0) waits forever, which is the opposite of what an exhausted
+        // budget means.
+        if (thread == null || ms <= 0) return
+        thread.join(ms)
     }
 
     // -- Decode thread --------------------------------------------------------
@@ -642,12 +697,12 @@ class VideoPlayer internal constructor(
                 } catch (framelessFailure: Throwable) {
                     state = State.Failed(framelessFailure)
                 }
-                audioPipeline.close()
+                tearDownSides()
                 // After the device, for the reason the framed path gives.
                 if (framelessReturned && state !is State.Failed) state = State.Closed
             } else {
                 state = State.Failed(t)
-                audioPipeline?.close()
+                tearDownSides()
             }
             return
         }
@@ -658,8 +713,7 @@ class VideoPlayer internal constructor(
         // the caller was told none of it.
         if (closing) {
             runCatching { decoder.close() }
-            runCatching { audioPipeline?.close() }
-            runCatching { subtitlePipeline?.close() }
+            tearDownSides()
             state = State.Closed
             return
         }
@@ -689,11 +743,18 @@ class VideoPlayer internal constructor(
         } catch (t: Throwable) {
             state = State.Failed(t)
         } finally {
+            val deadline = teardownDeadline()
             queue.close()
-            pacer?.join(1_000)
+            // Announced before anything is joined, and that ordering is the
+            // whole of it: the three sides do not depend on one another, so
+            // told one at a time and joined in turn their waits summed, where
+            // told together they overlap and the cost is the slowest side.
+            audioPipeline?.announceClose()
+            subtitlePipeline?.announceClose()
+            joinWithin(pacer, deadline)
             runCatching { decoder.close() }
-            runCatching { audioPipeline?.close() }
-            runCatching { subtitlePipeline?.close() }
+            runCatching { audioPipeline?.awaitExit(deadline) }
+            runCatching { subtitlePipeline?.awaitExit(deadline) }
             // Published after the teardown rather than before it. A consumer
             // polls this and reads Closed as leave to release what it lent
             // the player -- its own sink above all -- while the audio thread
@@ -1251,7 +1312,7 @@ class VideoPlayer internal constructor(
     private fun applySubtitleSelection(id: Int?, decoder: FrameSource?) {
         val current = subtitlePipeline
         if (id == null) {
-            current?.closeAsync()
+            current?.announceClose()
             subtitlePipeline = null
             return
         }
@@ -1260,7 +1321,7 @@ class VideoPlayer internal constructor(
         // No libass, no text rendering: refuse like the audio switch
         // refuses an unopenable track. Bitmap tracks never need it.
         if (track.isText && !Ass.available) return
-        current?.closeAsync()
+        current?.announceClose()
         val fresh = SubtitlePipeline(
             path = track.externalPath ?: path,
             clock = clock,
@@ -1656,6 +1717,21 @@ class VideoPlayer internal constructor(
          * sub-second lap's stranded tail present at the wrap.
          */
         const val CLOCK_NOISE_NANOS = 5_000_000L
+
+        /**
+         * How long [close] waits for the teardown -- every join inside it
+         * spends this one budget rather than taking it each.
+         *
+         * A second, against the eleven the old per-join waits summed to. The
+         * wait is no longer what keeps a caller's resources safe: the sink is
+         * released the moment a close is announced, so what is left to wait
+         * for is native memory the daemon threads free whether or not anyone
+         * watches. Waiting longer buys only the certainty that it has already
+         * happened, and a close that hangs an application's exit for seconds
+         * costs more than that certainty is worth. A consumer that cannot
+         * spend even this has [closeAsync].
+         */
+        const val CLOSE_BUDGET_NANOS = 1_000_000_000L
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }

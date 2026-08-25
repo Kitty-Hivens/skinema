@@ -306,6 +306,40 @@ could not work either: `close()` starts with `stop()`, which takes
 `lockNative` as well. `AudioClock` still samples the line outside its
 own lock, and not at all once detached.
 
+## Teardown
+
+`close()` publishes one deadline -- `CLOSE_BUDGET_NANOS`, a second --
+and every join inside the teardown spends that one budget rather than
+taking it each. The old shape took it each: the caller waited five
+seconds for the decode thread, whose own shutdown then joined the pacer
+for one and the audio and subtitle pipelines for five apiece, so eleven
+seconds of patience sat behind a five-second promise. Thirty players
+closed in a row is the case that makes it obvious.
+
+Two rules make one second enough.
+
+**Announce, then join.** Every side is told to go before any of them is
+joined. The three are independent -- the audio thread does not need the
+pacer, the subtitle thread does not need the audio -- so told together
+their exits overlap, and the teardown costs the slowest side instead of
+the sum of all of them. Each pipeline splits its close to allow it:
+`announceClose()` queues the Close and returns, `awaitExit(deadline)`
+waits inside whatever is left of the budget.
+
+**The shutter.** Waiting is no longer what keeps a caller's own
+resources safe. Once a close is announced `AudioPipeline` starts no new
+write, and one already inside the sink is broken out of by the
+watchdog -- the same rescue it performs for a dead device, from the same
+thread `PcmSink` already names for it, so a consumer's own sink never
+sees a new caller. A sink that is not draining is the ordinary worst
+case rather than an exotic one (every paused device, every line whose
+consumer went away), and it used to put the watchdog's whole stall bound
+on an ordinary close.
+
+What is left to wait for is native memory, which the daemon threads free
+whether or not anyone watches. `closeAsync()` is the same teardown
+without the wait, for a caller that cannot block at all.
+
 ## Pts math
 
 `Pts.kt` converts between nanoseconds and stream pts. `ptsToNanos`
