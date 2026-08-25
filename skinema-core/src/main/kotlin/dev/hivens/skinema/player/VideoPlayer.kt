@@ -152,6 +152,15 @@ class VideoPlayer internal constructor(
          * dead time on every frame of full-queue (steady-state) playback
          * -- which caps production below the frame rate of 60 fps
          * content. Handled as a no-op; its arrival is the point.
+         *
+         * One token per publish into an unbounded queue reads like a leak and
+         * is not. A publish is only possible for a frame the fill side put
+         * there, and the fill side drains every command at the top of each
+         * pass, so what can be outstanding is bounded by the inventory depth
+         * rather than by how long the player runs. The two paths that do not
+         * come back to that top drain them where they stand: the seek landing
+         * peeks past them explicitly, so a token cannot hide a queued seek
+         * behind it, and the lap wait handles them as it polls.
          */
         data object RoomFreed : Command
     }
