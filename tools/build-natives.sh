@@ -816,7 +816,12 @@ has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9";
 # reports success and stays drained, so the decoder restarts it by replacing
 # the demuxer, which is what keeps looping working.
 has webp && { DEMUX+=",image_webp_pipe,webp_anim"; DECODE+=",webp,webp_anim"; PARSE+=",webp"; }
-has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub"; }
+# dvbsub joins the two bitmap decoders already here rather than needing a
+# path of its own: DVB subtitles are composed pixels like PGS and VobSub,
+# so they reach the consumer through the same branch of the pipeline. No
+# parser goes with it -- matroska carries one subtitle unit per block, and
+# the parser only earns its place on a raw stream, which nothing here reads.
+has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub"; }
 # The broad legacy/extended decode set (the "formats" feature). All native
 # FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
 has formats && {
