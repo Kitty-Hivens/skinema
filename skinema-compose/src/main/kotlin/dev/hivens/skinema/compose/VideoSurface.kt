@@ -19,6 +19,7 @@ import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.SamplingMode
+import java.util.WeakHashMap
 import kotlin.math.roundToInt
 
 /** How the video maps onto the surface's bounds. */
@@ -40,6 +41,14 @@ enum class VideoScale {
  * states. Watch [VideoPlayer.state] and react outside; before the first
  * frame (and on [VideoPlayer.State.Failed]) the surface simply draws
  * nothing, leaving whatever is composed behind it visible.
+ *
+ * ONE SURFACE PER PLAYER. The mailbox hands each published frame to one
+ * reader -- that is what makes the handoff copy-free -- so two surfaces on
+ * one player take turns rather than both seeing everything: each draws part
+ * of the frames, neither draws them all, and the two show different pictures.
+ * Nothing fails, which is why it reads as choppy video rather than as a
+ * mistake, so the second surface says so on stderr. Two views of one file
+ * means two players.
  */
 @Composable
 fun VideoSurface(
@@ -62,7 +71,15 @@ fun VideoSurface(
     val postedCanvas = remember(player) { intArrayOf(-1, -1) }
 
     DisposableEffect(player) {
+        if (SurfaceRegistry.add(player)) {
+            System.err.println(
+                "skinema: a second VideoSurface is drawing one player. The player's mailbox has a single " +
+                    "reader, so the surfaces take turns -- each draws part of the frames and neither draws " +
+                    "them all. Give each surface its own player.",
+            )
+        }
         onDispose {
+            SurfaceRegistry.remove(player)
             frames.close()
             subtitles.close()
         }
@@ -226,6 +243,34 @@ fun VideoSurface(
                 player.setSubtitleCanvasSize(postW, postH)
             }
         }
+    }
+}
+
+/**
+ * Which players already have a surface drawing them.
+ *
+ * Exists to name a silent failure. Two surfaces on one player is a mistake
+ * with no symptom of its own: the mailbox hands a published frame to whoever
+ * polls first, so the two split the stream between them and both look merely
+ * slow. Weak keys, because a player outlives nothing here -- an entry left
+ * behind by a surface that was never disposed must not hold one alive.
+ */
+internal object SurfaceRegistry {
+
+    private val counts = WeakHashMap<VideoPlayer, Int>()
+
+    /** Adds a surface for [player]; true when it is not the first. */
+    @Synchronized
+    fun add(player: VideoPlayer): Boolean {
+        val now = (counts[player] ?: 0) + 1
+        counts[player] = now
+        return now > 1
+    }
+
+    @Synchronized
+    fun remove(player: VideoPlayer) {
+        val now = (counts[player] ?: 1) - 1
+        if (now <= 0) counts.remove(player) else counts[player] = now
     }
 }
 

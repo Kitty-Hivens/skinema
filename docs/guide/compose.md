@@ -27,6 +27,14 @@ nothing else -- no spinner, no error glyph. Before the first frame and
 while the player is `Failed`, it draws nothing; put your own loading and
 fallback visuals around it, driven by `rememberPlayerState` (below).
 
+**One surface per player.** The mailbox hands each published frame to
+whichever reader polls first -- that single-reader rule is what makes the
+handoff copy-free -- so two surfaces drawing one player take turns instead
+of both seeing everything: each gets part of the frames, neither gets them
+all, and the two show different pictures. Nothing fails, so it reads as
+choppy video rather than as a mistake; the second surface says so on
+stderr. Two views of one file means two players.
+
 `VideoSurface` handles two things a raw frame draw would miss:
 
 - **Rotation.** It reads `player.rotationDegrees` and rotates the
