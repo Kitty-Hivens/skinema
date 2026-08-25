@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import java.lang.foreign.Arena
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -306,5 +307,51 @@ class AudioDecoderTest {
         val decoder = assertNotNull(AudioDecoder.openOrNull(tone))
         decoder.close()
         decoder.close()
+    }
+
+    /**
+     * The resampling graph is cached, and what the cache is keyed on has to be
+     * the whole input format. Rebuilding it per frame would be a fresh
+     * swresample context for every chunk of every file -- the cost the cache
+     * exists to avoid -- so the cheap direction is worth pinning.
+     */
+    @Test
+    fun `the resampler is built once for a stream whose layout never changes`() {
+        Fixtures.assumeDecodeEnvironment()
+        assertNotNull(AudioDecoder.openOrNull(tone("stable.flac", "-c:a", "flac"))).use { decoder ->
+            var chunks = 0
+            while (decoder.nextChunk() != null) chunks++
+            assertTrue(chunks > 1, "the stream must arrive in several chunks for this to mean anything")
+            assertEquals(1, decoder.swrBuilds, "one layout, one graph")
+        }
+    }
+
+    /**
+     * And the expensive direction: the key is the layout itself, not the
+     * number of channels in it. Two layouts can name the same count and put
+     * those channels on different speakers -- 5.1 against 5.1(side) -- so a
+     * graph kept across that change resamples the wrong channel to the wrong
+     * output, with nothing to show for it but sound in the wrong places.
+     *
+     * Asserted through the comparison the cache now asks rather than through a
+     * stream that changes layout mid-file: the layouts that differ at an equal
+     * count are the ones no fixture this bundle can mux carries.
+     */
+    @Test
+    fun `a copied channel layout compares equal and a different one does not`() {
+        Fixtures.assumeDecodeEnvironment()
+        Arena.ofConfined().use { arena ->
+            val held = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+            val incoming = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+            Libav.avChannelLayoutDefault(incoming, 6)
+            // A zero-filled layout is AV_CHANNEL_ORDER_UNSPEC over no channels
+            // -- the state the decoder starts in, which must match nothing.
+            assertTrue(Libav.avChannelLayoutCompare(held, incoming) != 0, "an unset layout matches nothing")
+            assertEquals(0, Libav.avChannelLayoutCopy(held, incoming), "the copy must succeed")
+            assertEquals(0, Libav.avChannelLayoutCompare(held, incoming), "a copy compares equal to its source")
+            Libav.avChannelLayoutDefault(incoming, 2)
+            assertTrue(Libav.avChannelLayoutCompare(held, incoming) != 0, "5.1 is not stereo")
+            Libav.avChannelLayoutUninit(held)
+        }
     }
 }

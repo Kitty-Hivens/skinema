@@ -65,7 +65,21 @@ class AudioDecoder private constructor(
     private var swrCtx = MemorySegment.NULL
     private var srcFormat = Int.MIN_VALUE
     private var srcRate = 0
-    private var srcChannels = 0
+
+    /**
+     * The layout the current graph was built for, kept because the frame's own
+     * is reused from one call to the next. Compared rather than counted: two
+     * layouts can name the same number of channels and map them to different
+     * speakers -- 5.1 against 5.1(side) is the ordinary pair -- and a graph
+     * built for one resamples the other with the wrong channels in the wrong
+     * places, quietly. Zero-filled by the arena, which is
+     * AV_CHANNEL_ORDER_UNSPEC over no channels and so matches nothing.
+     */
+    private val srcLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+
+    /** Graphs built; a test observable, so a rebuild per frame cannot hide. */
+    internal var swrBuilds = 0
+        private set
     private val outLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF).also {
         Libav.avChannelLayoutDefault(it, OUT_CHANNELS)
     }
@@ -153,8 +167,12 @@ class AudioDecoder private constructor(
     }
 
     private fun ensureSwr(format: Int, rate: Int) {
-        val channels = frame.get(JAVA_INT, LibavAbi.Frame.CH_LAYOUT + LibavAbi.ChannelLayout.NB_CHANNELS)
-        if (swrCtx != MemorySegment.NULL && format == srcFormat && rate == srcRate && channels == srcChannels) return
+        val layout = frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF)
+        if (swrCtx != MemorySegment.NULL && format == srcFormat && rate == srcRate &&
+            Libav.avChannelLayoutCompare(srcLayout, layout) == 0
+        ) {
+            return
+        }
         if (swrCtx != MemorySegment.NULL) {
             val ptrPtr = arena.allocate(ADDRESS)
             ptrPtr.set(ADDRESS, 0, swrCtx)
@@ -167,7 +185,7 @@ class AudioDecoder private constructor(
             Libav.swrAllocSetOpts2(
                 ctxOut,
                 outLayout, LibavAbi.AV_SAMPLE_FMT_S16, rate,
-                frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), format, rate,
+                layout, format, rate,
             ),
             "swr_alloc_set_opts2",
         )
@@ -175,7 +193,8 @@ class AudioDecoder private constructor(
         Libav.checkAv(Libav.swrInit(swrCtx), "swr_init")
         srcFormat = format
         srcRate = rate
-        srcChannels = channels
+        Libav.checkAv(Libav.avChannelLayoutCopy(srcLayout, layout), "av_channel_layout_copy")
+        swrBuilds++
     }
 
     private fun ensureCapacity(nbSamples: Int) {
@@ -199,6 +218,9 @@ class AudioDecoder private constructor(
             ptrPtr.set(ADDRESS, 0, swrCtx)
             Libav.swrFree(ptrPtr)
         }
+        // Frees what a custom channel order allocated inside the copy; the
+        // arena owns the struct itself.
+        Libav.avChannelLayoutUninit(srcLayout)
         ptrPtr.set(ADDRESS, 0, frame)
         Libav.avFrameFree(ptrPtr)
         ptrPtr.set(ADDRESS, 0, packet)
