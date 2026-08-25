@@ -88,7 +88,7 @@ class AudioRecoveryTest {
         // loop: keep writing indefinitely so the device can be pulled mid-stream.
         // Short stall/retry windows keep the test quick.
         val pipeline = AudioPipeline(
-            path, sink, loop = true,
+            path, sink,
             writeStallNanos = 200_000_000L,
             recoveryIntervalMs = 30L,
         )
@@ -151,7 +151,7 @@ class AudioRecoveryTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakeSink()
         val pipeline = AudioPipeline(
-            sineWav(), sink, loop = true,
+            sineWav(), sink,
             writeStallNanos = 200_000_000L,
             recoveryIntervalMs = 30L,
         )
@@ -233,7 +233,7 @@ class AudioRecoveryTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = MonitorSink()
         val pipeline = AudioPipeline(
-            sineWav(), sink, loop = true,
+            sineWav(), sink,
             writeStallNanos = 200_000_000L,
             recoveryIntervalMs = 30L,
         )

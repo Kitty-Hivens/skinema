@@ -132,9 +132,9 @@ internal class ToneMapper(transfer: HdrTransfer) {
         const val HLG_LR = 0.2627f
         const val HLG_LG = 0.6780f
         const val HLG_LB = 0.0593f
-        val HLG_PEAK_OVER_WHITE = (HLG_PEAK_NITS / DIFFUSE_WHITE_NITS).toFloat()
+        const val HLG_PEAK_OVER_WHITE = (HLG_PEAK_NITS / DIFFUSE_WHITE_NITS).toFloat()
 
-        val REINHARD_WHITE = (MASTER_PEAK_NITS / DIFFUSE_WHITE_NITS).toFloat()
+        const val REINHARD_WHITE = (MASTER_PEAK_NITS / DIFFUSE_WHITE_NITS).toFloat()
     }
 }
 

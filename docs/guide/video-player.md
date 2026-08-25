@@ -92,17 +92,50 @@ fun resume()
 fun positionNanos(): Long   // current media position; 0 until playback starts
 ```
 
-`pause` freezes on the current frame; `resume` continues without a
-jump. `close()` tears the player down -- it stops the threads and frees
-native memory, waiting up to five seconds for the decode thread to exit.
+```kotlin
+fun setPresenting(presenting: Boolean)
+```
 
-That wait is a bound on `close()`, not on the teardown: the decode
-thread's own shutdown joins the pacer, the audio pipeline and the
-subtitle pipeline in turn, and a device in the middle of an outage can
-hold the audio join for seconds. So `close()` can return while the last
-of that is still running. The state settles `Closed` once it finishes --
-and stays `Failed` if the player had already failed, since a failure is
-the more useful thing to have been told.
+`pause` freezes on the current frame; `resume` continues without a
+jump. `setPresenting` says whether anyone is taking the picture -- a
+window minimised, a tab switched away from, a wallpaper behind a
+maximised app. A player nobody reads is not free: it decodes, converts
+and paces pictures into a mailbox nothing empties.
+
+What stopping costs the timeline is the `unwatched` constructor
+parameter's to say. `WhenUnwatched.Freeze` (the default) stops time with
+the picture and carries on from there, which is what a background wants;
+`WhenUnwatched.KeepTime` lets time run on and rejoins the picture where
+it got to, which is what a live source wants.
+
+Saying nothing is allowed. A mailbox that was being read and stops being
+read is noticed on its own after a couple of seconds, and the next
+`acquireFrame` undoes it -- so a consumer that never thinks about this
+still stops burning a core behind a hidden window. Saying it once takes
+the automatic notice out of play: a player told to stop presenting is not
+revived by polling its consumer does for some other reason. `close()` tears the player down -- it stops the threads and frees
+native memory -- and it is bounded: one second for the whole teardown,
+not one second per side.
+
+Every side is told to go before any of them is joined, so their exits
+overlap instead of queueing, and a write sitting in the sink is broken
+out of rather than waited out. That is what makes so short a bound safe:
+by the time `close()` returns, nothing is writing into a sink you lent
+the player, whether or not the last of the native teardown has finished.
+What the budget buys on top of that is the certainty that the native
+memory has gone too; past it the threads are daemons and finish on their
+own. The state settles `Closed` when they do -- and stays `Failed` if the
+player had already failed, since a failure is the more useful thing to
+have been told.
+
+```kotlin
+fun closeAsync()
+```
+
+The same teardown without the wait, for a caller that cannot block at
+all -- a dispose on a UI thread. It tells every side to go and returns.
+The sink comes back on the same terms as `close()`; what is given up is
+only the certainty that the native memory went with it.
 
 ## Frames
 

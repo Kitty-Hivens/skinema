@@ -49,7 +49,7 @@ class ScriptedFrameSourceTest {
         val clock = AudioClock(48_000) { frames.get() }
         val source = ScriptedFrameSource(frameCount = 10)
         val player = VideoPlayer(
-            Path.of("scripted"), false, false, clock, null, 1, null,
+            Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze,
         ) { source }
         player.use {
             val deadline = System.currentTimeMillis() + 10_000

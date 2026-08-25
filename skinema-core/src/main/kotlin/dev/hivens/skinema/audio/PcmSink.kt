@@ -19,9 +19,14 @@ package dev.hivens.skinema.audio
  *   alone, in order, never concurrently with each other.
  * - [close] comes from the audio thread OR from its watchdog, and the
  *   watchdog's call is deliberately made while a [write] is blocked inside
- *   the sink: closing the line is how a device that stopped consuming is
- *   broken out of. That write may then return or throw; both are fine, and
- *   throwing is read as the rescue rather than as a fault.
+ *   the sink: closing the line is how a write that nothing will finish gets
+ *   broken out of. Two things ask for that -- a device that stopped
+ *   consuming, and a player being closed while a write sits in a sink the
+ *   consumer is about to take back. That write may then return or throw;
+ *   both are fine, and throwing is read as the rescue rather than as a
+ *   fault. It follows that [close] must be idempotent: the rescue closes the
+ *   sink, and the audio thread's own teardown closes it again on the way
+ *   out.
  * - [setVolume] comes from whatever thread the consumer calls it on, at any
  *   time, including during a write.
  * - [framePosition] comes from everywhere -- the pacer, the decode thread,

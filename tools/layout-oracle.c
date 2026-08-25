@@ -235,6 +235,10 @@ int main(void) {
     P(AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX);
 
     /* -- M12 encode + mux: AVCodecContext write fields, output muxer, packet -- */
+    P(AV_CODEC_CONFIG_PIX_FORMAT);
+    P(AV_CODEC_CONFIG_SAMPLE_RATE);
+    P(AV_CODEC_CONFIG_SAMPLE_FORMAT);
+    P(AV_CODEC_CONFIG_CHANNEL_LAYOUT);
     P(offsetof(AVCodecContext, codec_type));
     P(offsetof(AVCodecContext, codec_id));
     P(offsetof(AVCodecContext, bit_rate));

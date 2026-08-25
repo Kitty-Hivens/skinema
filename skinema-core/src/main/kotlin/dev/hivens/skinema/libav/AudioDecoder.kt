@@ -65,7 +65,21 @@ class AudioDecoder private constructor(
     private var swrCtx = MemorySegment.NULL
     private var srcFormat = Int.MIN_VALUE
     private var srcRate = 0
-    private var srcChannels = 0
+
+    /**
+     * The layout the current graph was built for, kept because the frame's own
+     * is reused from one call to the next. Compared rather than counted: two
+     * layouts can name the same number of channels and map them to different
+     * speakers -- 5.1 against 5.1(side) is the ordinary pair -- and a graph
+     * built for one resamples the other with the wrong channels in the wrong
+     * places, quietly. Zero-filled by the arena, which is
+     * AV_CHANNEL_ORDER_UNSPEC over no channels and so matches nothing.
+     */
+    private val srcLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+
+    /** Graphs built; a test observable, so a rebuild per frame cannot hide. */
+    internal var swrBuilds = 0
+        private set
     private val outLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF).also {
         Libav.avChannelLayoutDefault(it, OUT_CHANNELS)
     }
@@ -111,13 +125,7 @@ class AudioDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(audio flush)")
                 return
             }
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
-                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
-            ) {
-                // Empty packets are skipped, not sent: send_packet reads a
-                // NULL one as the flush signal and refuses a zero-length one
-                // carrying a data pointer with EINVAL. See VideoDecoder for
-                // the format that makes this ordinary rather than exotic.
+            if (!decodablePacket(packet, streamIndex)) {
                 Libav.avPacketUnref(packet)
                 continue
             }
@@ -159,8 +167,12 @@ class AudioDecoder private constructor(
     }
 
     private fun ensureSwr(format: Int, rate: Int) {
-        val channels = frame.get(JAVA_INT, LibavAbi.Frame.CH_LAYOUT + LibavAbi.ChannelLayout.NB_CHANNELS)
-        if (swrCtx != MemorySegment.NULL && format == srcFormat && rate == srcRate && channels == srcChannels) return
+        val layout = frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF)
+        if (swrCtx != MemorySegment.NULL && format == srcFormat && rate == srcRate &&
+            Libav.avChannelLayoutCompare(srcLayout, layout) == 0
+        ) {
+            return
+        }
         if (swrCtx != MemorySegment.NULL) {
             val ptrPtr = arena.allocate(ADDRESS)
             ptrPtr.set(ADDRESS, 0, swrCtx)
@@ -173,7 +185,7 @@ class AudioDecoder private constructor(
             Libav.swrAllocSetOpts2(
                 ctxOut,
                 outLayout, LibavAbi.AV_SAMPLE_FMT_S16, rate,
-                frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), format, rate,
+                layout, format, rate,
             ),
             "swr_alloc_set_opts2",
         )
@@ -181,7 +193,8 @@ class AudioDecoder private constructor(
         Libav.checkAv(Libav.swrInit(swrCtx), "swr_init")
         srcFormat = format
         srcRate = rate
-        srcChannels = channels
+        Libav.checkAv(Libav.avChannelLayoutCopy(srcLayout, layout), "av_channel_layout_copy")
+        swrBuilds++
     }
 
     private fun ensureCapacity(nbSamples: Int) {
@@ -205,6 +218,9 @@ class AudioDecoder private constructor(
             ptrPtr.set(ADDRESS, 0, swrCtx)
             Libav.swrFree(ptrPtr)
         }
+        // Frees what a custom channel order allocated inside the copy; the
+        // arena owns the struct itself.
+        Libav.avChannelLayoutUninit(srcLayout)
         ptrPtr.set(ADDRESS, 0, frame)
         Libav.avFrameFree(ptrPtr)
         ptrPtr.set(ADDRESS, 0, packet)
@@ -229,18 +245,8 @@ class AudioDecoder private constructor(
          */
         fun openOrNull(path: Path, streamIndex: Int? = null): AudioDecoder? {
             val arena = Arena.ofConfined()
-            val fmtCtx = try {
-                val ctxOut = arena.allocate(ADDRESS)
-                Libav.checkAv(
-                    Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
-                    "avformat_open_input($path)",
-                )
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                arena.close()
-                throw t
-            }
-            return openAudio(arena, fmtCtx, null, streamIndex, path.toString())
+            val opened = openInput(arena, path)
+            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, path.toString())
         }
 
         /**
@@ -251,28 +257,8 @@ class AudioDecoder private constructor(
          */
         fun openOrNull(source: MediaSource, streamIndex: Int? = null): AudioDecoder? {
             val arena = Arena.ofConfined()
-            var avioSource: AvioSource? = null
-            val fmtCtx = try {
-                val avio = AvioSource(arena, source)
-                avioSource = avio
-                val ctx = Libav.avformatAllocContext()
-                if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
-                val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
-                sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
-                sized.set(
-                    JAVA_INT, LibavAbi.FormatContext.FLAGS,
-                    sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
-                )
-                val ctxOut = arena.allocate(ADDRESS)
-                ctxOut.set(ADDRESS, 0, sized)
-                Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                avioSource?.free(arena.allocate(ADDRESS))
-                arena.close()
-                throw t
-            }
-            return openAudio(arena, fmtCtx, avioSource, streamIndex, "custom source")
+            val opened = openInput(arena, source)
+            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "custom source")
         }
 
         /** Shared tail: an opened [fmtCtx] -> an audio decoder, null when there is no audio. */
