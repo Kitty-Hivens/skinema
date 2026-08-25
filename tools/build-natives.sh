@@ -817,11 +817,23 @@ has vpx  && { LIBS+=(--enable-libvpx); DECODE+=",vp8,vp9,libvpx_vp8,libvpx_vp9";
 # the demuxer, which is what keeps looping working.
 has webp && { DEMUX+=",image_webp_pipe,webp_anim"; DECODE+=",webp,webp_anim"; PARSE+=",webp"; }
 # dvbsub joins the two bitmap decoders already here rather than needing a
-# path of its own: DVB subtitles are composed pixels like PGS and VobSub,
-# so they reach the consumer through the same branch of the pipeline. No
-# parser goes with it -- matroska carries one subtitle unit per block, and
-# the parser only earns its place on a raw stream, which nothing here reads.
-has subs && { DEMUX+=",ass,srt,webvtt,sup"; DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub"; }
+# path of its own: DVB subtitles are composed pixels like PGS and VobSub, so
+# they reach the consumer through the same branch of the pipeline.
+#
+# The PARSER goes with it, and leaving it out was a whole-format failure in
+# the format's own container. MPEG-TS -- which is what a DVB-T/S/C recording
+# is -- carries each subtitle unit inside a PES payload that begins with a
+# two-byte prefix, and the decoder refuses anything not starting at a segment
+# sync byte. The parser is what strips it. Measured on a TS built for this:
+# one cue decodes with the parser and none without, while the packet handed to
+# the decoder starts 20 00 0f rather than 0f. Matroska stores the unit already
+# stripped and needs no parser, which is why a fixture in that container
+# cannot see the gap.
+has subs && {
+    DEMUX+=",ass,srt,webvtt,sup"
+    DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub"
+    PARSE+=",dvbsub"
+}
 # The broad legacy/extended decode set (the "formats" feature). All native
 # FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
 has formats && {
