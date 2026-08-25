@@ -129,7 +129,6 @@ class TeardownTest {
         val pipeline = AudioPipeline(
             sounded("shutter.mkv"),
             sink,
-            loop = false,
             writeStallNanos = 30_000_000_000L,
         )
         assertTrue(awaitTrue { sink.writerParked }, "the audio thread must be stuck in a write to measure this")

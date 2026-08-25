@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class AudioPipeline(
     private val path: Path,
     private val sink: PcmSink,
-    private val loop: Boolean,
     private val initialTrack: Int? = null,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
     private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
@@ -366,7 +365,7 @@ internal class AudioPipeline(
         clockFuture.complete(theClock)
         startWatchdog()
         sampleRate = first.sampleRate
-        guardedWrite(first.pcm, 0, first.byteCount)
+        guardedWrite(first.pcm, first.byteCount)
 
         while (true) {
             if (deviceLost && !recover()) return
@@ -404,7 +403,7 @@ internal class AudioPipeline(
                 // next lap (or nothing) from a clean graph.
                 tempoFilter?.let { f ->
                     val n = f.flush()
-                    if (n > 0) guardedWrite(f.output, 0, n)
+                    if (n > 0) guardedWrite(f.output, n)
                     f.reset()
                 }
                 // That write is the only one whose return does not pass the
@@ -451,11 +450,11 @@ internal class AudioPipeline(
     private fun writeOut(pcm: ByteArray, byteCount: Int) {
         val filter = tempoFilter
         if (filter == null) {
-            guardedWrite(pcm, 0, byteCount)
+            guardedWrite(pcm, byteCount)
             return
         }
         val n = filter.process(pcm, byteCount)
-        if (n > 0) guardedWrite(filter.output, 0, n)
+        if (n > 0) guardedWrite(filter.output, n)
     }
 
     /**
@@ -464,14 +463,14 @@ internal class AudioPipeline(
      * off the write the device may legitimately sit still (pause, seek,
      * landing) and nothing is being waited on.
      */
-    private fun guardedWrite(data: ByteArray, offset: Int, length: Int) {
+    private fun guardedWrite(data: ByteArray, length: Int) {
         // The shutter. Once a close has been announced the sink belongs to
         // whoever lent it, and a write started here would be reaching into it
         // after close() had already returned.
         if (closing) return
         writeInFlightSince = System.nanoTime()
         try {
-            sink.write(data, offset, length)
+            sink.write(data, 0, length)
             queuedFrames += length / BYTES_PER_FRAME
             writeFailures = 0
         } catch (t: Throwable) {
