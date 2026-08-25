@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Two static checks on a built Windows bundle, both about DLLs that load on
-# the maintainer's machine and fail on a user's.
+# Three static checks on a built Windows bundle. Two are about DLLs that load
+# on the maintainer's machine and fail on a user's; the third is about a file
+# that loads nowhere because nothing ever asks for it.
 #
 #   tools/check-windows-bundle.sh <bundle-dir> [repo-root]
 #
 # 1. IMPORT-CLOSED. Every non-system DLL any bundled DLL imports must itself
 #    be in the bundle. A missing MinGW runtime (liblzma-5 once) makes a clean
 #    Windows box fail where CI passes on the toolchain's copy.
+#
+# 1b. NO ORPHANS. The mirror of the first, and the pass that would have caught
+#    a megabyte riding along for months: every bundled DLL must be imported by
+#    another one or be a library skinema opens by name. Both other passes read
+#    only what IS imported, so a file nothing imports was invisible to them.
 #
 # 2. PRELOADED. Import-closure is necessary but not sufficient: a full-path
 #    LoadLibrary does not search the bundle directory for an importer's own
