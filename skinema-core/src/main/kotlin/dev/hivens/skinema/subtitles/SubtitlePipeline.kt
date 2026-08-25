@@ -170,6 +170,22 @@ internal class SubtitlePipeline(
     internal var attachedFonts = 0
         private set
 
+    /**
+     * Whether those attachments reached the library while the renderer did not
+     * yet exist.
+     *
+     * The ordering is the load-bearing part and the one with no visible
+     * failure: libass builds its font provider when the renderer is
+     * initialised, so faces added after that are simply not there to be
+     * matched, and the file renders in whatever the system happened to have.
+     * Nothing throws, nothing is missing, the text is just in the wrong face
+     * -- and telling that apart from the right one needs a font no machine has
+     * installed. So what is pinned here is the sequence itself.
+     */
+    @Volatile
+    internal var fontsAddedBeforeRenderer = false
+        private set
+
     private val timeBases = HashMap<Int, Pair<Int, Int>>()
 
     // Declared above the thread, and that is load-bearing: Kotlin runs
@@ -347,6 +363,7 @@ internal class SubtitlePipeline(
             Ass.addFont(assLibrary, arena.allocateFrom(name ?: "embedded"), data, size)
             attachedFonts++
         }
+        fontsAddedBeforeRenderer = assRenderer == MemorySegment.NULL
     }
 
     private fun pump() {

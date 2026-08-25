@@ -303,6 +303,15 @@ class RichAssRenderingTest {
         try {
             assertNotNull(patchAt(pipeline, 2_000, Latest()), "the line must render")
             assertEquals(1, pipeline.attachedFonts, "the font is taken and the text attachment is not")
+            // And it got there in time. A face added after the renderer is
+            // built is not in the provider it built, so the file renders in
+            // whatever the system had -- no error, no missing text, just the
+            // wrong shapes, which only a font no machine has installed could
+            // tell apart from the right ones.
+            assertTrue(
+                pipeline.fontsAddedBeforeRenderer,
+                "attachments must reach libass before the renderer builds its font provider",
+            )
         } finally {
             pipeline.close()
         }
