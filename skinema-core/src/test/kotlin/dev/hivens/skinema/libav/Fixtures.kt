@@ -47,7 +47,7 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp", "encode", "formats", "audio")
+    internal val knownCaps = setOf("decode", "subs", "webp", "dvbsub", "encode", "formats", "audio")
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -61,6 +61,11 @@ object Fixtures {
         // Animated WebP is FFmpeg's own decoder now; the still webp decoder
         // rides the base whitelist, so webp_anim is the tell for the feature.
         "webp" -> libavHasDecoder("webp_anim")
+        // Its own name rather than a part of 'subs', because a bundle built
+        // before it is a legal bundle: listing it under the subtitle contract
+        // would turn "older than this decoder" into a failed run on every row
+        // that holds subtitles mandatory, which is all of them.
+        "dvbsub" -> libavHasDecoder("dvbsub")
         // The full tier always carries x264 (mac/win keep enc-h264 even
         // without x265, #22), so libx264 is the encode path's load probe.
         "encode" -> libavHasEncoder("libx264")
@@ -151,6 +156,25 @@ object Fixtures {
             return
         }
         assumeTrue(capLoads("webp"), "no webp_anim decoder -- optional capability, skipping")
+    }
+
+    /**
+     * DVB subtitles are bitmap subtitles like PGS, and gate on the bundle's
+     * own decoder rather than on libass.
+     *
+     * Under a capability of their own, not under 'subs'. Every row of the
+     * matrix holds subtitles mandatory, so a decoder newer than the bundle CI
+     * downloads would have turned every row red rather than skipping two
+     * tests -- which is what a required capability is for and exactly not what
+     * this is. It joins 'subs' in the required list once a bundle carrying it
+     * has shipped.
+     */
+    fun assumeDvbSubtitles() {
+        if (requires("dvbsub")) {
+            check(capLoads("dvbsub")) { "SKINEMA_REQUIRE_CAPS lists 'dvbsub' but the bundle has no DVB decoder" }
+            return
+        }
+        assumeTrue(capLoads("dvbsub"), "DVB subtitle decode absent in the bundle -- skipping")
     }
 
     /**

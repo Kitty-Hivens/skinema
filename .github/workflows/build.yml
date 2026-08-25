@@ -48,18 +48,28 @@ jobs:
           # over linux for tests that stage their failure by deleting or
           # replacing an open file, which it refuses, and one more for the
           # attached-font fixture, which needs fontconfig's fc-match.
+          #
+          # Three on every row are the DVB subtitle tests, and they are the one
+          # group here that is waiting rather than absent: the decoder and its
+          # parser are in the build script's whitelist and not yet in the
+          # bundle CI pulls, which comes from the rolling natives release. They
+          # run against a system ffmpeg today and will run against the bundle
+          # after the next natives build -- at which point these ceilings come
+          # down by three, 'dvbsub' joins the required capabilities, and the
+          # format can be advertised in the README table, whose claims are
+          # checked against the bundle's own manifest.
           - os: ubuntu-latest
             platform: linux-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 28
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 28
           - os: windows-latest
             platform: windows-x64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 31
+            maxSkipped: 34
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -68,7 +78,7 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 31
+            maxSkipped: 34
           # Twenty-one, and every one of them named, re-counted from the run:
           # nine audio suites needing a real output line (as everywhere else)
           # and the mastered clock's pacing test; six hardware (four VAAPI-only
@@ -101,7 +111,7 @@ jobs:
             platform: macos-arm64
             caps: decode,subs,webp,encode,formats
             hwaccel: "1"
-            maxSkipped: 21
+            maxSkipped: 24
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -112,12 +122,12 @@ jobs:
             platform: linux-musl-x64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 28
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             libc: musl
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 25
+            maxSkipped: 28
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
