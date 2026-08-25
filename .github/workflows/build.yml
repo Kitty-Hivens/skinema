@@ -68,26 +68,26 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             caps: decode,subs,webp,encode,formats
-            maxSkipped: 31
-          # Thirty, and every one of them named, re-counted from the run:
+            maxSkipped: 21
+          # Twenty-one, and every one of them named, re-counted from the run:
           # nine audio suites needing a real output line (as everywhere else)
           # and the mastered clock's pacing test; six hardware (four VAAPI-only
           # decode paths and both hardware-encode tests -- a mac has no VAAPI);
-          # NINE that could not build their fixture at all, because Homebrew's
-          # ffmpeg carries neither the libwebp nor the libaom-av1 encoder, so
-          # webp and AV1 decode had never been exercised on macOS -- invisible
-          # until the counter printed it; three encoder tests, two for encoders
-          # no bundle carries and one that stages a full disk through
-          # /dev/full; and two font tests that want a Linux font path.
+          # three encoder tests, two for encoders no bundle carries and one
+          # that stages a full disk through /dev/full; and two font tests that
+          # want a Linux font path.
           #
-          # That fixture group now has a second route -- PNG frames through
-          # img2webp, y4m through SvtAv1EncApp, both installed above -- and
-          # neither asks the CLI for an encoder. The ceiling stays where it was
-          # until a run on this runner says what the number actually becomes:
-          # it is a ceiling, so running MORE of the suite cannot fail against
-          # it, and lowering it on a guess could fail the build for a reason
-          # that has nothing to do with the suite. Re-count it from the first
-          # green run and bring it down.
+          # It was thirty-one, and nine of the difference were tests that could
+          # not build their fixture at all: Homebrew's ffmpeg carries neither
+          # the libwebp nor the libaom-av1 encoder, so webp and AV1 decode --
+          # shipped in every tier that carries them -- had never once been
+          # exercised on this platform, invisible until this counter printed
+          # it. They take a second route now (PNG frames through img2webp, y4m
+          # through SvtAv1EncApp, both installed above), neither of which asks
+          # the CLI for an encoder, and the ceiling comes down to what the run
+          # actually skips. Tight on purpose: a route that quietly stops
+          # working would put those nine back into the skip count, which is
+          # exactly what this number is here to catch.
           # hwaccel on this row alone. Hosted macOS runners are Apple Silicon,
           # and the run says what the documentation does not: a VideoToolbox
           # device OPENS here (surface 157) and then every frame comes back in
