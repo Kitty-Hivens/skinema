@@ -2,9 +2,12 @@ package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
+import java.lang.foreign.Arena
+import java.lang.foreign.MemorySegment
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.math.abs
@@ -389,6 +392,53 @@ class MediaWriterTest {
             MediaWriter.pickSampleFormat("flac", intArrayOf(LibavAbi.AV_SAMPLE_FMT_S16, LibavAbi.AV_SAMPLE_FMT_S32)),
         )
         assertFailsWith<LibavException> { MediaWriter.pickSampleFormat("empty", intArrayOf()) }
+    }
+
+    /**
+     * The layout is negotiated the way the rate and the sample format next to
+     * it are. An encoder taking only mono -- nellymoser, g722, half the speech
+     * codecs -- used to reach avcodec_open2 with stereo written in and come
+     * back with a bare EINVAL, which is the failure shape those two checks
+     * exist to replace.
+     *
+     * Layouts are structs, so the candidates are built rather than named, and
+     * the answers are compared rather than equated.
+     */
+    @Test
+    fun `the encoder's channel layout is picked, not assumed`() {
+        Fixtures.assumeDecodeEnvironment()
+        Arena.ofConfined().use { arena ->
+            fun layout(channels: Int) = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+                .also { Libav.avChannelLayoutDefault(it, channels) }
+            val mono = layout(1)
+            val stereo = layout(2)
+            val surround = layout(6)
+
+            fun assertSame(expected: MemorySegment, actual: MemorySegment, message: String) =
+                assertEquals(0, Libav.avChannelLayoutCompare(expected, actual), message)
+
+            assertSame(
+                stereo,
+                MediaWriter.pickChannelLayout("aac", arena, null),
+                "an encoder that advertises nothing takes what this writer is fed",
+            )
+            assertSame(
+                stereo,
+                MediaWriter.pickChannelLayout("libopus", arena, listOf(mono, stereo)),
+                "stereo in, stereo out: the conversion that costs nothing",
+            )
+            assertSame(
+                mono,
+                MediaWriter.pickChannelLayout("nellymoser", arena, listOf(mono)),
+                "a mono-only encoder must be given mono, not refused at open",
+            )
+            assertSame(
+                surround,
+                MediaWriter.pickChannelLayout("exotic", arena, listOf(surround, mono)),
+                "past stereo the encoder's own first choice wins",
+            )
+            assertFailsWith<LibavException> { MediaWriter.pickChannelLayout("empty", arena, emptyList()) }
+        }
     }
 
     /**

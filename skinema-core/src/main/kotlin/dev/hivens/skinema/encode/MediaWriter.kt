@@ -46,8 +46,11 @@ class VideoEncodeConfig(
  * Audio encode parameters. [codecName] is an FFmpeg encoder name ("aac",
  * "libopus", "flac", ...). Input is interleaved S16LE STEREO at
  * [sampleRate] -- the [dev.hivens.skinema.libav.AudioDecoder] output shape
- * -- encoded at the same rate (no resampling, only an S16 -> the encoder's
- * sample format conversion). [options] are the encoder's private options.
+ * -- encoded at the same rate; no resampling, only a conversion into the
+ * sample format and channel layout the encoder advertises. Stereo is kept
+ * wherever the encoder takes it, so the ordinary case converts the format
+ * alone; an encoder that takes only mono (or only surround) is given what it
+ * takes, mixed by swresample. [options] are the encoder's private options.
  */
 class AudioEncodeConfig(
     val codecName: String,
@@ -390,7 +393,7 @@ class MediaWriter private constructor(
         }
     }
 
-    /** One audio stream: S16LE stereo -> the encoder's planar format, chunked to [frameSize]. */
+    /** One audio stream: S16LE stereo -> the encoder's format and layout, chunked to [frameSize]. */
     private class AudioTrack(
         arena: Arena,
         val codecCtx: MemorySegment,
@@ -653,9 +656,16 @@ class MediaWriter private constructor(
                         audio.codecName,
                         supportedInts(arena, aEncoder, LibavAbi.AV_CODEC_CONFIG_SAMPLE_FORMAT),
                     )
+                    val outLayout = pickChannelLayout(audio.codecName, arena, supportedLayouts(arena, aEncoder))
                     ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_RATE, audio.sampleRate)
                     ac.set(JAVA_INT, LibavAbi.CodecContext.SAMPLE_FMT, sampleFmt)
-                    Libav.avChannelLayoutDefault(ac.asSlice(LibavAbi.CodecContext.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), OUT_CHANNELS)
+                    Libav.checkAv(
+                        Libav.avChannelLayoutCopy(
+                            ac.asSlice(LibavAbi.CodecContext.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF),
+                            outLayout,
+                        ),
+                        "av_channel_layout_copy(encoder)",
+                    )
                     // Pin the codec time_base to 1/sample_rate explicitly: the
                     // audio frame's pts is its running sample count and the
                     // packet rescale on drain assumes this base. The native AAC
@@ -670,8 +680,10 @@ class MediaWriter private constructor(
                     aFrameSize = ac.get(JAVA_INT, LibavAbi.CodecContext.FRAME_SIZE).takeIf { it > 0 } ?: DEFAULT_AUDIO_FRAME_SIZE
                     aStream = newStream(fmtCtx, aCtx, audio.sampleRate)
 
-                    // S16 interleaved stereo -> FLTP stereo, same rate.
-                    val outLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF).also { Libav.avChannelLayoutDefault(it, OUT_CHANNELS) }
+                    // S16 interleaved stereo in, the encoder's own format and
+                    // layout out, same rate. The layout is where a mix can
+                    // happen: swresample down- or upmixes when the encoder
+                    // takes something other than the stereo this writer is fed.
                     val inLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF).also { Libav.avChannelLayoutDefault(it, OUT_CHANNELS) }
                     val swrOut = arena.allocate(ADDRESS)
                     Libav.checkAv(
@@ -689,7 +701,13 @@ class MediaWriter private constructor(
                     aFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, sampleFmt)
                     aFrame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, aFrameSize)
                     aFrame.set(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE, audio.sampleRate)
-                    Libav.avChannelLayoutDefault(aFrame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), OUT_CHANNELS)
+                    Libav.checkAv(
+                        Libav.avChannelLayoutCopy(
+                            aFrame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF),
+                            outLayout,
+                        ),
+                        "av_channel_layout_copy(audio frame)",
+                    )
                     Libav.checkAv(Libav.avFrameGetBuffer(aFrame, 0), "av_frame_get_buffer(audio)")
                 }
 
@@ -808,6 +826,52 @@ class MediaWriter private constructor(
             LibavAbi.AV_PIX_FMT_GBRP,
             LibavAbi.AV_PIX_FMT_RGB24,
         )
+
+        /**
+         * The channel layouts [codec] advertises, or null when it takes any.
+         *
+         * Structs rather than the ints every other config list carries, so the
+         * array is walked by stride. The segments point into the codec's own
+         * static table, which outlives any writer, so they are read where they
+         * lie rather than copied out.
+         */
+        private fun supportedLayouts(arena: Arena, codec: MemorySegment): List<MemorySegment>? {
+            val listOut = arena.allocate(ADDRESS)
+            val countOut = arena.allocate(JAVA_INT)
+            Libav.checkAv(
+                Libav.avcodecGetSupportedConfig(
+                    MemorySegment.NULL, codec, LibavAbi.AV_CODEC_CONFIG_CHANNEL_LAYOUT, listOut, countOut,
+                ),
+                "avcodec_get_supported_config(channel layout)",
+            )
+            val list = listOut.get(ADDRESS, 0)
+            if (list == MemorySegment.NULL) return null
+            val count = countOut.get(JAVA_INT, 0)
+            if (count <= 0) return emptyList()
+            val stride = LibavAbi.ChannelLayout.SIZEOF
+            val sized = list.reinterpret(count.toLong() * stride)
+            return List(count) { sized.asSlice(it.toLong() * stride, stride) }
+        }
+
+        /**
+         * The channel layout to hand the encoder.
+         *
+         * Stereo when it takes stereo, because that is what this writer is fed
+         * and the conversion then costs nothing. Otherwise the encoder's own
+         * first choice, which swresample mixes into -- an encoder that takes
+         * only mono, or only 5.1, used to reach avcodec_open2 with stereo
+         * written in and be refused there with a bare EINVAL, the same shape of
+         * failure the sample rate and sample format checks next door exist to
+         * replace. A NULL list means it takes anything, which is stereo again.
+         */
+        internal fun pickChannelLayout(codecName: String, arena: Arena, supported: List<MemorySegment>?): MemorySegment {
+            val stereo = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
+                .also { Libav.avChannelLayoutDefault(it, OUT_CHANNELS) }
+            if (supported == null) return stereo
+            if (supported.any { Libav.avChannelLayoutCompare(it, stereo) == 0 }) return stereo
+            return supported.firstOrNull()
+                ?: throw LibavException("'$codecName' advertises no input channel layout")
+        }
 
         /**
          * The sample format to hand the encoder. Planar float leads because
