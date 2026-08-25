@@ -111,13 +111,7 @@ class AudioDecoder private constructor(
                 Libav.checkAv(Libav.avcodecSendPacket(codecCtx, MemorySegment.NULL), "avcodec_send_packet(audio flush)")
                 return
             }
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
-                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
-            ) {
-                // Empty packets are skipped, not sent: send_packet reads a
-                // NULL one as the flush signal and refuses a zero-length one
-                // carrying a data pointer with EINVAL. See VideoDecoder for
-                // the format that makes this ordinary rather than exotic.
+            if (!decodablePacket(packet, streamIndex)) {
                 Libav.avPacketUnref(packet)
                 continue
             }
@@ -229,18 +223,8 @@ class AudioDecoder private constructor(
          */
         fun openOrNull(path: Path, streamIndex: Int? = null): AudioDecoder? {
             val arena = Arena.ofConfined()
-            val fmtCtx = try {
-                val ctxOut = arena.allocate(ADDRESS)
-                Libav.checkAv(
-                    Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
-                    "avformat_open_input($path)",
-                )
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                arena.close()
-                throw t
-            }
-            return openAudio(arena, fmtCtx, null, streamIndex, path.toString())
+            val opened = openInput(arena, path)
+            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, path.toString())
         }
 
         /**
@@ -251,28 +235,8 @@ class AudioDecoder private constructor(
          */
         fun openOrNull(source: MediaSource, streamIndex: Int? = null): AudioDecoder? {
             val arena = Arena.ofConfined()
-            var avioSource: AvioSource? = null
-            val fmtCtx = try {
-                val avio = AvioSource(arena, source)
-                avioSource = avio
-                val ctx = Libav.avformatAllocContext()
-                if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
-                val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
-                sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
-                sized.set(
-                    JAVA_INT, LibavAbi.FormatContext.FLAGS,
-                    sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
-                )
-                val ctxOut = arena.allocate(ADDRESS)
-                ctxOut.set(ADDRESS, 0, sized)
-                Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                avioSource?.free(arena.allocate(ADDRESS))
-                arena.close()
-                throw t
-            }
-            return openAudio(arena, fmtCtx, avioSource, streamIndex, "custom source")
+            val opened = openInput(arena, source)
+            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "custom source")
         }
 
         /** Shared tail: an opened [fmtCtx] -> an audio decoder, null when there is no audio. */

@@ -405,17 +405,7 @@ class VideoDecoder private constructor(
                 return
             }
             restartStage = 2
-            if (packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) != streamIndex ||
-                packet.get(JAVA_INT, LibavAbi.Packet.SIZE) == 0
-            ) {
-            // An empty packet is not a packet. avcodec_send_packet takes a
-            // NULL one as the flush signal and refuses a zero-length one that
-            // still carries a data pointer -- EINVAL, which this loop turned
-            // into a decode failure. Formats emit them: Theora writes one per
-            // repeated frame, so nine of the ten packets of a static clip are
-            // empty and playback died on the second. FFmpeg reports one frame
-            // for that file and so do we now, by skipping them the way a
-            // packet from another stream is skipped.
+            if (!decodablePacket(packet, streamIndex)) {
                 Libav.avPacketUnref(packet)
                 continue
             }
@@ -831,18 +821,8 @@ class VideoDecoder private constructor(
         /** Opens [path] and prepares a decoder for its best video stream. */
         fun open(path: Path, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
             val arena = Arena.ofConfined()
-            val fmtCtx = try {
-                val ctxOut = arena.allocate(ADDRESS)
-                Libav.checkAv(
-                    Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
-                    "avformat_open_input($path)",
-                )
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                arena.close()
-                throw t
-            }
-            return openVideo(arena, fmtCtx, null, hardware, path.toString(), path.toString())
+            val opened = openInput(arena, path)
+            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, path.toString(), path.toString())
         }
 
         /**
@@ -853,31 +833,8 @@ class VideoDecoder private constructor(
          */
         fun open(source: MediaSource, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
             val arena = Arena.ofConfined()
-            var avioSource: AvioSource? = null
-            val fmtCtx = try {
-                val avio = AvioSource(arena, source)
-                avioSource = avio
-                val ctx = Libav.avformatAllocContext()
-                if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
-                val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
-                sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
-                sized.set(
-                    JAVA_INT, LibavAbi.FormatContext.FLAGS,
-                    sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
-                )
-                val ctxOut = arena.allocate(ADDRESS)
-                ctxOut.set(ADDRESS, 0, sized)
-                // url NULL: the input is the custom pb, not a path.
-                Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
-                ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-            } catch (t: Throwable) {
-                // A failed open frees the format context itself; the avio
-                // context, its buffer and the source are ours to release.
-                avioSource?.free(arena.allocate(ADDRESS))
-                arena.close()
-                throw t
-            }
-            return openVideo(arena, fmtCtx, avioSource, hardware, "custom source")
+            val opened = openInput(arena, source)
+            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "custom source")
         }
 
         /** Shared tail: an opened [fmtCtx] -> a video decoder, or fail-closed. */
@@ -1010,6 +967,84 @@ class VideoDecoder private constructor(
         }
     }
 }
+
+/**
+ * An opened demuxer, and the AVIO source feeding it when the bytes come from
+ * a consumer rather than a file. What both decoders hand to their own tail.
+ */
+internal class OpenedInput(val fmtCtx: MemorySegment, val avioSource: AvioSource?)
+
+/**
+ * Opens [path] into a format context allocated from [arena]. A failure closes
+ * the arena on the way out, so no caller is ever handed a half-open session
+ * to unwind.
+ */
+internal fun openInput(arena: Arena, path: Path): OpenedInput {
+    val fmtCtx = try {
+        val ctxOut = arena.allocate(ADDRESS)
+        Libav.checkAv(
+            Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
+            "avformat_open_input($path)",
+        )
+        ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+    } catch (t: Throwable) {
+        arena.close()
+        throw t
+    }
+    return OpenedInput(fmtCtx, null)
+}
+
+/**
+ * The same over a custom byte [source]. The format context is allocated here
+ * rather than by avformat_open_input, which is what AVFMT_FLAG_CUSTOM_IO
+ * announces to the demuxer -- skinema does no I/O of its own, so the bytes
+ * arrive through the consumer's callbacks.
+ *
+ * A failure releases the AVIO context, its buffer and the source before
+ * closing the arena: the failed open frees the format context itself, and
+ * the rest is ours.
+ */
+internal fun openInput(arena: Arena, source: MediaSource): OpenedInput {
+    var avioSource: AvioSource? = null
+    val fmtCtx = try {
+        val avio = AvioSource(arena, source)
+        avioSource = avio
+        val ctx = Libav.avformatAllocContext()
+        if (ctx == MemorySegment.NULL) throw LibavException("avformat_alloc_context returned NULL")
+        val sized = ctx.reinterpret(LibavAbi.FormatContext.SIZEOF)
+        sized.set(ADDRESS, LibavAbi.FormatContext.PB, avio.context)
+        sized.set(
+            JAVA_INT, LibavAbi.FormatContext.FLAGS,
+            sized.get(JAVA_INT, LibavAbi.FormatContext.FLAGS) or LibavAbi.AVFMT_FLAG_CUSTOM_IO,
+        )
+        val ctxOut = arena.allocate(ADDRESS)
+        ctxOut.set(ADDRESS, 0, sized)
+        // url NULL: the input is the custom pb, not a path.
+        Libav.checkAv(Libav.avformatOpenInput(ctxOut, MemorySegment.NULL), "avformat_open_input(custom source)")
+        ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+    } catch (t: Throwable) {
+        avioSource?.free(arena.allocate(ADDRESS))
+        arena.close()
+        throw t
+    }
+    return OpenedInput(fmtCtx, avioSource)
+}
+
+/**
+ * Whether a demuxed packet is one the decoder for [streamIndex] can be given.
+ *
+ * A packet from another stream is not ours, and an empty packet is not a
+ * packet: avcodec_send_packet reads a NULL one as the flush signal and
+ * refuses a zero-length one that still carries a data pointer with EINVAL,
+ * which the feed loops turned into a decode failure. Formats emit them --
+ * Theora writes one per repeated frame, so nine of the ten packets of a
+ * static clip are empty and playback died on the second. FFmpeg reports one
+ * frame for that file and so does this, by skipping an empty packet the way
+ * a packet from another stream is skipped.
+ */
+internal fun decodablePacket(packet: MemorySegment, streamIndex: Int): Boolean =
+    packet.get(JAVA_INT, LibavAbi.Packet.STREAM_INDEX) == streamIndex &&
+        packet.get(JAVA_INT, LibavAbi.Packet.SIZE) != 0
 
 /**
  * The SWS_CS_* coefficient table for a frame's declared matrix. Streams
