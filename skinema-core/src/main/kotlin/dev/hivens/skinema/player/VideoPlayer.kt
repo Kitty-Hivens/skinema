@@ -1448,12 +1448,13 @@ class VideoPlayer internal constructor(
      *
      * Three things have to hold, and each is a way of being wrong that was
      * tried. The mailbox must have been read at least once, or a player
-     * feeding something that is not a screen would be stood down. Pictures
-     * must have been PUBLISHED into it and not taken -- silence on its own
-     * says nothing, because a player waiting a lap out or standing at its end
-     * produces nothing to take and would otherwise be called unwatched for it.
-     * And the silence has to have lasted, because a consumer between draws is
-     * not a consumer that left.
+     * feeding something that is not a screen would be stood down. Enough
+     * pictures must have been PUBLISHED into it and not taken -- silence on
+     * its own says nothing, because a player waiting a lap out or standing at
+     * its end produces nothing to take, and a handful says little more,
+     * because a slow file hands over a handful while an ordinary consumer
+     * merely polls its position. And the silence has to have lasted, because
+     * a burst of sixty frames is a chase, not a consumer leaving.
      */
     private fun noteUnwatched() {
         if (presentingSaid || !presenting || frameless) return
@@ -1921,13 +1922,23 @@ class VideoPlayer internal constructor(
         const val UNWATCHED_AFTER_NANOS = 2_000_000_000L
 
         /**
-         * Pictures published into an unread mailbox before the silence around
-         * them counts. Two, because one is a frame a consumer can be mid-draw
-         * on and two is a pattern -- and because what this has to separate,
-         * paired with the wall bound, is a consumer that went away from a
-         * player that simply had nothing to hand over.
+         * Pictures published into an unread mailbox before nobody is taken to
+         * be looking.
+         *
+         * Counted rather than timed, because what the waste is worth scales
+         * with the frame rate and so should the patience: sixty frames is a
+         * second of a 60 fps file and a minute of a one-frame-a-second one,
+         * and the second one costs almost nothing to decode anyway. Timing it
+         * instead made the answer depend on how fast the machine was -- a
+         * consumer polling the position while a slow file played out looked
+         * exactly like one that had gone away, and did so only on the slowest
+         * runner in the matrix.
+         *
+         * The wall bound below still has to pass as well. It is the floor
+         * under a burst: sixty frames can be published in a blink by a chase
+         * or a landing run, and a blink is not a consumer leaving.
          */
-        const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 2
+        const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 60
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }

@@ -157,11 +157,16 @@ class UnwatchedTest {
         val source = ScriptedFrameSource(frameCount = 600)
         player(source, WhenUnwatched.Freeze).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "the mailbox must be read at least once")
-            advance(500)
 
-            // Nothing is read from here on, and nothing says so either.
+            // Nothing is read from here on, and nothing says so either. The
+            // clock is turned far enough that the pictures nobody is taking
+            // pile up past the count -- what is being asserted is the notice,
+            // and the notice is about frames thrown away rather than time.
             assertTrue(
-                awaitTrue(6_000) { player.state is VideoPlayer.State.Paused },
+                awaitTrue(15_000) {
+                    advance(200)
+                    player.state is VideoPlayer.State.Paused
+                },
                 "an unread mailbox must be noticed, state=${player.state}",
             )
             val stoppedAt = source.maxStartedIndex.get()
