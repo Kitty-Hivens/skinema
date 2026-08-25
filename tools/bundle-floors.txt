@@ -1,0 +1,38 @@
+# How old a system each bundle still loads on -- the promise README.md makes,
+# in a form the build can check.
+#
+# The floor is not chosen, it is measured: it is whatever the newest symbol
+# version the toolchain emitted requires. So it moves on its own whenever a
+# builder image is bumped, and nothing noticed -- a bundle built on a newer
+# base quietly stops loading on the distributions the README names, and the
+# first report of it comes from a user.
+#
+# Format: <platform> <tier> = <kind> <version>, or "-" for no floor.
+#   glibc <x.y>  the highest GLIBC_x.y any shipped library asks for
+#   macos <x.y>  the LC_BUILD_VERSION minos every shipped dylib declares
+#
+# Checked one way: a bundle that needs MORE than the line says fails the
+# build, because the README is then wrong about who can run it. One that
+# needs less only prints -- the promise still holds, and lowering it is a
+# decision to make deliberately, in the README first.
+#
+# musl does not version its symbols, so those bundles have no floor to check.
+
+linux-x64         core   = glibc 2.35
+linux-x64         decode = glibc 2.38
+linux-x64         full   = glibc 2.38
+linux-arm64       core   = glibc 2.38
+linux-arm64       decode = glibc 2.38
+linux-arm64       full   = glibc 2.39
+linux-musl-x64    core   = -
+linux-musl-x64    decode = -
+linux-musl-x64    full   = -
+linux-musl-arm64  core   = -
+linux-musl-arm64  decode = -
+linux-musl-arm64  full   = -
+macos-x64         core   = macos 14.0
+macos-x64         decode = macos 14.0
+macos-x64         full   = macos 14.0
+macos-arm64       core   = macos 14.0
+macos-arm64       decode = macos 14.0
+macos-arm64       full   = macos 14.0
