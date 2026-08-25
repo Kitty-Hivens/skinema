@@ -205,6 +205,9 @@ object Libav {
     private val hAvFree = fn(LibavLibrary.AVUTIL, "av_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvFrameUnref = fn(LibavLibrary.AVUTIL, "av_frame_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvChannelLayoutDefault = fn(LibavLibrary.AVUTIL, "av_channel_layout_default", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
+    private val hAvChannelLayoutCompare = fn(LibavLibrary.AVUTIL, "av_channel_layout_compare", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvChannelLayoutCopy = fn(LibavLibrary.AVUTIL, "av_channel_layout_copy", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvChannelLayoutUninit = fn(LibavLibrary.AVUTIL, "av_channel_layout_uninit", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvHwdeviceCtxCreate = fn(LibavLibrary.AVUTIL, "av_hwdevice_ctx_create", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvHwframeTransferData = fn(LibavLibrary.AVUTIL, "av_hwframe_transfer_data", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvBufferRef = fn(LibavLibrary.AVUTIL, "av_buffer_ref", FunctionDescriptor.of(ADDRESS, ADDRESS))
@@ -390,6 +393,15 @@ object Libav {
     fun avFrameGetBuffer(frame: MemorySegment, align: Int): Int = hAvFrameGetBuffer.invoke(frame, align) as Int
     fun avFrameUnref(frame: MemorySegment) { hAvFrameUnref.invoke(frame) }
     fun avChannelLayoutDefault(layout: MemorySegment, channels: Int) { hAvChannelLayoutDefault.invoke(layout, channels) }
+
+    /** Zero when the two layouts describe the same channels in the same order. */
+    fun avChannelLayoutCompare(a: MemorySegment, b: MemorySegment): Int = hAvChannelLayoutCompare.invoke(a, b) as Int
+
+    /** Deep copy -- a custom order carries a map, which assignment would share. */
+    fun avChannelLayoutCopy(dst: MemorySegment, src: MemorySegment): Int = hAvChannelLayoutCopy.invoke(dst, src) as Int
+
+    /** Releases what a custom order allocated; a no-op for the mask orders. */
+    fun avChannelLayoutUninit(layout: MemorySegment) { hAvChannelLayoutUninit.invoke(layout) }
 
     // -- hwaccel (M11 decode, M13 encode): device setup, frame transfer, get_format --
 
