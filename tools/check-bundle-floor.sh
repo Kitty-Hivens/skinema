@@ -78,10 +78,23 @@ macos)
     got=""
     for f in "$bundle"/*.dylib; do
         [ -e "$f" ] || continue
-        # LC_BUILD_VERSION carries minos; older objects carry LC_VERSION_MIN_MACOSX
-        # with a "version" field instead, and a bundle can hold both.
-        for v in $(otool -l "$f" | awk '/minos|LC_VERSION_MIN_MACOSX/,0' \
-                   | grep -oE '(minos|version) [0-9]+(\.[0-9]+)+' | awk '{print $2}' | sort -u); do
+        # Read the field out of ITS OWN load command and no other. otool -l
+        # prints a version in several: LC_SOURCE_VERSION carries the compiler's
+        # (2503.1.0 on the runner that caught this), and every LC_LOAD_DYLIB
+        # carries the current and compatibility versions of a dependency. A
+        # pattern that scans the whole dump for "version" takes the largest of
+        # those and calls it the deployment target -- which fails the build for
+        # a floor no object declares.
+        #
+        # LC_BUILD_VERSION carries minos; objects built for older targets carry
+        # LC_VERSION_MIN_MACOSX with a "version" field instead, and a bundle can
+        # hold both, so both are read and the newest wins.
+        for v in $(otool -l "$f" | awk '
+                /^ *cmd LC_BUILD_VERSION$/     { in_cmd = "build"; next }
+                /^ *cmd LC_VERSION_MIN_MACOSX$/ { in_cmd = "min"; next }
+                /^ *cmd /                       { in_cmd = ""; next }
+                in_cmd == "build" && $1 == "minos"   { print $2 }
+                in_cmd == "min"   && $1 == "version" { print $2 }'); do
             if [ -z "$got" ] || newer_than "$v" "$got"; then got="$v"; fi
         done
     done
