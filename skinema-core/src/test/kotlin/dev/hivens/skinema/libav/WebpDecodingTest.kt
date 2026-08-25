@@ -28,15 +28,14 @@ class WebpDecodingTest {
 
     private fun assumeWebpEnvironment() {
         Fixtures.assumeDecodeEnvironment()
-        Fixtures.assumeEncoder("libwebp")
+        // The fixture takes whichever route exists rather than gating on the
+        // CLI's own encoder: webp_anim ships in the decode tiers, and on the
+        // platform whose CLI carries no libwebp this whole suite skipped.
+        Fixtures.assumeAnimatedWebpFixture()
         Fixtures.assumeWebpDecoding()
     }
 
-    private fun animated(name: String, vararg extra: String): Path = Fixtures.generate(
-        dir.resolve(name),
-        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
-        "-c:v", "libwebp", "-lossless", "0", "-loop", "0", *extra,
-    )
+    private fun animated(name: String): Path = Fixtures.animatedWebp(dir.resolve(name))
 
     /**
      * The reopen escalation frees the demuxer before it tries to replace it,

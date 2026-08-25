@@ -73,16 +73,21 @@ jobs:
           # nine audio suites needing a real output line (as everywhere else)
           # and the mastered clock's pacing test; six hardware (four VAAPI-only
           # decode paths and both hardware-encode tests -- a mac has no VAAPI);
-          # NINE that cannot build their fixture at all, because Homebrew's
+          # NINE that could not build their fixture at all, because Homebrew's
           # ffmpeg carries neither the libwebp nor the libaom-av1 encoder, so
-          # webp and AV1 decode have never been exercised on macOS -- invisible
+          # webp and AV1 decode had never been exercised on macOS -- invisible
           # until the counter printed it; three encoder tests, two for encoders
           # no bundle carries and one that stages a full disk through
           # /dev/full; and two font tests that want a Linux font path.
           #
-          # A ceiling here keeps the gap declared and catches it widening;
-          # closing the fixture group needs fixtures that do not depend on what
-          # the CLI was compiled with.
+          # That fixture group now has a second route -- PNG frames through
+          # img2webp, y4m through SvtAv1EncApp, both installed above -- and
+          # neither asks the CLI for an encoder. The ceiling stays where it was
+          # until a run on this runner says what the number actually becomes:
+          # it is a ceiling, so running MORE of the suite cannot fail against
+          # it, and lowering it on a guess could fail the build for a reason
+          # that has nothing to do with the suite. Re-count it from the first
+          # green run and bring it down.
           # hwaccel on this row alone. Hosted macOS runners are Apple Silicon,
           # and the run says what the documentation does not: a VideoToolbox
           # device OPENS here (surface 157) and then every frame comes back in
@@ -174,7 +179,11 @@ jobs:
                 ffmpeg libgl1 libegl1 libfontconfig1 libx11-6 libass9 libva2
               ;;
             Windows) choco install -y ffmpeg ;;
-            macOS)   brew install ffmpeg libass ;;
+            # webp and svt-av1 are the fixture builders' second route: this
+            # runner's ffmpeg carries neither libwebp nor libaom, so the
+            # animated-WebP and AV1 suites had no fixture to build and skipped
+            # -- decoders that ship in every tier, never exercised here.
+            macOS)   brew install ffmpeg libass webp svt-av1 ;;
           esac
 
       # The tag comes from nativesVersion, the way the publish workflow reads
