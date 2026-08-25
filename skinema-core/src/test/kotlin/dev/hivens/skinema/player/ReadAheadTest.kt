@@ -37,7 +37,7 @@ class ReadAheadTest {
     }
 
     private fun player(source: ScriptedFrameSource, depth: Int, loop: Boolean = false) = VideoPlayer(
-        Path.of("scripted"), loop, false, clock, null, depth, null,
+        Path.of("scripted"), loop, false, clock, null, depth, null, WhenUnwatched.Freeze,
     ) { source }
 
     @Test

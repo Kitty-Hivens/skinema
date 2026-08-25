@@ -245,6 +245,14 @@ class VideoSurfaceRenderTest {
                 }
                 assumeTrue(selected, "no subtitle track to select")
 
+                // Rendering has stopped, so nothing is taking frames any more
+                // and the player would otherwise notice: an unread mailbox is
+                // an unwatched player, and an unwatched player stops the clock
+                // the subtitle side renders against. This test is a consumer
+                // that stopped taking pictures and still wants the player to
+                // run, which is what saying so exists for.
+                player.setPresenting(true)
+
                 while (canvas.first < 200 && System.currentTimeMillis() < deadline) {
                     player.acquireSubtitles()?.let { canvas = it.canvasWidth to it.canvasHeight }
                     Thread.sleep(10)

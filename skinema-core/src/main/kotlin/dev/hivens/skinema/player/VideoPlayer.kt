@@ -51,6 +51,7 @@ class VideoPlayer internal constructor(
     sink: PcmSink?,
     readAheadFrames: Int,
     audioTrack: Int?,
+    private val unwatched: WhenUnwatched,
     // The test seam: a Path is the only public way in, so deterministic
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
@@ -96,7 +97,22 @@ class VideoPlayer internal constructor(
          * set up. The RGBA frame contract is identical on every path.
          */
         hardware: HwAccel = HwAccel.OFF,
-    ) : this(path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, { FrameSources.open(it, hardware) })
+        /**
+         * What the timeline does while nobody is taking frames -- see
+         * [WhenUnwatched]. A player nobody reads is not free: it decodes,
+         * converts and paces pictures into a mailbox nothing empties, which
+         * for a launcher minimised to the tray is a core spent on a window
+         * that is not on screen.
+         *
+         * It applies both ways round. A consumer that knows says so with
+         * [setPresenting]; one that says nothing is noticed anyway, once the
+         * mailbox it HAD been reading goes unread.
+         */
+        unwatched: WhenUnwatched = WhenUnwatched.Freeze,
+    ) : this(
+        path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
+        { FrameSources.open(it, hardware) },
+    )
 
     sealed interface State {
         data object Opening : State
@@ -144,6 +160,7 @@ class VideoPlayer internal constructor(
         data class SelectSubtitles(val id: Int?) : Command
         data object StepForward : Command
         data object StepBackward : Command
+        data class SetPresenting(val presenting: Boolean) : Command
         data object Close : Command
 
         /**
@@ -375,7 +392,38 @@ class VideoPlayer internal constructor(
      * The freshest published frame, or null when nothing new arrived since
      * the previous call (keep showing what you have).
      */
-    fun acquireFrame(): FrameSlot? = buffer?.acquire()
+    fun acquireFrame(): FrameSlot? {
+        // The read IS the signal, so it is taken before the frame: a consumer
+        // that polls and gets null is still watching, and one that stopped
+        // polling is what this notices.
+        lastAcquireNanos = System.nanoTime()
+        if (!presenting && !presentingSaid) submit(Command.SetPresenting(true))
+        return buffer?.acquire()
+    }
+
+    /**
+     * Says whether the picture is being taken -- a window minimised, a tab
+     * switched away from, a wallpaper behind a maximised app.
+     *
+     * A player nobody reads is not free: it decodes, converts and paces
+     * pictures into a mailbox nothing empties. What stopping costs the
+     * timeline is [WhenUnwatched]'s to say.
+     *
+     * Saying nothing is allowed. A mailbox that WAS being read and stops
+     * being read is noticed on its own, and the next [acquireFrame] undoes
+     * it -- so a consumer that never thinks about this still stops burning a
+     * core behind a hidden window, and one that wants the transition exact
+     * says so here.
+     *
+     * Saying it once takes the automatic notice out of play for good. The two
+     * would otherwise argue: a player told to stop presenting, whose consumer
+     * goes on polling the mailbox for a position readout, would be revived by
+     * the polling against what it was told.
+     */
+    fun setPresenting(presenting: Boolean) {
+        presentingSaid = true
+        submit(Command.SetPresenting(presenting))
+    }
 
     /** Freezes playback; the surface keeps showing the last frame. */
     fun pause() = submit(Command.Pause)
@@ -854,8 +902,20 @@ class VideoPlayer internal constructor(
                 cmd = commands.poll()
             }
 
-            if (state !is State.Playing) {
-                // Paused or Ended: idle until the next command.
+            noteUnwatched()
+            if (state !is State.Playing || !presenting) {
+                // Paused, ended, or drawing for nobody: idle until the next
+                // command. Under KeepTime the clock runs on through this, so
+                // what is skipped is the decoding, not the timeline.
+                //
+                // The pacer holding its inventory would stop this side anyway
+                // -- a queue nothing drains fills and the fill side parks on
+                // it -- so what this gate is worth is the queue's depth in
+                // frames, decoded once per transition and thrown away. It
+                // stays because the fill side asking the question itself is
+                // what keeps the two from drifting apart: a pacer that one day
+                // drains for a reason of its own would otherwise start this
+                // side decoding again for nobody.
                 val idle = commands.poll(100, TimeUnit.MILLISECONDS) ?: continue
                 if (!handle(idle, decoder)) return
                 continue
@@ -1005,6 +1065,9 @@ class VideoPlayer internal constructor(
         Command.Close -> false
         Command.RoomFreed -> true
         Command.Pause -> {
+            // A pause the consumer asked for is theirs from here: it must
+            // outlive the picture being wanted again.
+            pausedByUnwatch = false
             pauseNow()
             true
         }
@@ -1014,23 +1077,10 @@ class VideoPlayer internal constructor(
         }
         Command.StepBackward -> performStepBackward(decoder)
         Command.Resume -> {
-            if (state is State.Paused) {
-                // The sink's buffered tail keeps sounding (and advancing the
-                // device clock) for a beat after a pause lands; resuming
-                // re-anchors sound to the frame actually on screen,
-                // sample-precise. Frameless players have no frame to anchor
-                // to and just resume.
-                if (audioPipeline != null && decoder != null) {
-                    val at = clock.mediaNanos()
-                    audioPipeline.seek(at)
-                    audioPipeline.videoLanded(at)
-                }
-                audioPipeline?.resume()
-                clock.resume()
-                state = State.Playing
-            }
+            resumeNow(decoder)
             true
         }
+        is Command.SetPresenting -> applyPresenting(cmd.presenting, decoder)
         is Command.SetRate -> {
             rate = cmd.rate
             if (ownsClock) {
@@ -1061,6 +1111,31 @@ class VideoPlayer internal constructor(
             handleSeek((base + cmd.deltaNanos).coerceAtLeast(0), cmd.exact, decoder)
         }
     }
+
+    // Whether anyone is taking the picture. Written on the decode thread,
+    // read by the pacer, so both sides stop together.
+    @Volatile
+    private var presenting = true
+
+    // Whether the consumer has ever said, in so many words, whether it is
+    // watching. Once it has, the automatic notice steps aside for good: a
+    // player told to stop presenting must not be revived by the very polling
+    // its consumer does for some other reason, and one told to present must
+    // not be stood down behind that instruction's back.
+    @Volatile
+    private var presentingSaid = false
+
+    // When the mailbox was last read, and zero while it never has been. A
+    // player nobody has EVER read frames from is not one that stopped being
+    // watched -- it may be feeding something that is not a screen -- so the
+    // automatic notice only ever applies after the first read.
+    @Volatile
+    private var lastAcquireNanos = 0L
+
+    // Whether the pause standing now was this player's own doing. Only one it
+    // imposed may be lifted when the picture is wanted again; a pause the
+    // consumer asked for outlives being looked at.
+    private var pausedByUnwatch = false
 
     // Where the last landing put the picture, -1 when it landed on nothing
     // (a seek past the end of the footage). Owned by the decode thread.
@@ -1300,6 +1375,74 @@ class VideoPlayer internal constructor(
                 }
             }
         }
+    }
+
+    private fun resumeNow(decoder: FrameSource?) {
+        if (state !is State.Paused) return
+        // The sink's buffered tail keeps sounding (and advancing the device
+        // clock) for a beat after a pause lands; resuming re-anchors sound to
+        // the frame actually on screen, sample-precise. Frameless players have
+        // no frame to anchor to and just resume.
+        if (audioPipeline != null && decoder != null) {
+            val at = clock.mediaNanos()
+            audioPipeline.seek(at)
+            audioPipeline.videoLanded(at)
+        }
+        audioPipeline?.resume()
+        clock.resume()
+        state = State.Playing
+        pausedByUnwatch = false
+    }
+
+    /**
+     * Takes the player in or out of being watched. Returns false when a Close
+     * arrived inside the landing the return can run -- the same contract every
+     * other handler keeps, and dropping it would swallow the Close.
+     */
+    private fun applyPresenting(now: Boolean, decoder: FrameSource?): Boolean {
+        if (now == presenting) return true
+        presenting = now
+        if (!now) {
+            // What stopping costs the timeline is the policy's to say; that
+            // the pictures stop is not a policy, it is the point.
+            if (unwatched == WhenUnwatched.Freeze && state is State.Playing) {
+                pausedByUnwatch = true
+                pauseNow()
+            }
+            return true
+        }
+        if (pausedByUnwatch) {
+            resumeNow(decoder)
+            return true
+        }
+        // KeepTime, coming back: the file ran on without the viewer while the
+        // decoder stood where it was left, so the gap between them is exactly
+        // what nobody watched. Rejoin the clock on a keyframe -- decoding the
+        // gap to catch up would spend on pictures that are already too late to
+        // show, which is the cost this whole mechanism exists to stop.
+        if (state is State.Playing && decoder != null) {
+            return handleSeek(clock.mediaNanos(), exact = false, decoder)
+        }
+        return true
+    }
+
+    /**
+     * Notices a mailbox that stopped being read.
+     *
+     * The consumer that says nothing is the ordinary one: a Compose surface
+     * polls every frame while its window is on screen and simply stops when
+     * it is not, and nothing in that tells the player. So the reading itself
+     * is the signal, and its absence is read only where it means something --
+     * after the mailbox has been read at least once (a player nobody has ever
+     * taken a frame from may be feeding something that is not a screen), and
+     * never on a frameless one, which publishes no frames to take.
+     */
+    private fun noteUnwatched() {
+        if (presentingSaid || !presenting || frameless) return
+        val last = lastAcquireNanos
+        if (last == 0L) return
+        if (System.nanoTime() - last < UNWATCHED_AFTER_NANOS) return
+        applyPresenting(false, null)
     }
 
     private fun pauseNow() {
@@ -1577,8 +1720,11 @@ class VideoPlayer internal constructor(
                 publishFromQueue()
                 continue
             }
-            if (state !is State.Playing) {
-                // Paused, or a landing resolving: hold the inventory.
+            if (state !is State.Playing || !presenting) {
+                // Paused, a landing resolving, or nobody taking the picture:
+                // hold the inventory. Forced frames publish above this, so a
+                // seek still lands while unwatched and the picture is right
+                // when it is wanted again.
                 queue.awaitChange(tick, IDLE_RECHECK_NANOS)
                 continue
             }
@@ -1741,6 +1887,18 @@ class VideoPlayer internal constructor(
          * spend even this has [closeAsync].
          */
         const val CLOSE_BUDGET_NANOS = 1_000_000_000L
+
+        /**
+         * How long a mailbox that was being read may go unread before the
+         * player treats itself as unwatched.
+         *
+         * Two seconds is a hundred and twenty frame periods at 60 fps and
+         * still generous at any cadence a consumer plausibly draws at, which
+         * is what it has to be: the cost of deciding too early is a picture
+         * that stutters for a consumer whose loop is merely slow, and the cost
+         * of deciding late is two seconds of decoding nobody sees.
+         */
+        const val UNWATCHED_AFTER_NANOS = 2_000_000_000L
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }

@@ -21,9 +21,10 @@ VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
 
 It polls `acquireFrame` on every Compose frame (`withFrameNanos`), so a
 hidden or detached window stops polling for free -- Compose runs no
-frame clock for it. The player itself keeps decoding and pacing behind
-that; the mailbox is latest-wins, so what it produces meanwhile is
-overwritten rather than queued. It draws pixels and
+frame clock for it. The player notices the mailbox going unread and stops
+decoding for it, on the policy its `WhenUnwatched` names; say the moment
+exactly with `player.setPresenting(...)` if you would rather not wait for
+it to be noticed. It draws pixels and
 nothing else -- no spinner, no error glyph. Before the first frame and
 while the player is `Failed`, it draws nothing; put your own loading and
 fallback visuals around it, driven by `rememberPlayerState` (below).
