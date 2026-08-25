@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class VideoPlayer internal constructor(
     private val path: Path,
     private val loop: Boolean,
-    private val audio: Boolean,
+    audio: Boolean,
     private val explicitClock: MediaClock?,
     sink: PcmSink?,
     readAheadFrames: Int,
@@ -266,7 +266,7 @@ class VideoPlayer internal constructor(
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
-        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), loop, audioTrack) else null
+        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), audioTrack) else null
 
     // Owned by the decode thread (selection runs there, where the clock
     // exists by construction); volatile because consumers poll

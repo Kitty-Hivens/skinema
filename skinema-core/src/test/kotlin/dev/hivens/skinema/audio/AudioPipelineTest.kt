@@ -56,7 +56,7 @@ class AudioPipelineTest {
     fun `plays a tone through the sink and the clock tracks it`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone(), sink, loop = false)
+        val pipeline = AudioPipeline(tone(), sink)
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a tone has audio")
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
@@ -90,7 +90,7 @@ class AudioPipelineTest {
     fun `media time keeps moving after the audio ends`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone(), sink, loop = false)
+        val pipeline = AudioPipeline(tone(), sink)
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a tone has audio")
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
@@ -109,7 +109,7 @@ class AudioPipelineTest {
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
         )
-        val pipeline = AudioPipeline(video, FakePcmSink(), loop = false)
+        val pipeline = AudioPipeline(video, FakePcmSink())
         try {
             assertNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // A pipeline that resolved no clock has already left. It must say
@@ -138,7 +138,7 @@ class AudioPipelineTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
         )
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(video, sink, loop = false)
+        val pipeline = AudioPipeline(video, sink)
         try {
             assertNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a silent file resolves no clock")
             assertTrue(awaitTrue { sink.closes > 0 }, "the sink must be closed, not abandoned")
@@ -151,7 +151,7 @@ class AudioPipelineTest {
     fun `seek crops to the sample and replays the remainder`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("crop.flac"), sink, loop = false)
+        val pipeline = AudioPipeline(tone("crop.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
@@ -179,7 +179,7 @@ class AudioPipelineTest {
     fun `seek freezes the sink until the video lands`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("freeze.flac"), sink, loop = true)
+        val pipeline = AudioPipeline(tone("freeze.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
@@ -200,7 +200,7 @@ class AudioPipelineTest {
     fun `resume during a landing keeps the sink frozen`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("frozen-resume.flac"), sink, loop = true)
+        val pipeline = AudioPipeline(tone("frozen-resume.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.pause()
@@ -224,7 +224,7 @@ class AudioPipelineTest {
         // Manual play position: everything is written near-instantly, but
         // the "DAC" stands at 0, so the buffered tail has not sounded yet.
         sink.positionFrames.set(0)
-        val pipeline = AudioPipeline(tone("tail.flac"), sink, loop = false)
+        val pipeline = AudioPipeline(tone("tail.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             assertTrue(awaitTrue { sink.totalBytes == 44_100 * 4 }, "the file must be fully written")
@@ -265,7 +265,7 @@ class AudioPipelineTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "2", "-c:a", "flac",
         )
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(media, sink, loop = false)
+        val pipeline = AudioPipeline(media, sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             val whole = 44_100 * 2 * 4
@@ -297,7 +297,7 @@ class AudioPipelineTest {
     fun `a seek restates the tail count over what its flush threw away`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 2_205)
-        val pipeline = AudioPipeline(tone("reanchor.flac"), sink, loop = false)
+        val pipeline = AudioPipeline(tone("reanchor.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // Mid-playback, so the line is holding sound the flush will drop.
@@ -336,7 +336,7 @@ class AudioPipelineTest {
         // is a whole second. With a buffer of a few frames the blocking write
         // paces both cases identically and only the drain tells them apart.
         val sink = PacedPcmSink(bufferFrames = 44_100)
-        val pipeline = AudioPipeline(media, sink, loop = false)
+        val pipeline = AudioPipeline(media, sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // Two seconds played before the seek: that is the credit a count
@@ -363,7 +363,7 @@ class AudioPipelineTest {
     fun `a live track switch lands on the new rate at the same playhead`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(twoTracks("switch.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("switch.mka"), sink)
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             assertEquals(2, pipeline.tracks.size)
@@ -393,7 +393,7 @@ class AudioPipelineTest {
         // by whatever played meanwhile -- the sampler below would see
         // time step back. Manual-position fakes are blind to this.
         val sink = BoundedPcmSink(capacityFrames = 4_410)
-        val pipeline = AudioPipeline(twoTracks("freeze-switch.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("freeze-switch.mka"), sink)
         val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
         val running = AtomicBoolean(true)
         val violated = AtomicLong(-1)
@@ -427,7 +427,7 @@ class AudioPipelineTest {
     fun `a switch mid-landing keeps the sink frozen for videoLanded`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(twoTracks("await.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("await.mka"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(100_000_000L)
@@ -459,7 +459,6 @@ class AudioPipelineTest {
                 "-disposition:a:0", "default",
             ),
             sink,
-            loop = true,
         )
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
@@ -491,7 +490,7 @@ class AudioPipelineTest {
         )
         val sink = FakePcmSink()
         val file = twoTracks("vanishing.mka")
-        val pipeline = AudioPipeline(file, sink, loop = true)
+        val pipeline = AudioPipeline(file, sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             assertTrue(awaitTrue { !sink.stopped }, "playback must start")
@@ -515,7 +514,7 @@ class AudioPipelineTest {
     fun `a line that refuses the new track's rate does not end this side`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(twoTracks("noreopen.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("noreopen.mka"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // Pin the playhead. This sink takes writes instantly, so an
@@ -585,7 +584,7 @@ class AudioPipelineTest {
         // nothing throttles this sink, so on a quick enough runner the track
         // is already handed over and no further write ever comes to fail.
         sink.failNextWrite = true
-        val pipeline = AudioPipeline(twoTracks("shortwrite.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("shortwrite.mka"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             assertTrue(awaitTrue { sink.opens >= 2 }, "recovery must get a line back, opens=${sink.opens}")
@@ -606,7 +605,7 @@ class AudioPipelineTest {
     fun `a switch to an unknown index is a no-op`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(twoTracks("badidx.mka"), sink, loop = true)
+        val pipeline = AudioPipeline(twoTracks("badidx.mka"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.selectTrack(99)
@@ -624,7 +623,7 @@ class AudioPipelineTest {
         // A small bounded buffer parks the thread inside write, so the
         // burst queues up behind it like behind a real device.
         val sink = BoundedPcmSink(capacityFrames = 4_410)
-        val pipeline = AudioPipeline(tone("burst.flac"), sink, loop = true)
+        val pipeline = AudioPipeline(tone("burst.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             assertTrue(awaitTrue { sink.writerParked }, "the writer must park")
@@ -653,7 +652,7 @@ class AudioPipelineTest {
     fun `tempo 2 roughly halves what reaches the device`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("tempo.flac"), sink, loop = false)
+        val pipeline = AudioPipeline(tone("tempo.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // The flush counter is the applied-handshake; the seek then
@@ -690,7 +689,7 @@ class AudioPipelineTest {
             dir.resolve("tempoclock.flac"),
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "flac",
         )
-        val pipeline = AudioPipeline(media, sink, loop = true)
+        val pipeline = AudioPipeline(media, sink)
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.setTempo(2.0)
@@ -722,7 +721,7 @@ class AudioPipelineTest {
     fun `a tempo change mid-landing keeps the sink frozen`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("tempofrozen.flac"), sink, loop = true)
+        val pipeline = AudioPipeline(tone("tempofrozen.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.seek(250_000_000L)
@@ -750,7 +749,7 @@ class AudioPipelineTest {
             dir.resolve("freeze-tempo.flac"),
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "30", "-c:a", "flac",
         )
-        val pipeline = AudioPipeline(media, sink, loop = true)
+        val pipeline = AudioPipeline(media, sink)
         val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
         val running = AtomicBoolean(true)
         val violated = AtomicLong(-1)
@@ -783,7 +782,7 @@ class AudioPipelineTest {
     fun `back to tempo 1 the path is sample-exact again`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("temporound.flac"), sink, loop = false)
+        val pipeline = AudioPipeline(tone("temporound.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             // Each change must APPLY before the next command, or the seek
@@ -815,7 +814,7 @@ class AudioPipelineTest {
     fun `pause stops the sink and volume forwards to it`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(tone("ctl.flac"), sink, loop = true)
+        val pipeline = AudioPipeline(tone("ctl.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
             pipeline.pause()
@@ -842,7 +841,6 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(
             tone("dead.flac"),
             sink,
-            loop = false,
             writeStallNanos = 200_000_000L,
         )
         try {
