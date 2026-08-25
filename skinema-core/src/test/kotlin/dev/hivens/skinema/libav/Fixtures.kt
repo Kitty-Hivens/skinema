@@ -4,6 +4,7 @@ import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.audio.JavaSoundSink
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.lang.foreign.Arena
+import java.io.File
 import java.lang.foreign.MemorySegment
 import java.nio.file.Files
 import java.nio.file.Path
@@ -178,20 +179,133 @@ object Fixtures {
     }
 
     /**
-     * Skips when the fixture CLI lacks [encoder]. Deliberately NOT a
-     * SKINEMA_REQUIRE_CAPS capability: what the runner's CLI can encode
-     * is the environment's business (brew ships ffmpeg without
-     * libaom/libwebp), not part of skinema's decode contract.
-     */
-    /**
      * Whether the fixture CLI has [encoder], for a test that sweeps several
      * containers and wants to include one more when it can rather than skip
      * the lot when it cannot.
      */
     fun hasCliEncoder(encoder: String): Boolean = encoder in encoders
 
+    /**
+     * Skips when the fixture CLI lacks [encoder]. Deliberately NOT a
+     * SKINEMA_REQUIRE_CAPS capability: what the runner's CLI can encode is
+     * the environment's business, not part of skinema's decode contract.
+     *
+     * Where the environment's business became skinema's, the answer is a
+     * second route rather than a skip -- see [animatedWebp] and [av1].
+     */
     fun assumeEncoder(encoder: String) {
         assumeTrue(encoder in encoders, "CLI lacks encoder $encoder -- fixture impossible, skipping")
+    }
+
+    // -- fixtures the CLI cannot always build --------------------------------
+
+    /**
+     * Take the second route even where the first one exists. The platform
+     * that needs it is not the one this usually runs on, so without a way to
+     * ask for it the route would be exercised nowhere but there.
+     */
+    private val preferFallback = System.getenv("SKINEMA_FIXTURE_FALLBACK") == "1"
+
+    private fun toolOnPath(tool: String): Boolean =
+        System.getenv("PATH").orEmpty().split(File.pathSeparatorChar).any { dir ->
+            dir.isNotEmpty() && (File(dir, tool).canExecute() || File(dir, "$tool.exe").canExecute())
+        }
+
+    private fun runTool(vararg cmd: String) {
+        val proc = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+        val log = proc.inputStream.readAllBytes().decodeToString()
+        check(proc.waitFor() == 0) { "${cmd.first()} failed: $log" }
+    }
+
+    private fun cliCan(encoder: String): Boolean = !preferFallback && hasCliEncoder(encoder)
+
+    /** Whether an animated WebP fixture can be built here, by either route. */
+    fun canBuildAnimatedWebp(): Boolean = cliCan("libwebp") || toolOnPath("img2webp")
+
+    /** Whether an AV1 fixture can be built here, by either route. */
+    fun canBuildAv1(): Boolean =
+        cliCan("libaom-av1") || cliCan("libsvtav1") || toolOnPath("SvtAv1EncApp")
+
+    fun assumeAnimatedWebpFixture() {
+        assumeTrue(canBuildAnimatedWebp(), "neither the CLI's libwebp nor img2webp here -- skipping")
+    }
+
+    fun assumeAv1Fixture() {
+        assumeTrue(canBuildAv1(), "neither an AV1 encoder in the CLI nor SvtAv1EncApp here -- skipping")
+    }
+
+    /**
+     * An animated WebP: [seconds] of a test pattern at [size] and [rate].
+     *
+     * Two routes, because the first one is not everywhere. Homebrew's ffmpeg
+     * carries neither libwebp nor libaom, so on macOS the encoder route does
+     * not exist -- and the animated-WebP suite skipped there for the life of
+     * the matrix, leaving a decoder that ships in every tier never once
+     * exercised on the platform. The second route asks the CLI only for PNG
+     * frames, which any build can write, and hands them to libwebp's own
+     * img2webp.
+     */
+    fun animatedWebp(target: Path, seconds: Int = 1, size: String = "64x64", rate: Int = 10): Path {
+        if (cliCan("libwebp")) {
+            return generate(
+                target,
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
+                "-c:v", "libwebp", "-lossless", "0", "-loop", "0",
+            )
+        }
+        val frames = Files.createTempDirectory(target.parent, "webp-frames")
+        try {
+            runTool(
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
+                frames.resolve("f-%03d.png").toString(),
+            )
+            val pngs = Files.list(frames).use { stream -> stream.sorted().map(Path::toString).toList() }
+            check(pngs.isNotEmpty()) { "the CLI wrote no PNG frames for ${target.fileName}" }
+            runTool("img2webp", "-loop", "0", "-d", "${1_000 / rate}", *pngs.toTypedArray(), "-o", target.toString())
+            check(Files.size(target) > 0) { "img2webp produced an empty ${target.fileName}" }
+            return target
+        } finally {
+            frames.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * An AV1 clip in mp4: [seconds] of a test pattern at [size] and [rate].
+     *
+     * Same two routes and the same reason. The second one asks the CLI for
+     * y4m, which needs no video encoder at all, hands it to SVT-AV1's own
+     * binary, and remuxes the result -- copying a stream, which needs no
+     * encoder either.
+     */
+    fun av1(target: Path, seconds: Int = 1, size: String = "64x64", rate: Int = 10): Path {
+        if (cliCan("libaom-av1")) {
+            return generate(
+                target,
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
+                "-pix_fmt", "yuv420p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40",
+            )
+        }
+        if (cliCan("libsvtav1")) {
+            return generate(
+                target,
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
+                "-pix_fmt", "yuv420p", "-c:v", "libsvtav1", "-preset", "12",
+            )
+        }
+        val raw = target.resolveSibling("${target.fileName}.y4m")
+        val ivf = target.resolveSibling("${target.fileName}.ivf")
+        try {
+            generate(
+                raw,
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds", "-pix_fmt", "yuv420p",
+            )
+            runTool("SvtAv1EncApp", "-i", raw.toString(), "--preset", "12", "-b", ivf.toString())
+            return generate(target, "-i", ivf.toString(), "-c", "copy")
+        } finally {
+            Files.deleteIfExists(raw)
+            Files.deleteIfExists(ivf)
+        }
     }
 
     /**

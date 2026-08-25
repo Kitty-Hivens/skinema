@@ -238,8 +238,11 @@ class VideoDecoderTest {
     }
 
     /** Decodes [name] and asserts frame count, dimensions and a monotonic pts grid. */
-    private fun assertDecodesEveryFrame(name: String, expectedFrames: Int, vararg encodeArgs: String) {
-        val video = Fixtures.generate(dir.resolve(name), *encodeArgs)
+    private fun assertDecodesEveryFrame(name: String, expectedFrames: Int, vararg encodeArgs: String) =
+        assertDecodesEveryFrame(Fixtures.generate(dir.resolve(name), *encodeArgs), expectedFrames)
+
+    private fun assertDecodesEveryFrame(video: Path, expectedFrames: Int) {
+        val name = video.fileName.toString()
         VideoDecoder.open(video).use { decoder ->
             var count = 0
             var lastPts = Long.MIN_VALUE
@@ -269,12 +272,11 @@ class VideoDecoderTest {
     @Test
     fun `av1 decodes through dav1d -- the whitelist carries it`() {
         Fixtures.assumeDecodeEnvironment()
-        Fixtures.assumeEncoder("libaom-av1")
-        assertDecodesEveryFrame(
-            "av1.mp4", 10,
-            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
-            "-pix_fmt", "yuv420p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40",
-        )
+        // Not gated on the CLI's own encoder any more: dav1d ships in every
+        // tier, and on the one platform whose CLI cannot encode AV1 this test
+        // had never run at all. The fixture takes whichever route exists.
+        Fixtures.assumeAv1Fixture()
+        assertDecodesEveryFrame(Fixtures.av1(dir.resolve("av1.mp4")), 10)
     }
 
     @Test
