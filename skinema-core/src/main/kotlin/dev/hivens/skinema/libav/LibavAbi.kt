@@ -14,6 +14,7 @@ package dev.hivens.skinema.libav
  * Offsets are stable within a soname major; [Libav] verifies the loaded
  * majors before anything here is dereferenced.
  */
+@Suppress("unused") // An offset the code has no reader for yet is still the map.
 object LibavAbi {
 
     object FormatContext {
