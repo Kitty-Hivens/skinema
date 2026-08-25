@@ -202,6 +202,16 @@ Known traps (each verified the hard way elsewhere; do not rediscover):
 3. FFM pointer dereferences need `.reinterpret(size)` -- a raw pointer read
    yields a zero-length segment and an IndexOutOfBoundsException on first
    access.
+4. `MethodHandle.invoke`, not `invokeExact`, and that is measured rather
+   than assumed. `invokeExact` needs every call site's static types to match
+   its handle exactly, and a mismatch is a `WrongMethodTypeException` at
+   runtime rather than a compile error -- across two hundred bindings. What
+   it buys here is nothing: 50M calls of a trivial native function came out
+   at 9 to 13 ns per call either way, the difference inside the run-to-run
+   noise and negative in two of three rounds. Nothing here calls libav per
+   pixel; the hot paths run per packet and per frame, a few thousand calls a
+   second, each wrapping orders of magnitude more native work than the call
+   overhead.
 
 ## 6. Frame pipeline
 
