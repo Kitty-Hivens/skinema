@@ -33,8 +33,8 @@ tasks.withType<JavaCompile>().configureEach {
 dependencies {
     api(project(":skinema-core"))
     implementation(project(":skinema-skiko"))
-    implementation(compose.runtime)
-    implementation(compose.foundation)
+    implementation(libs.compose.runtime)
+    implementation(libs.compose.foundation)
 
     testImplementation(libs.kotlin.test)
     // The headless scene renderer draws through Skia, so the tests need

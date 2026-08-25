@@ -14,6 +14,7 @@ package dev.hivens.skinema.libav
  * Offsets are stable within a soname major; [Libav] verifies the loaded
  * majors before anything here is dereferenced.
  */
+@Suppress("unused") // An offset the code has no reader for yet is still the map.
 object LibavAbi {
 
     object FormatContext {
@@ -321,6 +322,7 @@ object LibavAbi {
     const val AV_CODEC_CONFIG_PIX_FORMAT = 0
     const val AV_CODEC_CONFIG_SAMPLE_RATE = 2
     const val AV_CODEC_CONFIG_SAMPLE_FORMAT = 3
+    const val AV_CODEC_CONFIG_CHANNEL_LAYOUT = 4
     const val AV_PIX_FMT_RGBA = 26
 
     /** 16-bit-per-channel RGBA: the precision staging format for HDR tone-mapping. */

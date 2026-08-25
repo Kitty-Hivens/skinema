@@ -4,7 +4,6 @@ import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.LibavException
-import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Path
 
 /**
@@ -168,8 +167,7 @@ class Transcoder private constructor(
         var pendingAudio = audio?.nextChunk()
         var padded = false
         while (!cancelled) {
-            val frame = video.nextFrame()
-            if (frame == null) break
+            val frame = video.nextFrame() ?: break
             while (pendingAudio != null && pendingAudio.ptsNanos <= frame.ptsNanos) {
                 if (!padded) {
                     padded = true

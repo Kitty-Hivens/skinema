@@ -28,15 +28,14 @@ class WebpDecodingTest {
 
     private fun assumeWebpEnvironment() {
         Fixtures.assumeDecodeEnvironment()
-        Fixtures.assumeEncoder("libwebp")
+        // The fixture takes whichever route exists rather than gating on the
+        // CLI's own encoder: webp_anim ships in the decode tiers, and on the
+        // platform whose CLI carries no libwebp this whole suite skipped.
+        Fixtures.assumeAnimatedWebpFixture()
         Fixtures.assumeWebpDecoding()
     }
 
-    private fun animated(name: String, vararg extra: String): Path = Fixtures.generate(
-        dir.resolve(name),
-        "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "1",
-        "-c:v", "libwebp", "-lossless", "0", "-loop", "0", *extra,
-    )
+    private fun animated(name: String): Path = Fixtures.animatedWebp(dir.resolve(name))
 
     /**
      * The reopen escalation frees the demuxer before it tries to replace it,
@@ -109,11 +108,7 @@ class WebpDecodingTest {
     @Test
     fun `alpha survives animated webp`() {
         assumeWebpEnvironment()
-        val video = Fixtures.generate(
-            dir.resolve("alpha.webp"),
-            "-f", "lavfi", "-i", "color=c=red@0.5:size=16x16:rate=5,format=rgba", "-t", "1",
-            "-c:v", "libwebp", "-lossless", "1", "-loop", "0", "-pix_fmt", "yuva420p",
-        )
+        val video = Fixtures.animatedWebp(dir.resolve("alpha.webp"), size = "16x16", rate = 5, alpha = true)
         FrameSources.open(video).use { source ->
             val frame = source.nextFrame()!!
             val i = (8 * 16 + 8) * 4
@@ -142,11 +137,7 @@ class WebpDecodingTest {
     @Test
     fun `still webp decodes as a single frame`() {
         assumeWebpEnvironment()
-        val video = Fixtures.generate(
-            dir.resolve("still.webp"),
-            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
-            "-c:v", "libwebp",
-        )
+        val video = Fixtures.stillWebp(dir.resolve("still.webp"))
         FrameSources.open(video).use { source ->
             val frames = generateSequence { source.nextFrame() }.count()
             assertEquals(1, frames)

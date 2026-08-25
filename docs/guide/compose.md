@@ -11,6 +11,7 @@ fun VideoSurface(
     player: VideoPlayer,
     modifier: Modifier = Modifier,
     scale: VideoScale = VideoScale.Cover,
+    background: Color? = null,
 )
 ```
 
@@ -20,12 +21,21 @@ VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
 
 It polls `acquireFrame` on every Compose frame (`withFrameNanos`), so a
 hidden or detached window stops polling for free -- Compose runs no
-frame clock for it. The player itself keeps decoding and pacing behind
-that; the mailbox is latest-wins, so what it produces meanwhile is
-overwritten rather than queued. It draws pixels and
+frame clock for it. The player notices the mailbox going unread and stops
+decoding for it, on the policy its `WhenUnwatched` names; say the moment
+exactly with `player.setPresenting(...)` if you would rather not wait for
+it to be noticed. It draws pixels and
 nothing else -- no spinner, no error glyph. Before the first frame and
 while the player is `Failed`, it draws nothing; put your own loading and
 fallback visuals around it, driven by `rememberPlayerState` (below).
+
+**One surface per player.** The mailbox hands each published frame to
+whichever reader polls first -- that single-reader rule is what makes the
+handoff copy-free -- so two surfaces drawing one player take turns instead
+of both seeing everything: each gets part of the frames, neither gets them
+all, and the two show different pictures. Nothing fails, so it reads as
+choppy video rather than as a mistake; the second surface says so on
+stderr. Two views of one file means two players.
 
 `VideoSurface` handles two things a raw frame draw would miss:
 
@@ -36,6 +46,11 @@ fallback visuals around it, driven by `rememberPlayerState` (below).
   overlay in the video's own coordinate space -- glued to the picture,
   upright through any rotation -- and reports the on-screen size back to
   the player so libass rasterizes glyphs at display resolution.
+- **Letterbox.** `background` paints the bounds under the picture, so
+  `Fit`'s bars are a colour you choose rather than whatever is composed
+  behind the surface. It is painted with the frame, never before one:
+  until the first frame arrives, and on a failed player, the surface still
+  draws nothing at all, so your own fallback shows through.
 
 ## VideoScale
 
@@ -98,20 +113,28 @@ bytes into a `org.jetbrains.skia.Image`:
 
 ```kotlin
 val frameImage = VideoFrameImage()   // AutoCloseable
-// per frame, on the thread that draws:
+// wherever you raster -- it does not have to be the drawing thread:
 player.acquireFrame()?.let { f ->
-    val image: Image = frameImage.update(f.width, f.height, f.rgba)
-    canvas.drawImage(image, x, y)
+    frameImage.update(f.width, f.height, f.rgba)
 }
+// on the thread that draws:
+frameImage.reclaim()                 // frees what the last draw finished with
+frameImage.image?.let { canvas.drawImage(it, x, y) }
 // on teardown:
 frameImage.close()
 ```
 
-`VideoFrameImage` is single-threaded by contract -- call `update` from
-the same thread that draws. Each `update` raster-copies the pixels into
-a fresh `Image` and closes the previous one; Skia images hold native
-memory, so you must close the last one yourself rather than wait for a
-finalizer.
+The raster copy is the expensive part -- eight megabytes a frame at
+1080p, four times that at 4K -- so `update` is built to run off the
+thread that draws, which is where `VideoSurface` runs it. That is why a
+replaced image is *retired* rather than closed on the spot: the drawing
+thread may still be holding it. `reclaim`, called from the drawing
+thread at the start of a draw, is what closes retired images, and
+`close` frees everything left. Skia images hold native memory, so
+neither is optional -- waiting for a finalizer is a leak in practice.
+
+`update` answers `null` once `close` has run, which is what a raster
+already in flight when the surface goes away comes back with.
 
 For subtitle overlays drawn this way, `SubtitleOverlayImage` does the
 same for the positioned subtitle patches returned by

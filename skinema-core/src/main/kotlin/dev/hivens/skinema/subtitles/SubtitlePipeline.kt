@@ -191,15 +191,27 @@ internal class SubtitlePipeline(
         commands.put(Command.SetCanvasSize(width, height))
     }
 
-    /** Mid-play teardown: no join -- a blocked read must not hitch a frame. */
-    fun closeAsync() {
+    /**
+     * Tells this side to go, without waiting for it -- a track switch, where
+     * a joined close behind a blocking read would hitch a frame, and the
+     * first half of the player's teardown, where every side is told before
+     * any of them is joined.
+     */
+    fun announceClose() {
         commands.put(Command.Close)
+    }
+
+    /** Waits for the thread to go, and never past [deadlineNanos]. */
+    fun awaitExit(deadlineNanos: Long) {
+        val ms = (deadlineNanos - System.nanoTime()) / 1_000_000
+        if (ms <= 0) return
+        thread.join(ms)
     }
 
     /** Player teardown: joined, so the arena dies before the player does. */
     fun close() {
-        commands.put(Command.Close)
-        thread.join(5_000)
+        announceClose()
+        awaitExit(System.nanoTime() + DEFAULT_CLOSE_BUDGET_NANOS)
     }
 
     // -- Subtitle thread -------------------------------------------------------
@@ -702,7 +714,7 @@ internal class SubtitlePipeline(
         // from any free above it -- a libass handle a partial open left in an
         // odd state -- leaked the whole confined arena, the codec context and
         // the format context with it, once per track switch.
-        try {
+        arena.use { arena ->
             if (assTrack != MemorySegment.NULL) Ass.freeTrack(assTrack)
             if (assRenderer != MemorySegment.NULL) Ass.rendererDone(assRenderer)
             if (assLibrary != MemorySegment.NULL) Ass.libraryDone(assLibrary)
@@ -715,8 +727,6 @@ internal class SubtitlePipeline(
                 ptrPtr.set(ADDRESS, 0, fmtCtx)
                 Libav.avformatCloseInput(ptrPtr)
             }
-        } finally {
-            arena.close()
         }
     }
 
@@ -732,6 +742,13 @@ internal class SubtitlePipeline(
 
         /** A backward clock jump past this without a seek is a loop wrap. */
         const val REGRESSION_NANOS = 1_000_000_000L
+
+        /**
+         * What [close] spends when this side is closed on its own. The player
+         * passes its own deadline instead, so the whole teardown shares one
+         * budget rather than taking this per side.
+         */
+        const val DEFAULT_CLOSE_BUDGET_NANOS = 5_000_000_000L
 
         /**
          * How long the demux gate trusts a reposition target the clock has
@@ -796,7 +813,7 @@ internal class SubtitlePipeline(
             if (width <= 0 || height <= 0 || linesize < width) return null
             if (width.toLong() * height > MAX_RECT_PIXELS) return null
             val bytes = linesize.toLong() * (height - 1) + width
-            if (bytes <= 0 || bytes > MAX_RECT_BYTES) return null
+            if (bytes !in 1..MAX_RECT_BYTES) return null
             return bytes.toInt()
         }
 

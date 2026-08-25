@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import kotlinx.coroutines.CancellationException
@@ -19,7 +20,21 @@ import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.SamplingMode
+import java.util.WeakHashMap
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
+
+/**
+ * Images the raster thread may leave for the drawing thread to close before
+ * it stops making more. Three is the handover in flight -- the one being
+ * drawn, the one just published, and the one behind them -- so reaching it
+ * means the draw is not running, and making more would only spend native
+ * memory nobody is going to look at.
+ */
+private const val MAX_RETIRED_FRAMES = 3
 
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
@@ -33,19 +48,40 @@ enum class VideoScale {
 /**
  * Draws [player]'s frames, repainting on the Compose frame clock: each
  * UI frame polls [VideoPlayer.acquireFrame], so a hidden window stops
- * polling for free -- Compose runs it no frame clock. The player goes on
- * decoding and pacing into its latest-wins mailbox regardless.
+ * polling for free -- Compose runs it no frame clock. The player notices the
+ * mailbox going unread and stops decoding for it, on the policy its
+ * [dev.hivens.skinema.player.WhenUnwatched] names; a consumer that would
+ * rather mark the moment exactly calls [VideoPlayer.setPresenting].
  *
  * The surface draws pixels and nothing else -- no spinners, no error
  * states. Watch [VideoPlayer.state] and react outside; before the first
  * frame (and on [VideoPlayer.State.Failed]) the surface simply draws
  * nothing, leaving whatever is composed behind it visible.
+ *
+ * ONE SURFACE PER PLAYER. The mailbox hands each published frame to one
+ * reader -- that is what makes the handoff copy-free -- so two surfaces on
+ * one player take turns rather than both seeing everything: each draws part
+ * of the frames, neither draws them all, and the two show different pictures.
+ * Nothing fails, which is why it reads as choppy video rather than as a
+ * mistake, so the second surface says so on stderr. Two views of one file
+ * means two players.
  */
 @Composable
 fun VideoSurface(
     player: VideoPlayer,
     modifier: Modifier = Modifier,
     scale: VideoScale = VideoScale.Cover,
+    /**
+     * Painted over the bounds before the picture, so [VideoScale.Fit]'s bars
+     * are this colour instead of whatever is composed behind the surface.
+     * Null (the default) keeps the surface drawing pixels and nothing else.
+     *
+     * Only ever painted together with a frame: before the first one, and on a
+     * failed player, the surface still draws nothing at all -- a consumer's
+     * own fallback has to be able to show through, and a background that
+     * appeared first would cover it.
+     */
+    background: Color? = null,
 ) {
     val frames = remember(player) { VideoFrameImage() }
     val subtitles = remember(player) { SubtitleOverlayImage() }
@@ -61,8 +97,63 @@ fun VideoSurface(
     // would invalidate the very frame writing it.
     val postedCanvas = remember(player) { intArrayOf(-1, -1) }
 
+    // The raster's own side of the frame clock. A permit per composition
+    // frame, a stamp back when a frame has been made into an image, and the
+    // throw that stops it -- Compose state is written on the composition
+    // thread only, so what crosses the seam is all plain.
+    val ticks = remember(player) { Semaphore(0) }
+    val rasterStamp = remember(player) { AtomicLong(0L) }
+    val rasterFailure = remember(player) { AtomicReference<Throwable?>(null) }
+    var drawnStamp by remember(player) { mutableLongStateOf(0L) }
+
     DisposableEffect(player) {
+        if (SurfaceRegistry.add(player)) {
+            System.err.println(
+                "skinema: a second VideoSurface is drawing one player. The player's mailbox has a single " +
+                    "reader, so the surfaces take turns -- each draws part of the frames and neither draws " +
+                    "them all. Give each surface its own player.",
+            )
+        }
+        // Eight megabytes at 1080p, four times that at 4K, every frame: the
+        // raster copy is real work, and done on the composition thread it is
+        // taken straight out of the host's own rendering. It runs here
+        // instead, one frame per permit, so the frame clock still decides
+        // when -- which keeps the player's notice of an unwatched mailbox
+        // tied to the window actually rendering rather than to a loop of
+        // this thread's own.
+        val stop = AtomicBoolean(false)
+        val rasteriser = Thread({
+            while (!stop.get()) {
+                try {
+                    ticks.acquire()
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                if (stop.get()) return@Thread
+                // The drawing thread closes what this one retires, so its
+                // backlog is this one's bound: skip a turn rather than pile
+                // native memory behind a draw that is not running.
+                if (frames.pending > MAX_RETIRED_FRAMES) continue
+                try {
+                    val slot = player.acquireFrame() ?: continue
+                    frames.update(slot.width, slot.height, slot.rgba) ?: continue
+                    rasterStamp.incrementAndGet()
+                } catch (t: Throwable) {
+                    rasterFailure.set(t)
+                    return@Thread
+                }
+            }
+        }, "skinema-raster").apply {
+            isDaemon = true
+            start()
+        }
         onDispose {
+            SurfaceRegistry.remove(player)
+            // Joined before anything it touches is closed, so the teardown
+            // cannot free a session out from under a raster in flight.
+            stop.set(true)
+            ticks.release()
+            rasteriser.join(1_000)
             frames.close()
             subtitles.close()
         }
@@ -72,11 +163,16 @@ fun VideoSurface(
         while (true) {
             withFrameNanos { }
             val state = player.state
+            // One frame in flight at a time: a second permit would only let
+            // the raster thread run ahead of the draw it feeds.
+            if (ticks.availablePermits() == 0) ticks.release()
+            val rastered = rasterStamp.get()
+            if (rastered != drawnStamp) {
+                drawnStamp = rastered
+                frameStamp++
+            }
             try {
-                player.acquireFrame()?.let { slot ->
-                    frames.update(slot.width, slot.height, slot.rgba)
-                    frameStamp++
-                }
+                rasterFailure.get()?.let { throw it }
                 player.acquireSubtitles()?.let { overlay ->
                     subtitles.update(
                         overlay.patches.map {
@@ -139,7 +235,14 @@ fun VideoSurface(
         // one stayed painted -- and a consumer drawing its fallback anywhere
         // but on top of the surface never got to show it.
         if (failed) return@Canvas
+        // The drawing thread's half of the image handover: what the raster
+        // thread retired before this draw began is finished with, because
+        // the draw that was using it has ended.
+        frames.reclaim()
         val image = frames.image ?: return@Canvas
+        // With the frame in hand, so the bars arrive with the picture rather
+        // than ahead of it.
+        background?.let { drawRect(it) }
         // Phone footage arrives sideways with its orientation as metadata;
         // scaling decisions follow what the viewer SEES, so quarter turns
         // swap the dimensions before Cover/Fit does its math.
@@ -226,6 +329,34 @@ fun VideoSurface(
                 player.setSubtitleCanvasSize(postW, postH)
             }
         }
+    }
+}
+
+/**
+ * Which players already have a surface drawing them.
+ *
+ * Exists to name a silent failure. Two surfaces on one player is a mistake
+ * with no symptom of its own: the mailbox hands a published frame to whoever
+ * polls first, so the two split the stream between them and both look merely
+ * slow. Weak keys, because a player outlives nothing here -- an entry left
+ * behind by a surface that was never disposed must not hold one alive.
+ */
+internal object SurfaceRegistry {
+
+    private val counts = WeakHashMap<VideoPlayer, Int>()
+
+    /** Adds a surface for [player]; true when it is not the first. */
+    @Synchronized
+    fun add(player: VideoPlayer): Boolean {
+        val now = (counts[player] ?: 0) + 1
+        counts[player] = now
+        return now > 1
+    }
+
+    @Synchronized
+    fun remove(player: VideoPlayer) {
+        val now = (counts[player] ?: 1) - 1
+        if (now <= 0) counts.remove(player) else counts[player] = now
     }
 }
 
