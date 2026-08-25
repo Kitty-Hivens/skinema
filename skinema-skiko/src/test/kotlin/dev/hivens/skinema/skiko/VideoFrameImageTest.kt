@@ -23,7 +23,7 @@ class VideoFrameImageTest {
     @Test
     fun `update produces an image carrying the pixels`() {
         VideoFrameImage().use { holder ->
-            val image = holder.update(2, 2, solidRgba(2, 2, 255, 0, 0, 255))
+            val image = holder.update(2, 2, solidRgba(2, 2, 255, 0, 0, 255))!!
             assertEquals(2, image.width)
             assertEquals(2, image.height)
             assertSame(image, holder.image)
@@ -33,21 +33,45 @@ class VideoFrameImageTest {
         }
     }
 
+    /**
+     * The replaced image is retired, not closed, because the thread that
+     * draws may still be holding it -- the raster runs somewhere else now.
+     * Closing it there would be a free under a draw; leaving it to the
+     * finalizer is the leak this class exists to avoid. So it is handed over,
+     * and the drawing side closes it when it says it is past it.
+     */
     @Test
-    fun `update closes the previous frame's image`() {
+    fun `a replaced image is retired until the drawing side reclaims it`() {
         VideoFrameImage().use { holder ->
-            val first = holder.update(2, 2, solidRgba(2, 2, 255, 0, 0, 255))
-            val second = holder.update(2, 2, solidRgba(2, 2, 0, 255, 0, 255))
-            assertTrue(first.isClosed, "the replaced image must be closed, not left to the finalizer")
-            assertFalse(second.isClosed)
+            val first = holder.update(2, 2, solidRgba(2, 2, 255, 0, 0, 255))!!
+            val second = holder.update(2, 2, solidRgba(2, 2, 0, 255, 0, 255))!!
+            assertFalse(first.isClosed, "a draw may still be on the replaced image")
+            assertEquals(1, holder.pending)
+
+            holder.reclaim()
+            assertTrue(first.isClosed, "reclaim is what closes it")
+            assertFalse(second.isClosed, "the current image is not retired")
+            assertEquals(0, holder.pending)
         }
+    }
+
+    /**
+     * A raster that was already in flight when the surface went away has to
+     * come back with nothing rather than publish into a closed session.
+     */
+    @Test
+    fun `update after close produces nothing`() {
+        val holder = VideoFrameImage()
+        holder.close()
+        assertNull(holder.update(2, 2, solidRgba(2, 2, 255, 0, 0, 255)))
+        assertNull(holder.image)
     }
 
     @Test
     fun `update copies the pixels -- the source buffer is reusable`() {
         VideoFrameImage().use { holder ->
             val buffer = solidRgba(2, 2, 255, 0, 0, 255)
-            val image = holder.update(2, 2, buffer)
+            val image = holder.update(2, 2, buffer)!!
             buffer.fill(0)
             assertEquals(0xFFFF0000.toInt(), image.peekPixels()!!.getColor(1, 1))
         }
@@ -56,8 +80,8 @@ class VideoFrameImageTest {
     @Test
     fun `geometry changes between updates are fine`() {
         VideoFrameImage().use { holder ->
-            holder.update(2, 2, solidRgba(2, 2, 0, 0, 255, 255))
-            val image = holder.update(4, 2, solidRgba(4, 2, 0, 255, 0, 255))
+            holder.update(2, 2, solidRgba(2, 2, 0, 0, 255, 255))!!
+            val image = holder.update(4, 2, solidRgba(4, 2, 0, 255, 0, 255))!!
             assertEquals(4, image.width)
         }
     }
@@ -65,7 +89,7 @@ class VideoFrameImageTest {
     @Test
     fun `close disposes the current image and clears the reference`() {
         val holder = VideoFrameImage()
-        val image = holder.update(2, 2, solidRgba(2, 2, 255, 255, 255, 255))
+        val image = holder.update(2, 2, solidRgba(2, 2, 255, 255, 255, 255))!!
         holder.close()
         assertTrue(image.isClosed)
         assertNull(holder.image)

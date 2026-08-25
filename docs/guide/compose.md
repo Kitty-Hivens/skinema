@@ -113,20 +113,28 @@ bytes into a `org.jetbrains.skia.Image`:
 
 ```kotlin
 val frameImage = VideoFrameImage()   // AutoCloseable
-// per frame, on the thread that draws:
+// wherever you raster -- it does not have to be the drawing thread:
 player.acquireFrame()?.let { f ->
-    val image: Image = frameImage.update(f.width, f.height, f.rgba)
-    canvas.drawImage(image, x, y)
+    frameImage.update(f.width, f.height, f.rgba)
 }
+// on the thread that draws:
+frameImage.reclaim()                 // frees what the last draw finished with
+frameImage.image?.let { canvas.drawImage(it, x, y) }
 // on teardown:
 frameImage.close()
 ```
 
-`VideoFrameImage` is single-threaded by contract -- call `update` from
-the same thread that draws. Each `update` raster-copies the pixels into
-a fresh `Image` and closes the previous one; Skia images hold native
-memory, so you must close the last one yourself rather than wait for a
-finalizer.
+The raster copy is the expensive part -- eight megabytes a frame at
+1080p, four times that at 4K -- so `update` is built to run off the
+thread that draws, which is where `VideoSurface` runs it. That is why a
+replaced image is *retired* rather than closed on the spot: the drawing
+thread may still be holding it. `reclaim`, called from the drawing
+thread at the start of a draw, is what closes retired images, and
+`close` frees everything left. Skia images hold native memory, so
+neither is optional -- waiting for a finalizer is a leak in practice.
+
+`update` answers `null` once `close` has run, which is what a raster
+already in flight when the surface goes away comes back with.
 
 For subtitle overlays drawn this way, `SubtitleOverlayImage` does the
 same for the positioned subtitle patches returned by

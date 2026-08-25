@@ -21,7 +21,20 @@ import dev.hivens.skinema.skiko.VideoFrameImage
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.SamplingMode
 import java.util.WeakHashMap
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
+
+/**
+ * Images the raster thread may leave for the drawing thread to close before
+ * it stops making more. Three is the handover in flight -- the one being
+ * drawn, the one just published, and the one behind them -- so reaching it
+ * means the draw is not running, and making more would only spend native
+ * memory nobody is going to look at.
+ */
+private const val MAX_RETIRED_FRAMES = 3
 
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
@@ -84,6 +97,15 @@ fun VideoSurface(
     // would invalidate the very frame writing it.
     val postedCanvas = remember(player) { intArrayOf(-1, -1) }
 
+    // The raster's own side of the frame clock. A permit per composition
+    // frame, a stamp back when a frame has been made into an image, and the
+    // throw that stops it -- Compose state is written on the composition
+    // thread only, so what crosses the seam is all plain.
+    val ticks = remember(player) { Semaphore(0) }
+    val rasterStamp = remember(player) { AtomicLong(0L) }
+    val rasterFailure = remember(player) { AtomicReference<Throwable?>(null) }
+    var drawnStamp by remember(player) { mutableLongStateOf(0L) }
+
     DisposableEffect(player) {
         if (SurfaceRegistry.add(player)) {
             System.err.println(
@@ -92,8 +114,46 @@ fun VideoSurface(
                     "them all. Give each surface its own player.",
             )
         }
+        // Eight megabytes at 1080p, four times that at 4K, every frame: the
+        // raster copy is real work, and done on the composition thread it is
+        // taken straight out of the host's own rendering. It runs here
+        // instead, one frame per permit, so the frame clock still decides
+        // when -- which keeps the player's notice of an unwatched mailbox
+        // tied to the window actually rendering rather than to a loop of
+        // this thread's own.
+        val stop = AtomicBoolean(false)
+        val rasteriser = Thread({
+            while (!stop.get()) {
+                try {
+                    ticks.acquire()
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                if (stop.get()) return@Thread
+                // The drawing thread closes what this one retires, so its
+                // backlog is this one's bound: skip a turn rather than pile
+                // native memory behind a draw that is not running.
+                if (frames.pending > MAX_RETIRED_FRAMES) continue
+                try {
+                    val slot = player.acquireFrame() ?: continue
+                    frames.update(slot.width, slot.height, slot.rgba) ?: continue
+                    rasterStamp.incrementAndGet()
+                } catch (t: Throwable) {
+                    rasterFailure.set(t)
+                    return@Thread
+                }
+            }
+        }, "skinema-raster").apply {
+            isDaemon = true
+            start()
+        }
         onDispose {
             SurfaceRegistry.remove(player)
+            // Joined before anything it touches is closed, so the teardown
+            // cannot free a session out from under a raster in flight.
+            stop.set(true)
+            ticks.release()
+            rasteriser.join(1_000)
             frames.close()
             subtitles.close()
         }
@@ -103,11 +163,16 @@ fun VideoSurface(
         while (true) {
             withFrameNanos { }
             val state = player.state
+            // One frame in flight at a time: a second permit would only let
+            // the raster thread run ahead of the draw it feeds.
+            if (ticks.availablePermits() == 0) ticks.release()
+            val rastered = rasterStamp.get()
+            if (rastered != drawnStamp) {
+                drawnStamp = rastered
+                frameStamp++
+            }
             try {
-                player.acquireFrame()?.let { slot ->
-                    frames.update(slot.width, slot.height, slot.rgba)
-                    frameStamp++
-                }
+                rasterFailure.get()?.let { throw it }
                 player.acquireSubtitles()?.let { overlay ->
                     subtitles.update(
                         overlay.patches.map {
@@ -170,6 +235,10 @@ fun VideoSurface(
         // one stayed painted -- and a consumer drawing its fallback anywhere
         // but on top of the surface never got to show it.
         if (failed) return@Canvas
+        // The drawing thread's half of the image handover: what the raster
+        // thread retired before this draw began is finished with, because
+        // the draw that was using it has ended.
+        frames.reclaim()
         val image = frames.image ?: return@Canvas
         // With the frame in hand, so the bars arrive with the picture rather
         // than ahead of it.
