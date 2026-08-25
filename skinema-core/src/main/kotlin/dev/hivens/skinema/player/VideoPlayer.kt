@@ -397,6 +397,7 @@ class VideoPlayer internal constructor(
         // that polls and gets null is still watching, and one that stopped
         // polling is what this notices.
         lastAcquireNanos = System.nanoTime()
+        unreadPublishes = 0
         if (!presenting && !presentingSaid) submit(Command.SetPresenting(true))
         return buffer?.acquire()
     }
@@ -1132,6 +1133,17 @@ class VideoPlayer internal constructor(
     @Volatile
     private var lastAcquireNanos = 0L
 
+    // Frames published into the mailbox since it was last read.
+    //
+    // Silence on its own is not the signal, and reading it as one was wrong in
+    // the ordinary direction: a player legitimately producing nothing --
+    // waiting a lap out, standing at the end -- would be called unwatched for
+    // a consumer that merely had nothing to collect. What says nobody is
+    // looking is pictures made and not taken. Written by the pacer, cleared by
+    // whoever reads; a lost increment only delays the notice by a frame.
+    @Volatile
+    private var unreadPublishes = 0
+
     // Whether the pause standing now was this player's own doing. Only one it
     // imposed may be lifted when the picture is wanted again; a pause the
     // consumer asked for outlives being looked at.
@@ -1411,6 +1423,7 @@ class VideoPlayer internal constructor(
             }
             return true
         }
+        unreadPublishes = 0
         if (pausedByUnwatch) {
             resumeNow(decoder)
             return true
@@ -1430,17 +1443,23 @@ class VideoPlayer internal constructor(
      * Notices a mailbox that stopped being read.
      *
      * The consumer that says nothing is the ordinary one: a Compose surface
-     * polls every frame while its window is on screen and simply stops when
-     * it is not, and nothing in that tells the player. So the reading itself
-     * is the signal, and its absence is read only where it means something --
-     * after the mailbox has been read at least once (a player nobody has ever
-     * taken a frame from may be feeding something that is not a screen), and
-     * never on a frameless one, which publishes no frames to take.
+     * polls every frame while its window is on screen and simply stops when it
+     * is not, and nothing in that tells the player.
+     *
+     * Three things have to hold, and each is a way of being wrong that was
+     * tried. The mailbox must have been read at least once, or a player
+     * feeding something that is not a screen would be stood down. Pictures
+     * must have been PUBLISHED into it and not taken -- silence on its own
+     * says nothing, because a player waiting a lap out or standing at its end
+     * produces nothing to take and would otherwise be called unwatched for it.
+     * And the silence has to have lasted, because a consumer between draws is
+     * not a consumer that left.
      */
     private fun noteUnwatched() {
         if (presentingSaid || !presenting || frameless) return
         val last = lastAcquireNanos
         if (last == 0L) return
+        if (unreadPublishes < UNREAD_PUBLISHES_BEFORE_UNWATCHED) return
         if (System.nanoTime() - last < UNWATCHED_AFTER_NANOS) return
         applyPresenting(false, null)
     }
@@ -1827,6 +1846,7 @@ class VideoPlayer internal constructor(
             if (frame.ptsNanos > lastPublishedPts) lastPublishGapNanos = frame.ptsNanos - lastPublishedPts
             lastPublishedPts = frame.ptsNanos
             lastPublishWallNanos = System.nanoTime()
+            unreadPublishes++
             target.publish()
         } finally {
             publishing = false
@@ -1899,6 +1919,15 @@ class VideoPlayer internal constructor(
          * of deciding late is two seconds of decoding nobody sees.
          */
         const val UNWATCHED_AFTER_NANOS = 2_000_000_000L
+
+        /**
+         * Pictures published into an unread mailbox before the silence around
+         * them counts. Two, because one is a frame a consumer can be mid-draw
+         * on and two is a pattern -- and because what this has to separate,
+         * paired with the wall bound, is a consumer that went away from a
+         * player that simply had nothing to hand over.
+         */
+        const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 2
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
