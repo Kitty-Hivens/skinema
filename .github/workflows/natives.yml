@@ -266,6 +266,14 @@ jobs:
         shell: msys2 {0}
         run: tools/check-windows-bundle.sh "natives/${{ matrix.platform }}/bundle" "$PWD"
 
+      # The other half of "who can run this", and the half the acceptance run
+      # below cannot see: CI machines are newer than any floor, so a library
+      # that asks for a glibc no shipping distribution carries loads here
+      # perfectly and fails in the hands of the user the README invited.
+      - name: Verify the bundle still loads on the systems the README promises
+        if: ${{ !startsWith(matrix.platform, 'windows') }}
+        run: tools/check-bundle-floor.sh "natives/${{ matrix.platform }}/bundle" "${{ matrix.platform }}" "${{ matrix.tier }}" "$PWD"
+
       # The acceptance gate: the suite must pass against the binaries we are
       # about to ship, on the platform that will run them. Cross-built
       # bundles skip it (no metal to run them on) -- community tier.
