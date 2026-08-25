@@ -32,7 +32,20 @@ class RichAssRenderingTest {
 
     private val dir: Path = Files.createTempDirectory("skinema-rich-ass-test")
     private val frames = AtomicLong(0)
-    private val clock = AudioClock(48_000) { frames.get() }
+
+    /**
+     * Hand-driven time, and it takes one more call than it looks.
+     *
+     * [AudioClock] fills the gaps between a device's position refreshes with
+     * wall time -- a real line reports a staircase and the picture would pace
+     * in bursts otherwise -- and it believes the device is running until told
+     * otherwise. So a clock left at its default walks up to sixty
+     * milliseconds past every value set here, on its own, which is enough for
+     * libass to render a different frame of an animation than the one being
+     * asserted about. Saying the device is stopped is what makes the reading
+     * exactly the number written.
+     */
+    private val clock = AudioClock(48_000) { frames.get() }.also { it.setDeviceRunning(false) }
 
     @AfterTest
     fun cleanup() {
@@ -108,16 +121,30 @@ class RichAssRenderingTest {
      * which is how the first version of the animation assertion watched a
      * shape refuse to move that had in fact moved.
      */
-    private fun patchAt(pipeline: SubtitlePipeline, atMs: Long, latest: Latest): SubtitlePatch? {
+    private fun patchAt(pipeline: SubtitlePipeline, atMs: Long, latest: Latest): Rect? {
         val before = latest.overlay?.generation ?: -1L
         frames.set(framesFor(atMs))
-        awaitTrue {
+        val arrived = awaitTrue {
             latest.poll(pipeline)
             val overlay = latest.overlay
             overlay != null && overlay.generation > before && overlay.patches.isNotEmpty()
         }
-        return latest.overlay?.patches?.firstOrNull()
+        // A wait that ran out must answer nothing rather than the patch from
+        // the step before: the caller asserts the answer is not null, and a
+        // stale one satisfies that while proving the opposite.
+        if (!arrived) return null
+        return latest.overlay?.patches?.firstOrNull()?.let { Rect(it.x, it.y, it.width, it.height) }
     }
+
+    /**
+     * A patch's geometry, copied out.
+     *
+     * The published patch is a slot the mailbox recycles: the pixels and the
+     * numbers beside them belong to the pipeline again as soon as the next
+     * publish takes that slot back, so a test holding one across another poll
+     * is reading whatever was drawn later.
+     */
+    private class Rect(val x: Int, val y: Int, val width: Int, val height: Int)
 
     /**
      * Geometry within libass's own padding.
@@ -128,12 +155,19 @@ class RichAssRenderingTest {
      * difference the assertions are about -- a tag being honoured or not
      * moves these numbers by a hundred pixels, not by fourteen.
      */
-    private fun assertNear(expected: Int, actual: Int, what: String, slack: Int = 16) {
-        assertTrue(
-            actual in (expected - slack)..(expected + slack),
-            "$what should be about $expected, was $actual",
-        )
-    }
+    /**
+     * A rasterised side, which is the path's own plus libass's padding and
+     * never less: measured, a 200x100 drawing arrives as 208x112 and a 100x50
+     * one as 112x64. One-sided on purpose -- a symmetric window would spend
+     * half its width on a direction the number cannot move in, and the half it
+     * spends the wrong way is the half a broken renderer would use.
+     */
+    private fun assertSize(expected: Int, actual: Int, what: String, slack: Int = 16) =
+        assertTrue(actual in expected..(expected + slack), "$what should be $expected or a little more, was $actual")
+
+    /** The same, for an origin: the box starts at the coordinate or just before it. */
+    private fun assertOrigin(expected: Int, actual: Int, what: String, slack: Int = 16) =
+        assertTrue(actual in (expected - slack)..expected, "$what should be $expected or a little less, was $actual")
 
     /**
      * A vector drawing renders at the size the file states.
@@ -161,10 +195,10 @@ class RichAssRenderingTest {
         val pipeline = pipeline(path)
         try {
             val patch = assertNotNull(patchAt(pipeline, 2_000, Latest()), "the drawing must render inside its window")
-            assertNear(200, patch.width, "drawing width")
-            assertNear(100, patch.height, "drawing height")
-            assertNear(100, patch.x, "drawing x")
-            assertNear(100, patch.y, "drawing y")
+            assertSize(200, patch.width, "drawing width")
+            assertSize(100, patch.height, "drawing height")
+            assertOrigin(100, patch.x, "drawing x")
+            assertOrigin(100, patch.y, "drawing y")
         } finally {
             pipeline.close()
         }
@@ -196,20 +230,22 @@ class RichAssRenderingTest {
         val pipeline = pipeline(path)
         try {
             val latest = Latest()
-            // A tenth of a second into a four-second travel, so the shape is
-            // barely off its start rather than on it -- an assertion on the
-            // start coordinates exactly would be asserting the sample time.
-            val start = assertNotNull(patchAt(pipeline, 1_100, latest), "the drawing must render at the start")
-            assertNear(59, start.x, "start x")
-            assertNear(56, start.y, "start y")
+            // Half a second into a four-second travel, and the sample time is
+            // chosen for discrimination rather than convenience: a renderer
+            // that ignored the tag leaves the shape at 50,50, so a sample any
+            // earlier sits inside the slack of the ignored position and
+            // asserts nothing.
+            val start = assertNotNull(patchAt(pipeline, 1_500, latest), "the drawing must render at the start")
+            assertOrigin(93, start.x, "start x")
+            assertOrigin(81, start.y, "start y")
 
             val end = assertNotNull(patchAt(pipeline, 4_900, latest), "the drawing must still render at the end")
             assertTrue(end.x - start.x > 250, "the shape must travel across x, went ${start.x} -> ${end.x}")
             assertTrue(end.y - start.y > 180, "the shape must travel across y, went ${start.y} -> ${end.y}")
             // It moves, it does not grow: a renderer that scaled instead of
             // translating would satisfy the two above on its own.
-            assertNear(100, end.width, "width through the move")
-            assertNear(50, end.height, "height through the move")
+            assertSize(100, end.width, "width through the move")
+            assertSize(50, end.height, "height through the move")
         } finally {
             pipeline.close()
         }
@@ -242,15 +278,21 @@ class RichAssRenderingTest {
         try {
             val latest = Latest()
             assertNotNull(patchAt(pipeline, 1_500, latest), "the karaoke line must render")
-            val generations = mutableListOf<Long>()
-            for (at in listOf(1_500L, 2_500L, 3_500L, 4_500L)) {
+            // Seeded with what already stands, so the first sample has to move
+            // too -- against an empty list its condition is true on arrival.
+            val generations = mutableListOf(latest.overlay?.generation ?: 0L)
+            for (at in listOf(2_500L, 3_500L, 4_500L)) {
                 frames.set(framesFor(at))
                 // Each sweep step is a fresh render with the same geometry, so
                 // what says it happened is the mailbox's own generation.
-                awaitTrue(3_000) {
-                    latest.poll(pipeline)
-                    (latest.overlay?.generation ?: 0L) > (generations.lastOrNull() ?: -1L)
-                }
+                assertTrue(
+                    awaitTrue(3_000) {
+                        latest.poll(pipeline)
+                        val overlay = latest.overlay
+                        overlay != null && overlay.generation > generations.last() && overlay.patches.isNotEmpty()
+                    },
+                    "the line must still be drawn at ${at}ms, and drawn afresh",
+                )
                 latest.overlay?.let { generations += it.generation }
             }
             assertTrue(
@@ -281,6 +323,11 @@ class RichAssRenderingTest {
         Fixtures.assumeSubtitleRendering()
         val font = systemFont()
         org.junit.jupiter.api.Assumptions.assumeTrue(font != null, "no system font to attach")
+        // Named so nothing but the mimetype can identify it: matroska always
+        // stores a filename, and the CLI fills it from the basename, so a copy
+        // called .ttf is accepted on its suffix and the mimetype half of the
+        // decision never runs.
+        val face = dir.resolve("typeface.dat").also { Files.copy(font, it) }
         val notes = dir.resolve("notes.txt").also { Files.writeString(it, "not a font\n") }
         val subs = writeAss(
             "attach.ass",
@@ -295,7 +342,7 @@ class RichAssRenderingTest {
             "-c:s", "ass",
             // The font is declared by mimetype only, which is the half of
             // [isFontAttachment] a filename-led container would not exercise.
-            "-attach", font.toString(), "-metadata:s:t:0", "mimetype=application/x-truetype-font",
+            "-attach", face.toString(), "-metadata:s:t:0", "mimetype=application/x-truetype-font",
             "-attach", notes.toString(), "-metadata:s:t:1", "mimetype=text/plain",
         )
         clock.start(0)
@@ -354,16 +401,16 @@ class RichAssRenderingTest {
         try {
             val latest = Latest()
             val whole = assertNotNull(patchAt(pipeline, 2_000, latest), "the unclipped drawing must render")
-            assertNear(200, whole.width, "unclipped width")
-            assertNear(200, whole.height, "unclipped height")
+            assertSize(200, whole.width, "unclipped width")
+            assertSize(200, whole.height, "unclipped height")
 
             val clipped = assertNotNull(patchAt(pipeline, 6_000, latest), "the clipped drawing must render")
             assertTrue(
                 clipped.width < whole.width && clipped.height < whole.height,
                 "the clip must shrink the drawn region, ${whole.width}x${whole.height} -> ${clipped.width}x${clipped.height}",
             )
-            assertNear(100, clipped.width, "clipped width")
-            assertNear(50, clipped.height, "clipped height")
+            assertSize(100, clipped.width, "clipped width")
+            assertSize(50, clipped.height, "clipped height")
         } finally {
             pipeline.close()
         }

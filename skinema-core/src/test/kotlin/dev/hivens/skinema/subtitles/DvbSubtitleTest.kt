@@ -32,7 +32,11 @@ class DvbSubtitleTest {
 
     private val dir: Path = Files.createTempDirectory("skinema-dvb-test")
     private val frames = AtomicLong(0)
-    private val clock = AudioClock(48_000) { frames.get() }
+
+    // Told the device is stopped, or the clock fills the gaps between frame
+    // counts with wall time -- up to sixty milliseconds past every value set
+    // here, on its own.
+    private val clock = AudioClock(48_000) { frames.get() }.also { it.setDeviceRunning(false) }
 
     @AfterTest
     fun cleanup() {
@@ -77,6 +81,47 @@ class DvbSubtitleTest {
         )
     }
 
+    /** The same, with a text track beside it to answer the kind question against. */
+    private fun dvbAndTextFixture(name: String): Path {
+        val sup = dir.resolve("$name.sup")
+        Files.write(sup, SupBuilder.build(showMs = 1_000, clearMs = 3_000))
+        val srt = dir.resolve("$name.srt")
+        Files.writeString(srt, "1\n00:00:01,000 --> 00:00:03,000\nText beside it\n")
+        return Fixtures.generate(
+            dir.resolve(name),
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10",
+            "-i", sup.toString(),
+            "-i", srt.toString(),
+            "-map", "0:v", "-map", "1:s", "-map", "2:s", "-t", "5", "-copyts",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s:0", "dvbsub", "-c:s:1", "srt",
+        )
+    }
+
+    /**
+     * The same cue in MPEG-TS, which is what a DVB recording actually is.
+     *
+     * Kept separate from the Matroska fixture because only this one can see
+     * the parser: TS carries each subtitle unit inside a PES payload that
+     * begins with a two-byte prefix, and the decoder refuses anything not
+     * starting at a segment sync byte. Matroska stores the unit already
+     * stripped, so a fixture in that container decodes either way -- which is
+     * exactly how a bundle without the parser passed a green suite while
+     * decoding nothing at all from the format's own container.
+     */
+    private fun dvbTsFixture(name: String): Path {
+        val sup = dir.resolve("$name.sup")
+        Files.write(sup, SupBuilder.build(showMs = 1_000, clearMs = 3_000))
+        return Fixtures.generate(
+            dir.resolve(name),
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10",
+            "-i", sup.toString(),
+            "-map", "0:v", "-map", "1:s", "-t", "5", "-copyts",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "dvbsub", "-f", "mpegts",
+        )
+    }
+
     private class Latest {
         var overlay: SubtitleOverlay? = null
         fun poll(pipeline: SubtitlePipeline): SubtitleOverlay? {
@@ -99,13 +144,18 @@ class DvbSubtitleTest {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeDvbSubtitles()
         Fixtures.assumeEncoder("dvbsub")
-        val path = dvbFixture("kind.mkv")
-        val track = VideoDecoder.open(path).use { it.subtitleTracks().single() }
+        val path = dvbAndTextFixture("kind.mkv")
+        val tracks = VideoDecoder.open(path).use { it.subtitleTracks() }
+        val dvb = assertNotNull(tracks.firstOrNull { it.codecName == "dvb_subtitle" }, "the DVB track must enumerate")
+        val text = assertNotNull(tracks.firstOrNull { it.codecName == "subrip" }, "the text track must enumerate")
         // The decoder is named dvbsub and the codec is named dvb_subtitle --
         // the same split as movtext against mov_text. What a track reports is
         // the codec's name, and what a bundle is asked for is the decoder's.
-        assertEquals("dvb_subtitle", track.codecName)
-        assertFalse(track.isText, "DVB subtitles are composed pixels, not text")
+        assertFalse(dvb.isText, "DVB subtitles are composed pixels, not text")
+        // Asked beside a track that IS text, because false is also what this
+        // answers for a codec it knows nothing about: alone, the assertion
+        // cannot tell a considered answer from a default one.
+        assertTrue(text.isText, "and the text track beside it must still read as text")
     }
 
     /**
@@ -126,11 +176,15 @@ class DvbSubtitleTest {
         val pipeline = SubtitlePipeline(path, clock, track, 320 to 240)
         try {
             val latest = Latest()
-            // Before the cue: the pipeline has read far past this point (the
-            // demux horizon is thirty seconds), so an empty screen here is the
-            // schedule holding the pixels back rather than not having them.
+            // Before the cue, and the wait is a handshake rather than a sleep:
+            // an empty screen only means the schedule is holding the pixels
+            // back if the demuxer has actually read past them, and the
+            // pipeline says how far it has read.
             frames.set(framesFor(500))
-            Thread.sleep(300)
+            assertTrue(
+                awaitTrue { pipeline.lastDemuxedPtsNanos > 2_000_000_000L },
+                "the demuxer must have read past the cue for its absence to mean anything",
+            )
             latest.poll(pipeline)
             assertTrue(
                 latest.overlay?.patches.isNullOrEmpty(),
@@ -143,11 +197,50 @@ class DvbSubtitleTest {
                 "the cue must be drawn once its timestamp has passed",
             )
             val patch = assertNotNull(latest.overlay?.patches?.firstOrNull())
-            assertTrue(patch.width > 0 && patch.height > 0, "a drawn cue has pixels, got ${patch.width}x${patch.height}")
+            // The rectangle the PGS builder wrote, which survives the
+            // re-encode into DVB segments exactly: 32x16 at 10,20. Asserted
+            // rather than bounded, because a bound of "not larger than the
+            // screen" is a bound against the number this test handed in as the
+            // storage size, and every wrong answer fits inside it.
+            assertEquals(10, patch.x, "the cue keeps its x through the re-encode")
+            assertEquals(20, patch.y, "the cue keeps its y through the re-encode")
+            assertEquals(32, patch.width, "the cue keeps its width through the re-encode")
+            assertEquals(16, patch.height, "the cue keeps its height through the re-encode")
+        } finally {
+            pipeline.close()
+        }
+    }
+
+    /**
+     * And the same, out of MPEG-TS -- the container a DVB recording comes in.
+     *
+     * This is the one that needs the parser in the bundle, and the only test
+     * here that can tell whether it is there: the Matroska fixture above
+     * decodes with or without it. A bundle missing it produces no pixels at
+     * all from this file, so the assertion is the same one and the difference
+     * is entirely in the container.
+     */
+    @Test
+    fun `a DVB cue decodes out of MPEG-TS as well as Matroska`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeDvbSubtitles()
+        // The mpegts demuxer rides the extended-formats feature, not the
+        // subtitle one, so a bundle can carry the decoder and not the reader.
+        Fixtures.assumeFormats()
+        Fixtures.assumeEncoder("dvbsub")
+        val path = dvbTsFixture("broadcast.ts")
+        val track = VideoDecoder.open(path).use { it.subtitleTracks().single() }
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, track, 320 to 240)
+        try {
+            val latest = Latest()
+            frames.set(framesFor(2_500))
             assertTrue(
-                patch.width <= 320 && patch.height <= 240,
-                "the cue cannot be larger than the screen it composes onto, got ${patch.width}x${patch.height}",
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the cue must decode out of the broadcast container too",
             )
+            val patch = assertNotNull(latest.overlay?.patches?.firstOrNull())
+            assertTrue(patch.width > 0 && patch.height > 0, "a drawn cue has pixels, got ${patch.width}x${patch.height}")
         } finally {
             pipeline.close()
         }
