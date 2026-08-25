@@ -4,26 +4,56 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
- * Owns the Skia image for the current video frame. [update] raster-copies
- * the RGBA pixels into a fresh image and closes the previous one -- Skia
- * images hold native memory, and waiting for the finalizer is a leak in
- * practice (ROADMAP.md section 6). Single-threaded by design: call from
- * the same thread that draws (the Compose frame pump does both).
+ * Owns the Skia image for the current video frame. [update] raster-copies the
+ * RGBA pixels into a fresh image -- Skia images hold native memory, and
+ * waiting for the finalizer is a leak in practice (ROADMAP.md section 6).
+ *
+ * ## Which thread does what
+ *
+ * The copy is the expensive part: eight megabytes at 1080p, four times that
+ * at 4K, every frame. Done where the picture is drawn it is taken out of the
+ * host's own rendering, so [update] is built to run somewhere else -- and
+ * then two threads share these images, which is what the rest of this is
+ * about.
+ *
+ * - [update] runs on whatever thread rasters. It publishes the new image and
+ *   RETIRES the old one rather than closing it: the drawing thread may still
+ *   be holding it.
+ * - [reclaim] closes what has been retired and must be called from the
+ *   DRAWING thread, at the start of a draw. An image retired while a draw is
+ *   running is closed at the start of the next one, by which time that draw
+ *   has finished with it -- and since only the drawing thread closes, and
+ *   only between draws, nothing is ever freed under a draw that is using it.
+ * - [close] may come from either, and shuts the door: an [update] racing it
+ *   returns null rather than rastering into a closed session.
  */
 class VideoFrameImage : AutoCloseable {
 
+    private val lock = Any()
+
     /** The current frame's image; null before the first [update]. */
+    @Volatile
     var image: Image? = null
         private set
 
+    // Images the drawing thread has not been past yet. Never closed here.
+    private val retired = ConcurrentLinkedQueue<Image>()
+
+    /** Images published but not yet reclaimed -- the drawer's backlog. */
+    val pending: Int get() = retired.size
+
+    private var closed = false
+
     /**
      * Replaces [image] with [rgba] ([width] x [height], straight alpha,
-     * stride = width * 4) and returns it. The pixels are copied, so the
-     * caller's buffer is free for reuse immediately.
+     * stride = width * 4) and returns it, or null once [close] has run. The
+     * pixels are copied, so the caller's buffer is free for reuse
+     * immediately.
      */
-    fun update(width: Int, height: Int, rgba: ByteArray): Image {
+    fun update(width: Int, height: Int, rgba: ByteArray): Image? {
         // Skia reads height * rowBytes out of the array and checks nothing,
         // so a short one is a native out-of-bounds read rather than an
         // exception. The player's own frames always match; this is a public
@@ -33,14 +63,30 @@ class VideoFrameImage : AutoCloseable {
             "a ${width}x$height RGBA frame needs ${width * height * 4} bytes, got ${rgba.size}"
         }
         val info = ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL)
-        val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
-        image?.close()
-        image = next
-        return next
+        // The copy runs under the lock, which is what makes a close racing it
+        // safe: closing waits for the raster in flight rather than freeing the
+        // session under it. The lock is uncontended in the steady state --
+        // only a teardown ever asks for it.
+        synchronized(lock) {
+            if (closed) return null
+            val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
+            image?.let { retired.add(it) }
+            image = next
+            return next
+        }
+    }
+
+    /** Closes retired images. The drawing thread only, at the start of a draw. */
+    fun reclaim() {
+        while (true) (retired.poll() ?: return).close()
     }
 
     override fun close() {
-        image?.close()
-        image = null
+        synchronized(lock) {
+            closed = true
+            reclaim()
+            image?.close()
+            image = null
+        }
     }
 }
