@@ -219,8 +219,15 @@ object Fixtures {
 
     private fun cliCan(encoder: String): Boolean = !preferFallback && hasCliEncoder(encoder)
 
-    /** Whether an animated WebP fixture can be built here, by either route. */
-    fun canBuildAnimatedWebp(): Boolean = cliCan("libwebp") || toolOnPath("img2webp")
+    /**
+     * Whether the WebP fixtures can be built here, by either route. Both
+     * tools, because the suite needs a still one as well as animations and
+     * the second route builds those with different halves of libwebp's own
+     * command line -- they ship together, so asking for both costs nothing
+     * and half a route is worse than none.
+     */
+    fun canBuildAnimatedWebp(): Boolean =
+        cliCan("libwebp") || (toolOnPath("img2webp") && toolOnPath("cwebp"))
 
     /** Whether an AV1 fixture can be built here, by either route. */
     fun canBuildAv1(): Boolean =
@@ -245,26 +252,74 @@ object Fixtures {
      * frames, which any build can write, and hands them to libwebp's own
      * img2webp.
      */
-    fun animatedWebp(target: Path, seconds: Int = 1, size: String = "64x64", rate: Int = 10): Path {
+    fun animatedWebp(
+        target: Path,
+        seconds: Int = 1,
+        size: String = "64x64",
+        rate: Int = 10,
+        /**
+         * Half-transparent red rather than the test pattern, encoded
+         * losslessly so the alpha byte survives to be read back. Both routes
+         * take it: PNG carries alpha, and img2webp is told to keep it.
+         */
+        alpha: Boolean = false,
+    ): Path {
+        val lavfi = if (alpha) "color=c=red@0.5:size=$size:rate=$rate,format=rgba" else "testsrc2=size=$size:rate=$rate"
+        if (cliCan("libwebp")) {
+            val pixels = if (alpha) listOf("-pix_fmt", "yuva420p") else emptyList()
+            return generate(
+                target,
+                "-f", "lavfi", "-i", lavfi, "-t", "$seconds",
+                "-c:v", "libwebp", "-lossless", if (alpha) "1" else "0", "-loop", "0", *pixels.toTypedArray(),
+            )
+        }
+        withPngFrames(target, lavfi, seconds) { pngs ->
+            // -loop and -o are file options; -d and -lossless apply to the
+            // frames that follow them, so they come before the list.
+            val quality = if (alpha) listOf("-lossless") else emptyList()
+            runTool(
+                "img2webp", "-loop", "0", "-d", "${1_000 / rate}", *quality.toTypedArray(),
+                *pngs.toTypedArray(), "-o", target.toString(),
+            )
+        }
+        return target
+    }
+
+    /**
+     * A still WebP -- one frame, no animation container. The second route is
+     * libwebp's other binary; img2webp would wrap even a single frame as an
+     * animation, which is the opposite of what this fixture is for.
+     */
+    fun stillWebp(target: Path, size: String = "64x64"): Path {
         if (cliCan("libwebp")) {
             return generate(
                 target,
-                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
-                "-c:v", "libwebp", "-lossless", "0", "-loop", "0",
+                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=10", "-frames:v", "1", "-c:v", "libwebp",
             )
         }
+        withPngFrames(target, "testsrc2=size=$size:rate=10", seconds = null) { pngs ->
+            runTool("cwebp", "-quiet", pngs.first(), "-o", target.toString())
+        }
+        return target
+    }
+
+    /**
+     * Writes [lavfi] out as PNG frames -- which any ffmpeg build can do,
+     * encoder or no encoder -- and hands them to [build] in order.
+     */
+    private fun withPngFrames(target: Path, lavfi: String, seconds: Int?, build: (List<String>) -> Unit) {
         val frames = Files.createTempDirectory(target.parent, "webp-frames")
         try {
+            val length = if (seconds == null) listOf("-frames:v", "1") else listOf("-t", "$seconds")
             runTool(
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
+                "-f", "lavfi", "-i", lavfi, *length.toTypedArray(),
                 frames.resolve("f-%03d.png").toString(),
             )
             val pngs = Files.list(frames).use { stream -> stream.sorted().map(Path::toString).toList() }
             check(pngs.isNotEmpty()) { "the CLI wrote no PNG frames for ${target.fileName}" }
-            runTool("img2webp", "-loop", "0", "-d", "${1_000 / rate}", *pngs.toTypedArray(), "-o", target.toString())
-            check(Files.size(target) > 0) { "img2webp produced an empty ${target.fileName}" }
-            return target
+            build(pngs)
+            check(Files.size(target) > 0) { "the fixture builder produced an empty ${target.fileName}" }
         } finally {
             frames.toFile().deleteRecursively()
         }
