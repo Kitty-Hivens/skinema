@@ -154,6 +154,20 @@ object Fixtures {
     }
 
     /**
+     * DVB subtitles are bitmap subtitles like PGS, and gate the same way: on
+     * the bundle's own decoder rather than on libass. Separate from
+     * [assumeBitmapSubtitles] because the decoder is newer than the shipped
+     * bundle -- a bundle built before it skips these rather than failing.
+     */
+    fun assumeDvbSubtitles() {
+        if (requires("subs")) {
+            check(libavHasDecoder("dvbsub")) { "SKINEMA_REQUIRE_CAPS lists 'subs' but the bundle has no DVB decoder" }
+            return
+        }
+        assumeTrue(libavHasDecoder("dvbsub"), "DVB subtitle decode absent in the bundle -- skipping")
+    }
+
+    /**
      * The broad legacy/extended decode set (the formats feature) is OPTIONAL
      * -- the core tier ships without it. Absence is legal unless
      * SKINEMA_REQUIRE_CAPS lists 'formats'; a core bundle skips these tests.
