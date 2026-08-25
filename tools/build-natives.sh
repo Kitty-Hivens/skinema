@@ -508,7 +508,17 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
     # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
     if has enc-h264 && [ ! -f "$DEPS/lib/libx264.a" ]; then
-        fetch x264.tar.gz "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz"
+        # Two hosts for the same commit, under one pin. VideoLAN's GitLab
+        # generates its archive on demand and answers with an HTML page often
+        # enough under a matrix's load to fail a whole tier, and a commit
+        # archive has no release tarball to fall back to -- but GitHub's x264
+        # mirror serves this commit as a byte-identical archive, same root
+        # name, same gzip, same sha256 as the pin already records. Measured,
+        # not assumed: both tarballs hash to cd71a751... and extract to
+        # identical trees.
+        fetch x264.tar.gz \
+            "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz" \
+            "https://codeload.github.com/mirror/x264/tar.gz/$X264_VERSION"
         rm -rf "x264-$X264_VERSION"
         tar -xzf x264.tar.gz
         (
