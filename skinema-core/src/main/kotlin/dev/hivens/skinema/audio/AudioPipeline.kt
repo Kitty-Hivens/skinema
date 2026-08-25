@@ -159,6 +159,10 @@ internal class AudioPipeline(
 
     @Volatile
     private var watchdogStop = false
+
+    // Volatile: started on the audio thread, interrupted from whatever thread
+    // announces the close.
+    @Volatile
     private var watchdog: Thread? = null
 
     // The watchdog sets this when the device stalls out: it closes the line
@@ -261,10 +265,34 @@ internal class AudioPipeline(
 
     fun setVolume(volume: Float) = sink.setVolume(volume)
 
-    fun close() {
+    /**
+     * Tells this side to go, without waiting for it.
+     *
+     * Announcing and waiting are separate because the player has three sides
+     * to shut down and none of them depends on the others: told one at a
+     * time and joined in turn, their waits summed instead of overlapping.
+     *
+     * This is also where the sink stops being the player's. [guardedWrite]
+     * starts no write once [closing] stands, and one already inside the sink
+     * is broken out of by the watchdog -- the caller [PcmSink.close] already
+     * names for exactly that, so a consumer's own sink sees no new one.
+     */
+    fun announceClose() {
         closing = true
         commands.put(Command.Close)
-        thread.join(5_000)
+        watchdog?.interrupt()
+    }
+
+    /** Waits for the thread to go, and never past [deadlineNanos]. */
+    fun awaitExit(deadlineNanos: Long) {
+        val ms = (deadlineNanos - System.nanoTime()) / 1_000_000
+        if (ms <= 0) return
+        thread.join(ms)
+    }
+
+    fun close() {
+        announceClose()
+        awaitExit(System.nanoTime() + DEFAULT_CLOSE_BUDGET_NANOS)
     }
 
     // -- Audio thread ----------------------------------------------------------
@@ -437,6 +465,10 @@ internal class AudioPipeline(
      * landing) and nothing is being waited on.
      */
     private fun guardedWrite(data: ByteArray, offset: Int, length: Int) {
+        // The shutter. Once a close has been announced the sink belongs to
+        // whoever lent it, and a write started here would be reaching into it
+        // after close() had already returned.
+        if (closing) return
         writeInFlightSince = System.nanoTime()
         try {
             sink.write(data, offset, length)
@@ -599,15 +631,25 @@ internal class AudioPipeline(
             try {
                 Thread.sleep(pollMs)
             } catch (_: InterruptedException) {
-                return
+                // A wake, not the exit. An announced close wants the rescue
+                // below while the write is still in the sink; the teardown
+                // that does mean exit raises watchdogStop before it
+                // interrupts, and the check below reads it.
             }
+            if (watchdogStop) return
             val theClock = clock ?: continue
             // While recovery is in flight the audio thread is reopening the
             // line; do not fire a second time.
             if (deviceLost) continue
             // Nothing outstanding: the device may legitimately sit still.
             val since = writeInFlightSince
-            if (since == 0L || System.nanoTime() - since < writeStallNanos) continue
+            if (since == 0L) continue
+            // Two reasons to break a write out of the sink, and they are one
+            // emergency: a device that stopped consuming, and a close
+            // announced while the write sits in a sink the consumer is about
+            // to take back. Waiting out the stall bound for the second would
+            // put three seconds on an ordinary close.
+            if (!closing && System.nanoTime() - since < writeStallNanos) continue
             theClock.detachToWallTime(readDevice = false)
             deviceLost = true
             runCatching { sink.close() }.onFailure { Debug.trace("audio sink close on stall", it) }
@@ -1034,6 +1076,13 @@ internal class AudioPipeline(
          * as the third.
          */
         const val MAX_WRITE_FAILURES = 3
+
+        /**
+         * What [close] spends when this side is closed on its own. The player
+         * passes its own deadline instead, so the whole teardown shares one
+         * budget rather than taking this per side.
+         */
+        const val DEFAULT_CLOSE_BUDGET_NANOS = 5_000_000_000L
 
         /**
          * One write outstanding this long is a dead device; the watchdog
