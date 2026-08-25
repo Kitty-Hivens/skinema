@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.use
@@ -109,6 +110,58 @@ class VideoSurfaceRenderTest {
                 // the poll -- the only thing under test -- is never needed.
                 player.pause()
                 assertTrue(pump { seen is VideoPlayer.State.Paused }, "the poll must carry the change, saw $seen")
+            }
+        }
+    }
+
+    /**
+     * The letterbox bars under [VideoScale.Fit]. The surface draws pixels and
+     * nothing else by default, so a consumer composing nothing behind it got
+     * whatever the window happened to hold there; a colour makes the bars the
+     * surface's own. Sixty-four square of red into bounds half as tall leaves
+     * a third of the width bare on each side, which is where this looks.
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun `Fit paints its letterbox in the colour it was given`() {
+        assumeTrue(ffmpegAvailable(), "no ffmpeg CLI -- the fixture cannot be built")
+        val video = redClip()
+        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+
+        VideoPlayer(video, loop = true).use { player ->
+            ImageComposeScene(64, 32, Density(1f)) {
+                VideoSurface(
+                    player,
+                    Modifier.size(width = 64.dp, height = 32.dp),
+                    scale = VideoScale.Fit,
+                    background = Color.Blue,
+                )
+            }.use { scene ->
+                var painted = false
+                var frame = 0L
+                val deadline = System.currentTimeMillis() + 20_000
+                while (!painted && System.currentTimeMillis() < deadline) {
+                    val image = scene.render(frame)
+                    frame += 16_000_000L
+                    val bitmap = image.peekPixels()
+                    if (bitmap != null) {
+                        val bar = bitmap.getColor(2, 16)
+                        val picture = bitmap.getColor(32, 16)
+                        val barBlue = bar and 0xFF
+                        val barRed = (bar shr 16) and 0xFF
+                        val pictureRed = (picture shr 16) and 0xFF
+                        if (pictureRed > 200) {
+                            // The picture landed, so the bar beside it is
+                            // whatever the surface put there -- checked in the
+                            // same render, or a torn read could pass on a
+                            // frame the video had not reached yet.
+                            assertTrue(barBlue > 200 && barRed < 60, "the bar must be the given colour, got $bar")
+                            painted = true
+                        }
+                    }
+                    Thread.sleep(10)
+                }
+                assertTrue(painted, "the surface never painted a frame to check the bars against")
             }
         }
     }

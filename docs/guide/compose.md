@@ -11,6 +11,7 @@ fun VideoSurface(
     player: VideoPlayer,
     modifier: Modifier = Modifier,
     scale: VideoScale = VideoScale.Cover,
+    background: Color? = null,
 )
 ```
 
@@ -44,6 +45,11 @@ stderr. Two views of one file means two players.
   overlay in the video's own coordinate space -- glued to the picture,
   upright through any rotation -- and reports the on-screen size back to
   the player so libass rasterizes glyphs at display resolution.
+- **Letterbox.** `background` paints the bounds under the picture, so
+  `Fit`'s bars are a colour you choose rather than whatever is composed
+  behind the surface. It is painted with the frame, never before one:
+  until the first frame arrives, and on a failed player, the surface still
+  draws nothing at all, so your own fallback shows through.
 
 ## VideoScale
 

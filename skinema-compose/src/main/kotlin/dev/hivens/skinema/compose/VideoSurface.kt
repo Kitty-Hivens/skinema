@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import kotlinx.coroutines.CancellationException
@@ -55,6 +56,17 @@ fun VideoSurface(
     player: VideoPlayer,
     modifier: Modifier = Modifier,
     scale: VideoScale = VideoScale.Cover,
+    /**
+     * Painted over the bounds before the picture, so [VideoScale.Fit]'s bars
+     * are this colour instead of whatever is composed behind the surface.
+     * Null (the default) keeps the surface drawing pixels and nothing else.
+     *
+     * Only ever painted together with a frame: before the first one, and on a
+     * failed player, the surface still draws nothing at all -- a consumer's
+     * own fallback has to be able to show through, and a background that
+     * appeared first would cover it.
+     */
+    background: Color? = null,
 ) {
     val frames = remember(player) { VideoFrameImage() }
     val subtitles = remember(player) { SubtitleOverlayImage() }
@@ -157,6 +169,9 @@ fun VideoSurface(
         // but on top of the surface never got to show it.
         if (failed) return@Canvas
         val image = frames.image ?: return@Canvas
+        // With the frame in hand, so the bars arrive with the picture rather
+        // than ahead of it.
+        background?.let { drawRect(it) }
         // Phone footage arrives sideways with its orientation as metadata;
         // scaling decisions follow what the viewer SEES, so quarter turns
         // swap the dimensions before Cover/Fit does its math.
