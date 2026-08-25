@@ -108,11 +108,7 @@ class WebpDecodingTest {
     @Test
     fun `alpha survives animated webp`() {
         assumeWebpEnvironment()
-        val video = Fixtures.generate(
-            dir.resolve("alpha.webp"),
-            "-f", "lavfi", "-i", "color=c=red@0.5:size=16x16:rate=5,format=rgba", "-t", "1",
-            "-c:v", "libwebp", "-lossless", "1", "-loop", "0", "-pix_fmt", "yuva420p",
-        )
+        val video = Fixtures.animatedWebp(dir.resolve("alpha.webp"), size = "16x16", rate = 5, alpha = true)
         FrameSources.open(video).use { source ->
             val frame = source.nextFrame()!!
             val i = (8 * 16 + 8) * 4
@@ -141,11 +137,7 @@ class WebpDecodingTest {
     @Test
     fun `still webp decodes as a single frame`() {
         assumeWebpEnvironment()
-        val video = Fixtures.generate(
-            dir.resolve("still.webp"),
-            "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
-            "-c:v", "libwebp",
-        )
+        val video = Fixtures.stillWebp(dir.resolve("still.webp"))
         FrameSources.open(video).use { source ->
             val frames = generateSequence { source.nextFrame() }.count()
             assertEquals(1, frames)
