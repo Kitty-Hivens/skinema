@@ -35,8 +35,10 @@ enum class VideoScale {
 /**
  * Draws [player]'s frames, repainting on the Compose frame clock: each
  * UI frame polls [VideoPlayer.acquireFrame], so a hidden window stops
- * polling for free -- Compose runs it no frame clock. The player goes on
- * decoding and pacing into its latest-wins mailbox regardless.
+ * polling for free -- Compose runs it no frame clock. The player notices the
+ * mailbox going unread and stops decoding for it, on the policy its
+ * [dev.hivens.skinema.player.WhenUnwatched] names; a consumer that would
+ * rather mark the moment exactly calls [VideoPlayer.setPresenting].
  *
  * The surface draws pixels and nothing else -- no spinners, no error
  * states. Watch [VideoPlayer.state] and react outside; before the first

@@ -92,8 +92,28 @@ fun resume()
 fun positionNanos(): Long   // current media position; 0 until playback starts
 ```
 
+```kotlin
+fun setPresenting(presenting: Boolean)
+```
+
 `pause` freezes on the current frame; `resume` continues without a
-jump. `close()` tears the player down -- it stops the threads and frees
+jump. `setPresenting` says whether anyone is taking the picture -- a
+window minimised, a tab switched away from, a wallpaper behind a
+maximised app. A player nobody reads is not free: it decodes, converts
+and paces pictures into a mailbox nothing empties.
+
+What stopping costs the timeline is the `unwatched` constructor
+parameter's to say. `WhenUnwatched.Freeze` (the default) stops time with
+the picture and carries on from there, which is what a background wants;
+`WhenUnwatched.KeepTime` lets time run on and rejoins the picture where
+it got to, which is what a live source wants.
+
+Saying nothing is allowed. A mailbox that was being read and stops being
+read is noticed on its own after a couple of seconds, and the next
+`acquireFrame` undoes it -- so a consumer that never thinks about this
+still stops burning a core behind a hidden window. Saying it once takes
+the automatic notice out of play: a player told to stop presenting is not
+revived by polling its consumer does for some other reason. `close()` tears the player down -- it stops the threads and frees
 native memory -- and it is bounded: one second for the whole teardown,
 not one second per side.
 
