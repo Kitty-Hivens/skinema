@@ -952,8 +952,17 @@ without breaking changes. Not before.
 - dav1d in trimmed builds: build it ourselves or take BtbN's? (Spike does
   not care; M3 does.) Same question now applies to libvpx, which the
   alpha path requires.
-- Windows/macOS arena + library unloading behavior on session close --
-  verify during M3, libraryLookup lifetime is tied to an Arena.
+- ~~Windows/macOS arena + library unloading behavior on session close~~
+  answered by construction, not by a platform test: every `libraryLookup`
+  and both upcall stubs take `Arena.global()`, so the libraries load once
+  and stay for the life of the process. There is no unload path whose
+  semantics could differ per OS. That is the choice rather than an
+  oversight -- a decode thread outlives any single player, and an upcall
+  stub freed while FFmpeg still holds the pointer is a crash rather than an
+  error. What IS per-OS is LOADING, and each half of it has its own gate:
+  the Windows preload list and import closure (tools/check-windows-bundle.sh),
+  the `$ORIGIN` and `@loader_path` rewrites the bundle build asserts, and
+  the host-dependency surface declared in tools/bundle-surface.txt.
 - ~~The intermittent post-seek freeze~~ root-caused and fixed 2026-06-11
   (the awaitClockWrap park hole -- M5 section). The extrapolation
   question is decided against (M5 section); the ~one-buffer post-seek
