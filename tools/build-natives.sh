@@ -198,7 +198,7 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         zlib.tar.gz)         echo 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 ;;
         bzip2.tar.gz)        echo ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 ;;
         xz.tar.gz)           echo 269e3f2e512cbd3314849982014dc199a7b2148cf5c91cedc6db629acdf5e09b ;;
-        dav1d.tar.gz)        echo fa635e2bdb25147b1384007c83e15de44c589582bb3b9a53fc1579cb9d74b695 ;;
+        dav1d.tar.xz)        echo 401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21 ;;
         libvpx.tar.gz)       echo 26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa ;;
         x265.tar.gz)         echo a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29 ;;
         freetype.tar.xz)     echo 0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289 ;;
@@ -377,9 +377,24 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     license "xz-$XZ_VERSION/COPYING" "xz-COPYING"
 
     if has av1 && [ ! -f "$DEPS/lib/libdav1d.a" ]; then
-        fetch dav1d.tar.gz "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.gz"
+        # The release tarball from VideoLAN's own download hosts, not the
+        # GitLab archive endpoint. That endpoint generates the archive on
+        # demand, and under a matrix's worth of runners it answers with an
+        # HTML page instead often enough to take seven of eight platforms down
+        # in one build -- which is not a mirror failing but the only source
+        # failing, because a generated archive has no mirror.
+        #
+        # A release tarball does: these three hosts serve the same bytes, so
+        # one recorded checksum covers all of them and fetch tries the next
+        # when one is unwell. Verified to be the same source rather than
+        # assumed -- the two archives extract to identical trees, entry for
+        # entry, and only the compression differs.
+        fetch dav1d.tar.xz \
+            "https://downloads.videolan.org/pub/videolan/dav1d/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.xz" \
+            "https://get.videolan.org/dav1d/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.xz" \
+            "https://ftp.osuosl.org/pub/videolan/dav1d/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.xz"
         rm -rf "dav1d-$DAV1D_VERSION"
-        tar -xzf dav1d.tar.gz
+        tar -xJf dav1d.tar.xz
         meson setup "dav1d-$DAV1D_VERSION/build" "dav1d-$DAV1D_VERSION" \
             --prefix="$DEPS" --libdir=lib --default-library=static --buildtype=release \
             -Denable_tools=false -Denable_tests=false ${MESON_CROSS[@]+"${MESON_CROSS[@]}"}
@@ -493,7 +508,17 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
     # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
     if has enc-h264 && [ ! -f "$DEPS/lib/libx264.a" ]; then
-        fetch x264.tar.gz "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz"
+        # Two hosts for the same commit, under one pin. VideoLAN's GitLab
+        # generates its archive on demand and answers with an HTML page often
+        # enough under a matrix's load to fail a whole tier, and a commit
+        # archive has no release tarball to fall back to -- but GitHub's x264
+        # mirror serves this commit as a byte-identical archive, same root
+        # name, same gzip, same sha256 as the pin already records. Measured,
+        # not assumed: both tarballs hash to cd71a751... and extract to
+        # identical trees.
+        fetch x264.tar.gz \
+            "https://code.videolan.org/videolan/x264/-/archive/$X264_VERSION/x264-$X264_VERSION.tar.gz" \
+            "https://codeload.github.com/mirror/x264/tar.gz/$X264_VERSION"
         rm -rf "x264-$X264_VERSION"
         tar -xzf x264.tar.gz
         (
