@@ -90,4 +90,5 @@ mov_text        = decoder:movtext
 WebVTT          = decoder:webvtt
 PGS             = decoder:pgssub
 VobSub          = decoder:dvdsub
+DVB             = decoder:dvbsub parser:dvbsub
 external .srt/.ass = demuxer:srt demuxer:ass
