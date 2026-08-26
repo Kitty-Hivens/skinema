@@ -143,7 +143,7 @@ driver on the machine is versioned against it rather than against ours.
 | Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
 | Animated images | GIF, APNG, animated WebP                                                                      |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
-| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub (bitmap); external .srt/.ass   |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); external .srt/.ass   |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
 
 The legacy and broadcast formats (avi/MPEG-TS/flv/asf/dv/RealMedia and the older codecs) ride the `decode` and `full` tiers; the lean `core` tier carries only the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio). H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
@@ -170,7 +170,7 @@ Subtitles: `subtitleTracks` enumerates what the container carries
 -- off by default, nothing subtitle-related runs until then. Text
 tracks (ASS/SSA, SRT, mov_text, WebVTT) render through libass with the
 full typesetting, mkv-embedded fonts included; bitmap tracks (PGS,
-VobSub) decode to pixels and need no libass at all. External `.srt` and
+VobSub, DVB) decode to pixels and need no libass at all. External `.srt` and
 `.ass` files join via `addExternalSubtitles` on the same timeline.
 `VideoSurface` composites the overlay and keeps glyphs crisp at window
 size; a consumer drawing frames itself polls `acquireSubtitles` -- the
