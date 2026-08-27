@@ -33,7 +33,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
 class VideoFrameImage : AutoCloseable {
 
     private companion object {
-        /** A second of frames at 60 fps -- past any legitimate draw backlog. */
+        /**
+         * How many retired images it takes to be sure, given that [reclaim] has
+         * never run at all. Not a frame rate and not a duration: a caller who
+         * never reclaims passes any number, and one who does is not judged by
+         * this at all.
+         */
         const val BACKLOG_WARN_AT = 60
     }
 
@@ -54,6 +59,9 @@ class VideoFrameImage : AutoCloseable {
 
     @Volatile
     private var backlogSaid = false
+
+    @Volatile
+    private var everReclaimed = false
 
     /** Whether the backlog warning has been printed. For tests. */
     internal val warnedAboutBacklog: Boolean get() = backlogSaid
@@ -101,18 +109,27 @@ class VideoFrameImage : AutoCloseable {
      * of 1080p took resident memory from 250 MB to 1796 MB, and one reclaim
      * put it back to 245.
      *
-     * So the silence is the defect worth fixing. Sixty is a second of frames
-     * at sixty a second, and no correct drawer sits on that -- VideoSurface
-     * back-pressures at three. Printed unconditionally rather than behind
-     * SKINEMA_DEBUG, because the person who needs it is exactly the one who
-     * does not know to turn a flag on.
+     * So the silence is the defect worth fixing. The condition is that
+     * [reclaim] has NEVER run, which is what the mistake actually is -- and it
+     * deliberately does not measure a backlog against a frame rate. A correct
+     * drawer does fall behind: a hitch, a resize, a collection pause, and at
+     * 240 fps a quarter of a second of that is sixty images. Warning on the
+     * count alone would fire at exactly the callers doing it right, and a
+     * warning that fires on correct code is worse than none. A caller who
+     * never reclaims, meanwhile, passes any threshold at any frame rate, so
+     * the number below only decides how soon.
+     *
+     * Printed unconditionally rather than behind SKINEMA_DEBUG, because the
+     * person who needs it is exactly the one who does not know to turn a flag
+     * on. Someone watching for the other case -- reclaiming but not keeping up
+     * -- has [pending] for it.
      *
      * It warns and does nothing else. Closing the backlog from here would free
      * an image the drawing thread may be holding, which is the crash this
      * class's whole retire-then-reclaim shape exists to avoid.
      */
     private fun warnIfBacklogging() {
-        if (backlogSaid || retired.size < BACKLOG_WARN_AT) return
+        if (backlogSaid || everReclaimed || retired.size < BACKLOG_WARN_AT) return
         backlogSaid = true
         System.err.println(
             "[skinema] $BACKLOG_WARN_AT frames are retired and unreclaimed. VideoFrameImage.reclaim() " +
@@ -123,6 +140,7 @@ class VideoFrameImage : AutoCloseable {
 
     /** Closes retired images. The drawing thread only, at the start of a draw. */
     fun reclaim() {
+        everReclaimed = true
         while (true) (retired.poll() ?: return).close()
     }
 
