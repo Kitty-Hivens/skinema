@@ -287,8 +287,14 @@ jobs:
       #
       # Both tables, because there are two. The guide's copy went unchecked
       # and drifted a whole tier behind the one in the README.
+      # The full tier specifically, not merely linux-x64. Both claims files are
+      # written against full as the superset -- it is the only build carrying
+      # both the GPL software encoders and the VAAPI ones -- so running them
+      # against a leaner tier reports its missing components as broken claims.
+      # Which is exactly what the decode row did on its first run: correct
+      # check, wrong gate, and the row earned its keep by finding it.
       - name: Check the format claims against the bundle
-        if: matrix.platform == 'linux-x64'
+        if: matrix.platform == 'linux-x64' && matrix.tier == 'full'
         shell: bash
         run: |
           bash tools/check-readme-formats.sh libav-bundle/manifest.txt
