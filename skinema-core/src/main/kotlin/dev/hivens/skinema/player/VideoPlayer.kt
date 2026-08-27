@@ -183,8 +183,45 @@ class VideoPlayer internal constructor(
     }
 
     @Volatile
-    var state: State = State.Opening
-        private set
+    private var stateField: State = State.Opening
+
+    /**
+     * What the player is doing. Written from the decode thread and from the
+     * pacer, read from anywhere.
+     */
+    val state: State get() = stateField
+
+    /**
+     * The one way state is written, and the reason it is a function.
+     *
+     * [State.Failed] is terminal by contract -- it is the fail-closed promise
+     * the whole library rests on -- but it was not terminal in fact. The pacer
+     * publishes it from its own thread, and the decode thread then wrote over
+     * it unconditionally: a pacer dying while a seek was landing had its
+     * failure replaced by Seeking, then by Playing when the landing finished,
+     * and finally by Closed when the pacer's own Close command arrived. The
+     * consumer watched Playing -> Seeking -> Playing -> Closed and saw a
+     * player that had shut itself down tidily, with the cause gone -- so the
+     * fallback the failure exists to trigger never ran.
+     *
+     * Guarding the three unconditional sites would have been whack-a-mole; a
+     * fourth would reintroduce it. The write itself refuses instead.
+     *
+     * No test, and the reason is worth keeping so it is not rediscovered. The
+     * interleaving above could not be built. Two attempts, both traced: aiming
+     * a seek at a keyframe leaves no decode-forward run to catch the pacer in,
+     * and parking the run at a non-keyframe target stops the pacer dying at all
+     * -- a landing clears the queue, and with nothing to pace the pacer never
+     * reaches the clock read that would throw. At readAheadFrames = 1 the two
+     * requirements exclude each other. So this is a contract made true by
+     * construction rather than a defect reproduced and fixed; if a consumer
+     * ever reports the Playing -> Seeking -> Playing -> Closed sequence, the
+     * inventory depth is where to look first.
+     */
+    private fun publishState(next: State) {
+        if (stateField is State.Failed && next !is State.Failed) return
+        stateField = next
+    }
 
     /**
      * Total duration of one lap, as the container reports it; null while
@@ -753,13 +790,13 @@ class VideoPlayer internal constructor(
                     framelessLoop()
                     framelessReturned = true
                 } catch (framelessFailure: Throwable) {
-                    state = State.Failed(framelessFailure)
+                    publishState(State.Failed(framelessFailure))
                 }
                 tearDownSides()
                 // After the device, for the reason the framed path gives.
-                if (framelessReturned && state !is State.Failed) state = State.Closed
+                if (framelessReturned && state !is State.Failed) publishState(State.Closed)
             } else {
-                state = State.Failed(t)
+                publishState(State.Failed(t))
                 tearDownSides()
             }
             return
@@ -772,7 +809,7 @@ class VideoPlayer internal constructor(
         if (closing) {
             runCatching { decoder.close() }
             tearDownSides()
-            state = State.Closed
+            publishState(State.Closed)
             return
         }
         // Everything below is inside the guard, including reading the file's
@@ -795,11 +832,11 @@ class VideoPlayer internal constructor(
                 start()
             }
             if (ownsClock) clock.start(0)
-            state = State.Playing
+            publishState(State.Playing)
             decodeLoop(decoder)
             loopReturned = true
         } catch (t: Throwable) {
-            state = State.Failed(t)
+            publishState(State.Failed(t))
         } finally {
             val deadline = teardownDeadline()
             queue.close()
@@ -818,7 +855,7 @@ class VideoPlayer internal constructor(
             // the player -- its own sink above all -- while the audio thread
             // is still writing into that sink until the close above returns.
             // A failure has already published its own state and keeps it.
-            if (loopReturned && state !is State.Failed) state = State.Closed
+            if (loopReturned && state !is State.Failed) publishState(State.Closed)
         }
     }
 
@@ -842,7 +879,7 @@ class VideoPlayer internal constructor(
         // between the two calls and lands a microsecond past the end.
         clock.pause()
         durationNanos?.let { clock.seek(it) }
-        state = State.Ended
+        publishState(State.Ended)
     }
 
     /**
@@ -866,7 +903,7 @@ class VideoPlayer internal constructor(
 
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
-        state = State.Playing
+        publishState(State.Playing)
         while (true) {
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
@@ -1170,7 +1207,7 @@ class VideoPlayer internal constructor(
         } else {
             // Frameless (audio-only): no landing to wait for.
             seekInFlight = false
-            if (state is State.Ended) state = State.Playing
+            if (state is State.Ended) publishState(State.Playing)
             true
         }
         // Sound stays frozen at the anchor until the landing is done;
@@ -1258,7 +1295,7 @@ class VideoPlayer internal constructor(
         // Remember what to return to (Playing/Paused/Ended) and advertise
         // the landing so a consumer can show a loading affordance.
         stateBeforeSeek.compareAndSet(null, state.takeIf { it != State.Seeking } ?: State.Playing)
-        state = State.Seeking
+        publishState(State.Seeking)
         var target = targetNanos
         var exactMode = exact
         var previewing = preview
@@ -1423,7 +1460,7 @@ class VideoPlayer internal constructor(
         }
         audioPipeline?.resume()
         clock.resume()
-        state = State.Playing
+        publishState(State.Playing)
         pausedByUnwatch = false
     }
 
@@ -1490,7 +1527,7 @@ class VideoPlayer internal constructor(
         if (state is State.Playing) {
             audioPipeline?.pause()
             clock.pause()
-            state = State.Paused
+            publishState(State.Paused)
         }
     }
 
@@ -1690,10 +1727,12 @@ class VideoPlayer internal constructor(
     private fun finishSeek(landed: State) {
         seekInFlight = false
         val prior = stateBeforeSeek.getAndSet(null)
-        state = when {
-            prior == State.Paused && landed != State.Ended -> State.Paused
-            else -> landed
-        }
+        publishState(
+            when {
+                prior == State.Paused && landed != State.Ended -> State.Paused
+                else -> landed
+            },
+        )
     }
 
     // -- Pacer thread ---------------------------------------------------------
@@ -1726,7 +1765,7 @@ class VideoPlayer internal constructor(
             paceLoop()
         } catch (t: Throwable) {
             pacerFailure = t
-            state = State.Failed(t)
+            publishState(State.Failed(t))
             // The producer's waits ask only whether the queue is closed. It
             // is now, in the sense they are asking about: there is no
             // consumer left.

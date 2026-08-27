@@ -29,8 +29,9 @@ import java.nio.file.Path
  * back to once a collection has run. A floor that stays put across a long run
  * is what "RSS does not grow" means; a floor that climbs is a leak, whatever
  * the peaks do. So samples are taken every couple of seconds and each report
- * carries the minimum seen since the last one, and the run ends by comparing
- * the floor of its first half against the floor of its second.
+ * carries the minimum seen since the last one, and the run ends by reporting
+ * the floor of each third -- the first being warm-up, and the verdict read
+ * from the last two against each other.
  *
  * `-Pheap` exists for the same reason: capping the heap makes collections
  * frequent, so the floor is sampled many times rather than once or twice.
@@ -52,16 +53,23 @@ fun main(args: Array<String>) {
     VideoPlayer(video, loop = true, audio = audio, readAheadFrames = readAhead, hardware = hardware).use { player ->
         val started = System.nanoTime()
         val deadline = started + minutes * 60_000_000_000L
-        val halfway = started + minutes * 30_000_000_000L
+        val firstThird = started + minutes * 20_000_000_000L
+        val secondThird = started + minutes * 40_000_000_000L
         var frames = 0L
         var nextSample = started
         var nextReport = started
-        // Floors: per report window, and one for each half of the run. The
-        // halves are what the verdict is read from.
+        // Floors: one per report window, plus the three the verdict uses.
         var windowRss = Long.MAX_VALUE
         var windowHeap = Long.MAX_VALUE
-        var firstHalfRss = Long.MAX_VALUE
-        var secondHalfRss = Long.MAX_VALUE
+        // Thirds, not halves, and the reason is measured: on this machine the
+        // floor climbs for the first ten minutes of a thirty-minute run --
+        // JIT, native pools, GPU surfaces -- and then sits still. Comparing
+        // halves puts that warm-up entirely inside the first one and reports
+        // its climb as drift: a run whose floor was flat at 370 MB for its
+        // whole last third came out as "+68 MB". Three windows show the shape
+        // instead of hiding it in one number, and the verdict reads the last
+        // two against each other.
+        val thirds = LongArray(3) { Long.MAX_VALUE }
 
         while (System.nanoTime() < deadline) {
             val state = player.state
@@ -72,16 +80,8 @@ fun main(args: Array<String>) {
             if (now >= nextSample) {
                 rssMb()?.let { rss ->
                     if (rss < windowRss) windowRss = rss
-                    // The first samples are the process still warming up, and a
-                    // floor taken from them would flatter every later one. The
-                    // halves start after the first minute for that reason.
-                    if (now - started > 60_000_000_000L) {
-                        if (now < halfway) {
-                            if (rss < firstHalfRss) firstHalfRss = rss
-                        } else if (rss < secondHalfRss) {
-                            secondHalfRss = rss
-                        }
-                    }
+                    val third = if (now < firstThird) 0 else if (now < secondThird) 1 else 2
+                    if (rss < thirds[third]) thirds[third] = rss
                 }
                 heapMb().let { if (it < windowHeap) windowHeap = it }
                 nextSample = now + SAMPLE_NANOS
@@ -110,14 +110,16 @@ fun main(args: Array<String>) {
         )
         // The verdict, stated rather than left to whoever reads the series. A
         // rising floor is the leak; peaks are the collector's business.
-        if (firstHalfRss != Long.MAX_VALUE && secondHalfRss != Long.MAX_VALUE) {
-            val drift = secondHalfRss - firstHalfRss
+        if (thirds.none { it == Long.MAX_VALUE }) {
+            // The verdict is the last third against the middle one. The first
+            // is warm-up and is printed rather than judged.
+            val drift = thirds[2] - thirds[1]
             println(
-                "soak floor: first half ${firstHalfRss}MB, second half ${secondHalfRss}MB," +
-                    " drift ${if (drift >= 0) "+" else ""}${drift}MB",
+                "soak floor by third: ${thirds[0]}MB (warm-up), ${thirds[1]}MB, ${thirds[2]}MB" +
+                    " -- settled drift ${if (drift >= 0) "+" else ""}${drift}MB",
             )
         } else {
-            println("soak floor: not enough samples past warm-up to compare halves")
+            println("soak floor: not enough samples to fill three windows")
         }
         check(frames > 0) { "soak decoded nothing" }
     }
