@@ -122,12 +122,19 @@ jobs:
           # load and fails loudly when it does not. This one is only the
           # backstop against a suite collapsing into silence, which would show
           # as hundreds skipped rather than tens.
+          # The FEATURES list is NOT repeated here. It lives in
+          # tools/build-natives.sh (tier_features), which the build reads from
+          # TIER on its own -- and the script refuses outright when a FEATURES
+          # it was handed disagrees with the TIER. Declared in both places it
+          # drifts, and it did: adding the AV1 and Opus encoders to the script
+          # failed all eight platforms of a dispatch in fifteen seconds,
+          # because this file still named the old set. Loud and cheap, but the
+          # second declaration bought nothing to begin with.
           case "${{ matrix.tier }}" in
-            core)   feat="av1 vpx webp";                                                  caps="decode,webp";                    skipped=90 ;;
-            decode) feat="av1 vpx webp hwaccel subs formats enc-vaapi";                   caps="decode,webp,subs,formats";       skipped=60 ;;
-            full)   feat="av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc"; caps="decode,webp,subs,formats,encode"; skipped=50 ;;
+            core)   caps="decode,webp";                                  skipped=90 ;;
+            decode) caps="decode,webp,subs,formats,encav1,encopus";      skipped=60 ;;
+            full)   caps="decode,webp,subs,formats,encav1,encopus,encode"; skipped=50 ;;
           esac
-          echo "features=$feat" >> "$GITHUB_OUTPUT"
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
           echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
 
@@ -192,13 +199,12 @@ jobs:
       - name: Build and accept (musl, in Alpine)
         if: matrix.libc == 'musl'
         env:
-          FEATURES: ${{ steps.tier.outputs.features }}
           CAPS: ${{ steps.tier.outputs.caps }}
           MAX_SKIPPED: ${{ steps.tier.outputs.skipped }}
           TIER: ${{ matrix.tier }}
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
-            -e FEATURES -e CAPS -e MAX_SKIPPED -e TIER -e FFMPEG_VERSION \
+            -e CAPS -e MAX_SKIPPED -e TIER -e FFMPEG_VERSION \
             alpine:edge sh -euc '
               # edge, not a stable tag, and deliberately not pinned: openjdk25
               # is only there, and edge is also what the Alpine desktop users
@@ -230,7 +236,6 @@ jobs:
       - name: Build trimmed FFmpeg (unix)
         if: runner.os != 'Windows' && matrix.libc != 'musl'
         env:
-          FEATURES: ${{ steps.tier.outputs.features }}
           TIER: ${{ matrix.tier }}
         run: |
           if [ "${{ matrix.cross }}" = "mac-x64" ]; then export MAC_CROSS_X64=1; fi
@@ -240,7 +245,6 @@ jobs:
         if: matrix.platform == 'windows-x64'
         shell: msys2 {0}
         env:
-          FEATURES: ${{ steps.tier.outputs.features }}
           TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" VPX_TARGET=x86_64-win64-gcc tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
@@ -250,7 +254,6 @@ jobs:
         if: matrix.platform == 'windows-arm64'
         shell: msys2 {0}
         env:
-          FEATURES: ${{ steps.tier.outputs.features }}
           TIER: ${{ matrix.tier }}
         run: STATIC_DEPS=1 FFMPEG_VERSION="$FFMPEG_VERSION" tools/build-natives.sh "$PWD/natives/${{ matrix.platform }}"
 
