@@ -1,0 +1,37 @@
+# What README.md's "What it writes" table claims, and the components each claim
+# needs. The read side's join lives in format-claims.txt; this is the same idea
+# for the push side, and it exists for the same reason -- the README advertised
+# mov_text for the whole life of the project while no bundle carried the
+# decoder, and an encoder can go missing exactly as quietly.
+#
+# Checked against the FULL tier on linux-x64, which is the superset: it is the
+# only build that carries both the GPL software encoders and the VAAPI ones.
+# The lean tiers carry less by design and the table says which.
+#
+# Format: <claim text as it appears in README> = <kind>:<component> ...
+
+# -- Video encoders ----------------------------------------------------------
+H.264 and HEVC (x264/x265 = encoder:libx264 encoder:libx265
+AV1 (SVT-AV1)             = encoder:libsvtav1
+# Linux only, and this file is checked on linux-x64, so the claim holds where
+# it is asserted. The codec runs in the GPU driver, which is why these are LGPL
+# and ride the decode tier as well.
+on the GPU through VAAPI  = encoder:h264_vaapi encoder:hevc_vaapi
+
+# -- Audio encoders ----------------------------------------------------------
+AAC                       = encoder:aac
+Opus                      = encoder:libopus
+FLAC                      = encoder:flac
+# What a .wav is made of, and the sample format the writer already hands in.
+WAV PCM                   = encoder:pcm_s16le
+
+# -- Containers --------------------------------------------------------------
+mp4/mov                   = muxer:mov muxer:mp4
+mkv                       = muxer:matroska
+webm                      = muxer:webm
+# The three audio-only containers. `ogg` is deliberately unclaimed: it arrives
+# as the opus muxer's own dependency and nothing here would fill one that
+# `.opus` does not.
+.opus                     = muxer:opus
+.flac                     = muxer:flac
+.wav                      = muxer:wav

@@ -182,6 +182,27 @@ without it text tracks refuse selection and everything else plays on.
 Text rendering uses the system's fonts (fontconfig, DirectWrite,
 CoreText); a fontless headless box renders blank overlays.
 
+## What it writes
+
+`MediaWriter` is the player inverted -- RGBA8888 frames and S16LE stereo PCM
+in, a muxed file out -- and `Transcoder` joins the two halves to convert a
+file. What a bundle can write is set by its tier, and there the split is about
+licence rather than size: everything below except the software H.264/HEVC pair
+is LGPL or BSD and rides `decode`.
+
+|                 |                                                                                               |
+|-----------------|-----------------------------------------------------------------------------------------------|
+| Video           | AV1 (SVT-AV1), and on Linux H.264/HEVC on the GPU through VAAPI -- both in `decode`; H.264 and HEVC (x264/x265) in `full`, which is what makes that tier GPL |
+| Audio           | AAC, Opus, FLAC, WAV PCM                                                                      |
+| Containers      | mp4/mov, mkv and webm; .opus, .flac and .wav for a file with sound and no picture              |
+| Pixels in       | RGBA8888, reverse-scaled into whatever the encoder accepts; the matrix the conversion used is tagged on the file, so a player reading the tag and one guessing from the geometry agree |
+
+Nothing is assumed about an encoder: the pixel format, sample format, channel
+layout and sample rate are all negotiated against what it advertises, and one
+it cannot take is refused by name rather than as a bare errno. Hardware encode
+is fail-closed -- naming a GPU encoder that cannot open throws instead of
+quietly falling back to software. See [the encoding guide](docs/guide/encoding.md).
+
 ## Behavior contract
 
 - **Fail closed.** A file the pipeline cannot handle surfaces as
