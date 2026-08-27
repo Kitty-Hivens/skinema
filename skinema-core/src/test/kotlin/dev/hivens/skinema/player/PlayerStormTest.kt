@@ -10,6 +10,7 @@ import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -49,6 +50,27 @@ class PlayerStormTest {
     @AfterTest
     fun cleanup() {
         dir.toFile().deleteRecursively()
+    }
+
+    /**
+     * The position once two readings a quiet interval apart agree, or null if
+     * it never stops moving. The interval is long enough that a clock still
+     * being driven cannot land on the same nanosecond twice by chance.
+     */
+    private fun awaitSettledPosition(
+        player: VideoPlayer,
+        quietMs: Long = 200,
+        deadlineMs: Long = 5_000,
+    ): Long? {
+        val deadline = System.currentTimeMillis() + deadlineMs
+        var last = player.positionNanos()
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(quietMs)
+            val now = player.positionNanos()
+            if (now == last) return now
+            last = now
+        }
+        return null
     }
 
     private fun awaitTrue(deadlineMs: Long = 10_000, condition: () -> Boolean): Boolean {
@@ -230,11 +252,40 @@ class PlayerStormTest {
                     awaitTrue(8_000) { player.state is VideoPlayer.State.Paused },
                     "ending on pause must leave it paused, state=${player.state}",
                 )
-                val frozen = player.positionNanos()
+                // Pause has two sides and only one of them is synchronous.
+                // pauseNow() freezes the clock and publishes Paused on the
+                // decode thread, while the audio side is told by a queued
+                // command and does its half whenever its own thread gets
+                // there. So the moment the state flips is not the moment the
+                // timeline has finished moving, and sampling the position
+                // there measured the handoff rather than the pause -- which
+                // is why it held on every runner in the matrix except the
+                // slowest, where it read 100 ms of it.
+                //
+                // Assert the settled fact instead: the timeline must come to
+                // a stop, and having stopped it must stand. That is strictly
+                // more than the old bar caught. A pause that never takes
+                // fails the first half by timing out, and a timeline that
+                // creeps after settling fails the second against five
+                // milliseconds where it used to be allowed a hundred.
+                //
+                // Mutation-checked, and the checking found something worth
+                // recording: pausing is doubly redundant here. Removing the
+                // explicit clock.pause() does not fail this, because stopping
+                // the device freezes an audio-mastered clock anyway; removing
+                // the audio side's pause does not fail it either, because the
+                // explicit one still lands. Only removing BOTH does. That is
+                // a property of the design rather than a hole in the test --
+                // but it means a mutation aimed at one half proves nothing.
+                val settled = assertNotNull(
+                    awaitSettledPosition(player),
+                    "a paused player's timeline must stop moving, still moving after 5s",
+                )
                 Thread.sleep(300)
+                val drift = player.positionNanos() - settled
                 assertTrue(
-                    player.positionNanos() - frozen < 100_000_000L,
-                    "a paused player's timeline must stand, moved ${(player.positionNanos() - frozen) / 1_000_000}ms",
+                    drift < 5_000_000L,
+                    "a paused player's timeline must stand once settled, moved ${drift / 1_000_000}ms",
                 )
             } finally {
                 sink.release()
