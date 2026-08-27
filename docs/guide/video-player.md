@@ -24,6 +24,16 @@ VideoPlayer(
 - `path` -- the file to play.
 - `loop` -- restart at EOF instead of ending. Default `true` (skinema's
   first job is looping backgrounds).
+
+  Turn it off for a still image. A single PNG or JPEG is a legal input and
+  decodes like anything else, but it declares no duration, so the player
+  observes one from the first lap -- one frame at the container's default
+  rate, 40 ms -- and then honours it. Measured: about thirty laps a second,
+  each reopening the demuxer, for one percent of a core and a picture that
+  never changes. With `loop = false` the same frame stands on screen, the
+  state reads `Ended`, and the cost is nothing at all. If you hand the player
+  whatever a user dropped on it, pick `loop` from what arrived rather than
+  taking the default.
 - `audio` -- decode and play sound. Default `false`. See
   [audio.md](audio.md).
 - `explicitClock`, `sink` -- test and advanced seams; leave them at the
