@@ -47,7 +47,8 @@ object Fixtures {
     private fun requires(cap: String): Boolean = cap in requiredCaps
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
-    internal val knownCaps = setOf("decode", "subs", "webp", "dvbsub", "encode", "formats", "audio")
+    internal val knownCaps =
+        setOf("decode", "subs", "webp", "dvbsub", "encode", "formats", "audio", "encav1", "encopus")
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -68,7 +69,12 @@ object Fixtures {
         "dvbsub" -> libavHasDecoder("dvbsub")
         // The full tier always carries x264 (mac/win keep enc-h264 even
         // without x265, #22), so libx264 is the encode path's load probe.
+        // It is the GPL tier's tell specifically, which is why the two BSD
+        // encoders below get names of their own: they ride decode as well,
+        // and a decode bundle has no libx264 to stand in for them.
         "encode" -> libavHasEncoder("libx264")
+        "encav1" -> libavHasEncoder("libsvtav1")
+        "encopus" -> libavHasEncoder("libopus")
         // The broad legacy/extended decode set (the formats feature): mpeg2
         // is its canonical member, present whenever the feature is on.
         "formats" -> libavHasDecoder("mpeg2video")
