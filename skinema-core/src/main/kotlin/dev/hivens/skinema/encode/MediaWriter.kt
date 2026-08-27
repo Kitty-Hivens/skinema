@@ -74,12 +74,17 @@ class AudioEncodeConfig(
  * Software encode (M12, RGBA -> YUV420P) and hardware encode (M13, RGBA ->
  * NV12 uploaded to a GPU surface pool, e.g. VAAPI). Frames and samples are
  * pushed from the one thread that called [open].
+ *
+ * Either stream may be the only one. `open(path, video)` writes a file with
+ * no sound, `open(path, audio)` one with no picture -- which is what the
+ * audio-only containers are for -- and the overload that takes both writes
+ * both. There is no way to ask for a writer with neither.
  */
 class MediaWriter private constructor(
     private val arena: Arena,
     private val fmtCtx: MemorySegment,
     private val packet: MemorySegment,
-    private val video: VideoTrack,
+    private val video: VideoTrack?,
     private val audio: AudioTrack?,
     private val needsFileIo: Boolean,
 ) : AutoCloseable {
@@ -100,12 +105,17 @@ class MediaWriter private constructor(
      * Encodes one RGBA8888 frame ([VideoEncodeConfig.width] x height,
      * tightly packed) presented at [ptsNanos]. Frames must arrive in
      * non-decreasing pts order.
+     *
+     * Throws when the writer was opened for audio alone -- refused by name,
+     * like every other thing this class cannot do, rather than as a null
+     * dereference from somewhere further in.
      */
     fun writeFrame(rgba: ByteArray, ptsNanos: Long) {
         check(!closed) { "writeFrame after close()" }
         check(!finished) { "writeFrame after finish()" }
-        video.send(rgba, ptsNanos)
-        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen, video.frameDurationMicros)
+        val v = video ?: throw LibavException("this MediaWriter has no video stream")
+        v.send(rgba, ptsNanos)
+        drain(v.codecCtx, v.streamIndex, MICROS_DEN, v.streamTbNum, v.streamTbDen, v.frameDurationMicros)
     }
 
     /**
@@ -132,8 +142,10 @@ class MediaWriter private constructor(
     fun finish() {
         check(!closed) { "finish after close()" }
         if (finished) return
-        flushEncoder(video.codecCtx, "avcodec_send_frame(video flush)")
-        drain(video.codecCtx, video.streamIndex, MICROS_DEN, video.streamTbNum, video.streamTbDen, video.frameDurationMicros)
+        video?.let { v ->
+            flushEncoder(v.codecCtx, "avcodec_send_frame(video flush)")
+            drain(v.codecCtx, v.streamIndex, MICROS_DEN, v.streamTbNum, v.streamTbDen, v.frameDurationMicros)
+        }
         audio?.let { a ->
             // A short final frame, then the flush packet.
             // Whole frames first. send() encodes at most one frame's worth,
@@ -251,7 +263,7 @@ class MediaWriter private constructor(
                 .onFailure { Debug.trace("av_write_trailer on close", it) }
         }
         val ptrPtr = arena.allocate(ADDRESS)
-        video.free(ptrPtr)
+        video?.free(ptrPtr)
         audio?.free(ptrPtr)
         ptrPtr.set(ADDRESS, 0, packet)
         Libav.avPacketFree(ptrPtr)
@@ -508,17 +520,40 @@ class MediaWriter private constructor(
          * [finish]. Throws -- leaving nothing allocated -- when a muxer,
          * encoder or any setup step is refused.
          */
-        fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig? = null): MediaWriter {
-            require(video.width > 0 && video.height > 0) { "width/height must be positive" }
-            // Named for the constraint rather than for one format: which
-            // format the encoder takes is not known until it is asked, some
-            // pages further down, and every encoder any tier ships takes a
-            // chroma-subsampled one (yuv420p in software, NV12 on the GPU).
-            // An encoder that subsamples cannot halve an odd side.
-            require(video.width % 2 == 0 && video.height % 2 == 0) {
-                "chroma-subsampled encoding needs even dimensions, got ${video.width}x${video.height}"
+        fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig? = null): MediaWriter =
+            openInternal(path, video, audio)
+
+        /**
+         * Opens [path] for [audio] alone: a file with no picture in it, which
+         * is what .opus, .flac and .wav are for -- though an audio-only mp4 or
+         * mkv is equally legal and this writes one just as well.
+         *
+         * A separate entry rather than a nullable video parameter, so that a
+         * writer with no streams at all cannot be asked for: each overload
+         * requires one, and `open(path, null)` does not compile. Everything
+         * else is the same writer -- [writeAudio], [finish], [close] -- and
+         * [writeFrame] refuses by name.
+         */
+        fun open(path: Path, audio: AudioEncodeConfig): MediaWriter =
+            openInternal(path, null, audio)
+
+        private fun openInternal(path: Path, video: VideoEncodeConfig?, audio: AudioEncodeConfig?): MediaWriter {
+            // Unreachable through either overload above, which is the point of
+            // having two: this states the invariant they enforce rather than
+            // trusting the next entry point added here to remember it.
+            require(video != null || audio != null) { "a writer needs at least one stream" }
+            if (video != null) {
+                require(video.width > 0 && video.height > 0) { "width/height must be positive" }
+                // Named for the constraint rather than for one format: which
+                // format the encoder takes is not known until it is asked, some
+                // pages further down, and every encoder any tier ships takes a
+                // chroma-subsampled one (yuv420p in software, NV12 on the GPU).
+                // An encoder that subsamples cannot halve an odd side.
+                require(video.width % 2 == 0 && video.height % 2 == 0) {
+                    "chroma-subsampled encoding needs even dimensions, got ${video.width}x${video.height}"
+                }
+                require(video.fps > 0) { "fps must be positive" }
             }
-            require(video.fps > 0) { "fps must be positive" }
             val arena = Arena.ofConfined()
             var fmtCtx = MemorySegment.NULL
             var vCtx = MemorySegment.NULL
@@ -533,6 +568,12 @@ class MediaWriter private constructor(
             var hwDeviceRef = MemorySegment.NULL
             var hwFramesRef = MemorySegment.NULL
             var hwFrame = MemorySegment.NULL
+            // Hoisted out of the video block below, which an audio-only
+            // writer skips entirely.
+            var hw: HwEncode? = null
+            var swFrameFormat = 0
+            var vStream = MemorySegment.NULL
+            var vStreamIndex = 0
             try {
                 val ctxOut = arena.allocate(ADDRESS)
                 Libav.checkAv(
@@ -544,91 +585,93 @@ class MediaWriter private constructor(
                 val oFlags = oformat.get(JAVA_INT, LibavAbi.OutputFormat.FLAGS)
                 val globalHeader = oFlags and LibavAbi.AVFMT_GLOBALHEADER != 0
 
-                // -- video stream --
-                val vEncoder = Libav.avcodecFindEncoderByName(arena.allocateFrom(video.codecName))
-                if (vEncoder == MemorySegment.NULL) throw LibavException("no encoder named '${video.codecName}'")
-                vCtx = Libav.avcodecAllocContext3(vEncoder)
-                if (vCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3(video) returned NULL")
-                val vc = vCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.WIDTH, video.width)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.HEIGHT, video.height)
+                if (video != null) {
+                    // -- video stream (absent for an audio-only writer) --
+                    val vEncoder = Libav.avcodecFindEncoderByName(arena.allocateFrom(video.codecName))
+                    if (vEncoder == MemorySegment.NULL) throw LibavException("no encoder named '${video.codecName}'")
+                    vCtx = Libav.avcodecAllocContext3(vEncoder)
+                    if (vCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3(video) returned NULL")
+                    val vc = vCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.WIDTH, video.width)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.HEIGHT, video.height)
 
-                // A hardware encoder takes its surface format (e.g. VAAPI) and
-                // is fed NV12 uploads through a GPU frames pool built here. A
-                // software one is asked what it takes: YUV420P covers the
-                // common ones and led here as a constant, but an encoder that
-                // wants 4:2:2, 4:4:4 or planar RGB -- prores, dnxhd,
-                // libx264rgb -- was refused by avcodec_open2 with a bare
-                // errno. The audio side already picks its sample format this
-                // way; this is the branch that fix did not reach.
-                val hw = detectHwEncode(vEncoder)
-                val swFrameFormat = if (hw == null) {
-                    pickPixelFormat(
-                        video.codecName,
-                        supportedInts(arena, vEncoder, LibavAbi.AV_CODEC_CONFIG_PIX_FORMAT),
-                    )
-                } else {
-                    LibavAbi.AV_PIX_FMT_NV12
+                    // A hardware encoder takes its surface format (e.g. VAAPI) and
+                    // is fed NV12 uploads through a GPU frames pool built here. A
+                    // software one is asked what it takes: YUV420P covers the
+                    // common ones and led here as a constant, but an encoder that
+                    // wants 4:2:2, 4:4:4 or planar RGB -- prores, dnxhd,
+                    // libx264rgb -- was refused by avcodec_open2 with a bare
+                    // errno. The audio side already picks its sample format this
+                    // way; this is the branch that fix did not reach.
+                    hw = detectHwEncode(vEncoder)
+                    swFrameFormat = if (hw == null) {
+                        pickPixelFormat(
+                            video.codecName,
+                            supportedInts(arena, vEncoder, LibavAbi.AV_CODEC_CONFIG_PIX_FORMAT),
+                        )
+                    } else {
+                        LibavAbi.AV_PIX_FMT_NV12
+                    }
+                    if (hw == null) {
+                        vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, swFrameFormat)
+                    } else {
+                        val deviceOut = arena.allocate(ADDRESS)
+                        val deviceArg = video.device?.let { arena.allocateFrom(it) } ?: MemorySegment.NULL
+                        Libav.checkAv(Libav.avHwdeviceCtxCreate(deviceOut, hw.deviceType, deviceArg), "av_hwdevice_ctx_create(${video.codecName})")
+                        hwDeviceRef = deviceOut.get(ADDRESS, 0)
+                        hwFramesRef = Libav.avHwframeCtxAlloc(hwDeviceRef)
+                        if (hwFramesRef == MemorySegment.NULL) throw LibavException("av_hwframe_ctx_alloc returned NULL")
+                        val fctx = hwFramesRef.reinterpret(LibavAbi.BufferRef.SIZEOF)
+                            .get(ADDRESS, LibavAbi.BufferRef.DATA).reinterpret(LibavAbi.HwFramesContext.SIZEOF)
+                        fctx.set(JAVA_INT, LibavAbi.HwFramesContext.FORMAT, hw.pixFmt)
+                        fctx.set(JAVA_INT, LibavAbi.HwFramesContext.SW_FORMAT, swFrameFormat)
+                        fctx.set(JAVA_INT, LibavAbi.HwFramesContext.WIDTH, video.width)
+                        fctx.set(JAVA_INT, LibavAbi.HwFramesContext.HEIGHT, video.height)
+                        fctx.set(JAVA_INT, LibavAbi.HwFramesContext.INITIAL_POOL_SIZE, HW_FRAME_POOL_SIZE)
+                        Libav.checkAv(Libav.avHwframeCtxInit(hwFramesRef), "av_hwframe_ctx_init(${video.codecName})")
+                        vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, hw.pixFmt)
+                        // av_buffer_ref answers NULL when it cannot allocate, and
+                        // a NULL written straight into hw_frames_ctx turns an
+                        // allocation failure into a bare "no device" out of
+                        // avcodec_open2.
+                        val framesRefForCodec = Libav.avBufferRef(hwFramesRef)
+                        if (framesRefForCodec == MemorySegment.NULL) throw LibavException("av_buffer_ref(hw frames) returned NULL")
+                        vc.set(ADDRESS, LibavAbi.CodecContext.HW_FRAMES_CTX, framesRefForCodec)
+                    }
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE, 1)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE + 4, MICROS_DEN)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE, video.fps)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE + 4, 1)
+                    vc.set(JAVA_INT, LibavAbi.CodecContext.GOP_SIZE, video.fps * 2)
+                    // Say which matrix the pixels were converted with. Nothing
+                    // did, and swscale converts RGB to YUV with its BT.601
+                    // default -- so every HD file this writer produced came back
+                    // wrong, because a stream that declares nothing is read as
+                    // BT.709 at HD geometry by this decoder and by every other.
+                    // Measured on a 1280x720 solid colour: 18 of 255 off per
+                    // channel, against 1 at 64x64 where the two conventions
+                    // happen to agree. Set through the option names rather than
+                    // struct fields: these are public AVOptions, and an offset
+                    // would be one more layout assumption. Before applyOptions,
+                    // so a caller can still say otherwise.
+                    val matrix = colourTag(video.width, video.height)
+                    for ((key, value) in listOf(
+                        "colorspace" to matrix, "color_primaries" to matrix, "color_trc" to matrix,
+                        // swscale writes limited range below, so declare limited.
+                        "color_range" to "tv",
+                    )) {
+                        Libav.checkAv(
+                            Libav.avOptSet(vCtx, arena.allocateFrom(key), arena.allocateFrom(value), 0),
+                            "av_opt_set($key=$value)",
+                        )
+                    }
+                    if (video.bitRate > 0) vc.set(JAVA_LONG, LibavAbi.CodecContext.BIT_RATE, video.bitRate)
+                    if (globalHeader) vc.set(JAVA_INT, LibavAbi.CodecContext.FLAGS, vc.get(JAVA_INT, LibavAbi.CodecContext.FLAGS) or LibavAbi.AV_CODEC_FLAG_GLOBAL_HEADER)
+                    applyOptions(arena, vCtx, video.options)
+                    Libav.checkAv(Libav.avcodecOpen2(vCtx, vEncoder), "avcodec_open2(video)")
+                    vStream = newStream(fmtCtx, vCtx, MICROS_DEN)
+                    vStreamIndex = vStream.get(JAVA_INT, LibavAbi.Stream.INDEX)
                 }
-                if (hw == null) {
-                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, swFrameFormat)
-                } else {
-                    val deviceOut = arena.allocate(ADDRESS)
-                    val deviceArg = video.device?.let { arena.allocateFrom(it) } ?: MemorySegment.NULL
-                    Libav.checkAv(Libav.avHwdeviceCtxCreate(deviceOut, hw.deviceType, deviceArg), "av_hwdevice_ctx_create(${video.codecName})")
-                    hwDeviceRef = deviceOut.get(ADDRESS, 0)
-                    hwFramesRef = Libav.avHwframeCtxAlloc(hwDeviceRef)
-                    if (hwFramesRef == MemorySegment.NULL) throw LibavException("av_hwframe_ctx_alloc returned NULL")
-                    val fctx = hwFramesRef.reinterpret(LibavAbi.BufferRef.SIZEOF)
-                        .get(ADDRESS, LibavAbi.BufferRef.DATA).reinterpret(LibavAbi.HwFramesContext.SIZEOF)
-                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.FORMAT, hw.pixFmt)
-                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.SW_FORMAT, swFrameFormat)
-                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.WIDTH, video.width)
-                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.HEIGHT, video.height)
-                    fctx.set(JAVA_INT, LibavAbi.HwFramesContext.INITIAL_POOL_SIZE, HW_FRAME_POOL_SIZE)
-                    Libav.checkAv(Libav.avHwframeCtxInit(hwFramesRef), "av_hwframe_ctx_init(${video.codecName})")
-                    vc.set(JAVA_INT, LibavAbi.CodecContext.PIX_FMT, hw.pixFmt)
-                    // av_buffer_ref answers NULL when it cannot allocate, and
-                    // a NULL written straight into hw_frames_ctx turns an
-                    // allocation failure into a bare "no device" out of
-                    // avcodec_open2.
-                    val framesRefForCodec = Libav.avBufferRef(hwFramesRef)
-                    if (framesRefForCodec == MemorySegment.NULL) throw LibavException("av_buffer_ref(hw frames) returned NULL")
-                    vc.set(ADDRESS, LibavAbi.CodecContext.HW_FRAMES_CTX, framesRefForCodec)
-                }
-                vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE, 1)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.TIME_BASE + 4, MICROS_DEN)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE, video.fps)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.FRAMERATE + 4, 1)
-                vc.set(JAVA_INT, LibavAbi.CodecContext.GOP_SIZE, video.fps * 2)
-                // Say which matrix the pixels were converted with. Nothing
-                // did, and swscale converts RGB to YUV with its BT.601
-                // default -- so every HD file this writer produced came back
-                // wrong, because a stream that declares nothing is read as
-                // BT.709 at HD geometry by this decoder and by every other.
-                // Measured on a 1280x720 solid colour: 18 of 255 off per
-                // channel, against 1 at 64x64 where the two conventions
-                // happen to agree. Set through the option names rather than
-                // struct fields: these are public AVOptions, and an offset
-                // would be one more layout assumption. Before applyOptions,
-                // so a caller can still say otherwise.
-                val matrix = colourTag(video.width, video.height)
-                for ((key, value) in listOf(
-                    "colorspace" to matrix, "color_primaries" to matrix, "color_trc" to matrix,
-                    // swscale writes limited range below, so declare limited.
-                    "color_range" to "tv",
-                )) {
-                    Libav.checkAv(
-                        Libav.avOptSet(vCtx, arena.allocateFrom(key), arena.allocateFrom(value), 0),
-                        "av_opt_set($key=$value)",
-                    )
-                }
-                if (video.bitRate > 0) vc.set(JAVA_LONG, LibavAbi.CodecContext.BIT_RATE, video.bitRate)
-                if (globalHeader) vc.set(JAVA_INT, LibavAbi.CodecContext.FLAGS, vc.get(JAVA_INT, LibavAbi.CodecContext.FLAGS) or LibavAbi.AV_CODEC_FLAG_GLOBAL_HEADER)
-                applyOptions(arena, vCtx, video.options)
-                Libav.checkAv(Libav.avcodecOpen2(vCtx, vEncoder), "avcodec_open2(video)")
-                val vStream = newStream(fmtCtx, vCtx, MICROS_DEN)
-                val vStreamIndex = vStream.get(JAVA_INT, LibavAbi.Stream.INDEX)
 
                 // -- audio stream (optional) --
                 var aStream = MemorySegment.NULL
@@ -721,19 +764,22 @@ class MediaWriter private constructor(
                 }
                 Libav.checkAv(Libav.avformatWriteHeader(fmtCtx), "avformat_write_header")
 
-                vFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
                 packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
-                if (vFrame == MemorySegment.NULL || packet == MemorySegment.NULL) throw LibavException("av_frame_alloc/av_packet_alloc returned NULL")
-                vFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, swFrameFormat)
-                vFrame.set(JAVA_INT, LibavAbi.Frame.WIDTH, video.width)
-                vFrame.set(JAVA_INT, LibavAbi.Frame.HEIGHT, video.height)
-                Libav.checkAv(Libav.avFrameGetBuffer(vFrame, 0), "av_frame_get_buffer(video)")
-                if (hw != null) {
-                    hwFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
-                    if (hwFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(hw surface) returned NULL")
+                if (packet == MemorySegment.NULL) throw LibavException("av_packet_alloc returned NULL")
+                if (video != null) {
+                    vFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                    if (vFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(video) returned NULL")
+                    vFrame.set(JAVA_INT, LibavAbi.Frame.FORMAT, swFrameFormat)
+                    vFrame.set(JAVA_INT, LibavAbi.Frame.WIDTH, video.width)
+                    vFrame.set(JAVA_INT, LibavAbi.Frame.HEIGHT, video.height)
+                    Libav.checkAv(Libav.avFrameGetBuffer(vFrame, 0), "av_frame_get_buffer(video)")
+                    if (hw != null) {
+                        hwFrame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                        if (hwFrame == MemorySegment.NULL) throw LibavException("av_frame_alloc(hw surface) returned NULL")
+                    }
                 }
 
-                val videoTrack = VideoTrack(
+                val videoTrack = if (video == null) null else VideoTrack(
                     arena, vCtx, vFrame, vStreamIndex,
                     vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE), vStream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4),
                     video.width, video.height, MICROS_DEN.toLong() / video.fps,
