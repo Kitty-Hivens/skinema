@@ -18,6 +18,8 @@
 #   VPX_VERSION     libvpx tag for STATIC_DEPS (default v1.15.2)
 #   VPX_TARGET      libvpx configure --target (needed under MSYS2: x86_64-win64-gcc)
 #   DAV1D_VERSION   dav1d tag for STATIC_DEPS (default 1.5.1)
+#   SVTAV1_VERSION  SVT-AV1 tag for STATIC_DEPS (default 4.2.0)
+#   OPUS_VERSION    libopus release for STATIC_DEPS (default 1.5.2)
 #   MAC_CROSS_X64=1 cross-compile x86_64 binaries on an arm64 mac (GitHub's
 #                   Intel runners are scarce-to-dead; Apple's toolchain
 #                   cross-builds natively via -arch)
@@ -41,6 +43,8 @@ DAV1D_VERSION="${DAV1D_VERSION:-1.5.1}"
 # received the binary.
 X264_VERSION="${X264_VERSION:-b35605ace3ddf7c1a5d67a2eb553f034aef41d55}"
 X265_VERSION="${X265_VERSION:-4.1}"
+SVTAV1_VERSION="${SVTAV1_VERSION:-4.2.0}"
+OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.13.3}"
 HARFBUZZ_VERSION="${HARFBUZZ_VERSION:-10.1.0}"
 FRIBIDI_VERSION="${FRIBIDI_VERSION:-1.0.16}"
@@ -56,11 +60,15 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # section 4). Comma- or space-separated; default is the complete LGPL decode
 # set. Both the dependency builds above and the ffmpeg whitelist below gate
 # on these, so an absent feature ships neither its library nor its codecs.
-#   core    av1 vpx webp                                                  (LGPL, no subtitles, no hwaccel)
-#   decode  av1 vpx webp hwaccel subs formats enc-vaapi                   (LGPL, decode + GPU encode on Linux)
-#   full    av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc (GPL, + software encode)
-# enc-vaapi (M13) enables the LGPL hardware H.264/HEVC encoders on Linux; it
-# adds no GPL surface, so it rides the decode tier as well as full.
+#   core    av1 vpx webp                                                                        (LGPL, no subtitles, no hwaccel)
+#   decode  av1 vpx webp hwaccel subs formats enc-vaapi enc-av1 enc-opus                        (LGPL, decode + AV1/Opus/GPU encode)
+#   full    av1 vpx webp hwaccel subs formats enc-vaapi enc-av1 enc-opus enc-h264 enc-hevc      (GPL, + H.264/HEVC software encode)
+# Three encoder features carry NO GPL surface and so ride the decode tier as
+# well as full: enc-vaapi (M13) is the hardware H.264/HEVC encoder, whose codec
+# lives in the GPU driver; enc-av1 is SVT-AV1 and enc-opus is libopus, both
+# BSD. Only enc-h264/enc-hevc -- x264 and x265 -- flip --enable-gpl. So the
+# LGPL tier can WRITE AV1 video and Opus audio, and what the GPL tier buys is
+# H.264 and HEVC output specifically.
 # "formats" is the broad legacy/extended decode set -- avi/mpegts/mpeg/flv/asf/
 # dv containers; mpeg2/vc1/wmv/mpeg4/h263/vvc/realvideo/prores/... video; dts/
 # truehd/wma/mp2/realaudio/adpcm/... audio. All native (no external library),
@@ -84,8 +92,8 @@ TIER="${TIER:-}"
 tier_features() {
     case "$1" in
         core)   echo "av1 vpx webp" ;;
-        decode) echo "av1 vpx webp hwaccel subs formats enc-vaapi" ;;
-        full)   echo "av1 vpx webp hwaccel subs formats enc-vaapi enc-h264 enc-hevc" ;;
+        decode) echo "av1 vpx webp hwaccel subs formats enc-vaapi enc-av1 enc-opus" ;;
+        full)   echo "av1 vpx webp hwaccel subs formats enc-vaapi enc-av1 enc-opus enc-h264 enc-hevc" ;;
         *)      echo "build-natives: unknown TIER '$1' (core|decode|full)" >&2; exit 1 ;;
     esac
 }
@@ -104,7 +112,7 @@ FEATURES="${FEATURES//,/ }"
 has() { case " $FEATURES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 for _f in $FEATURES; do
     case "$_f" in
-        av1|vpx|webp|subs|formats|hwaccel|enc-h264|enc-hevc|enc-vaapi) ;;
+        av1|vpx|webp|subs|formats|hwaccel|enc-h264|enc-hevc|enc-vaapi|enc-av1|enc-opus) ;;
         *) echo "build-natives: unknown FEATURE '$_f'" >&2; exit 1 ;;
     esac
 done
@@ -201,6 +209,15 @@ sha_for() { # dest-file -> accepted sha256 values, empty when unpinnable
         dav1d.tar.xz)        echo 401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21 ;;
         libvpx.tar.gz)       echo 26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa ;;
         x265.tar.gz)         echo a31699c6a89806b74b0151e5e6a7df65de4b49050482fe5ebf8a4379d7af8f29 ;;
+        # Two values for the same source, the ffmpeg case again: SVT-AV1
+        # publishes no release tarball, so both hosts GENERATE an archive and
+        # the two differ in root name and gzip while carrying the same 1292
+        # files. Verified by extracting both and diffing, not assumed.
+        svtav1.tar.gz)       echo c7b13c4a84bd3751aa35fcc72be13e6875467e7c2216879251a486e5b1e4e740 \
+                                  d9cb8d5fccbed565d038ae304cb00c5610f1f62388868102ca22132e7844921b ;;
+        # One value for two hosts: xiph and the GitHub release serve the
+        # byte-identical release tarball.
+        opus.tar.gz)         echo 65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1 ;;
         freetype.tar.xz)     echo 0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289 ;;
         fribidi.tar.xz)      echo 1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c ;;
         harfbuzz.tar.xz)     echo 6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82 ;;
@@ -505,8 +522,8 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
 
     # x264 (H.264 encoder, GPL -- M12 encode bundle). Static + PIC, folded
     # into FFmpeg like dav1d/libvpx so the shipped library carries no extra
-    # runtime dependency. Autotools + nasm (already in CI), no cmake -- the
-    # cmake encoders (x265, SVT-AV1) and libopus arrive in later rounds.
+    # runtime dependency. Autotools + nasm (already in CI), no cmake, which
+    # is why it was the first of the encoders to land.
     if has enc-h264 && [ ! -f "$DEPS/lib/libx264.a" ]; then
         # Two hosts for the same commit, under one pin. VideoLAN's GitLab
         # generates its archive on demand and answers with an HTML page often
@@ -573,6 +590,82 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         ninja -C "x265_$X265_VERSION/build" install
     fi
     if has enc-hevc; then license "x265_$X265_VERSION/COPYING" "x265-COPYING"; fi
+
+    # SVT-AV1 (AV1 encoder, BSD-3-Clause plus the Alliance for Open Media
+    # patent grant -- both texts ship). cmake + nasm, static and PIC, folded
+    # into FFmpeg like x264/x265, but NOT GPL: it rides the decode tier as
+    # well as full, the argument enc-vaapi already makes.
+    #
+    # 4.x is the line FFmpeg 9.0.1's wrapper was written against -- configure
+    # asks only for SvtAv1Enc >= 0.9.0, but libsvtav1.c carries explicit
+    # SVT_AV1_CHECK_VERSION(4, 0, 0) branches, so the minimum in configure is
+    # not the version to read this from.
+    if has enc-av1 && [ ! -f "$DEPS/lib/libSvtAv1Enc.a" ]; then
+        # Two generating hosts rather than one. SVT-AV1 publishes no release
+        # tarball at all, only GitLab's on-demand archive -- the exact shape
+        # that took dav1d and x264 down mid-matrix, and the reason both of
+        # those grew a second source. GitHub carries the project as a mirror,
+        # so a second generator answers when the first will not; the archives
+        # differ in bytes and root name, and both digests are pinned.
+        fetch svtav1.tar.gz \
+            "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v$SVTAV1_VERSION/SVT-AV1-v$SVTAV1_VERSION.tar.gz" \
+            "https://codeload.github.com/AOMediaCodec/SVT-AV1/tar.gz/refs/tags/v$SVTAV1_VERSION"
+        rm -rf "SVT-AV1-v$SVTAV1_VERSION" "SVT-AV1-$SVTAV1_VERSION"
+        tar -xzf svtav1.tar.gz
+        # GitHub drops the tag's leading v from the directory it generates;
+        # GitLab keeps it. Normalised here so one path serves both, the way
+        # the ffmpeg fetch below normalises its own two roots.
+        if [ -d "SVT-AV1-$SVTAV1_VERSION" ]; then
+            mv "SVT-AV1-$SVTAV1_VERSION" "SVT-AV1-v$SVTAV1_VERSION"
+        fi
+        # LTO off: the release default would leave the static archive full of
+        # compiler IR rather than objects, which links only through a plugin
+        # the ffmpeg link is not guaranteed to use. CMAKE_INSTALL_LIBDIR=lib
+        # for the same reason meson gets --libdir=lib here -- a distribution
+        # default of lib64 would put the .a and its .pc where the guard above
+        # and PKG_CONFIG_PATH do not look.
+        cmake -G Ninja -S "SVT-AV1-v$SVTAV1_VERSION" -B "SVT-AV1-v$SVTAV1_VERSION/build" \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DSVT_AV1_LTO=OFF \
+            ${MAC_CROSS_X64:+-DCMAKE_OSX_ARCHITECTURES=x86_64}
+        ninja -C "SVT-AV1-v$SVTAV1_VERSION/build" install
+    fi
+    if has enc-av1; then
+        license "SVT-AV1-v$SVTAV1_VERSION/LICENSE.md" "SVT-AV1-LICENSE.md"
+        # The patent grant is part of the terms the binary is distributed
+        # under, not a courtesy file, so it travels with it.
+        license "SVT-AV1-v$SVTAV1_VERSION/PATENTS.md" "SVT-AV1-PATENTS.md"
+    fi
+
+    # libopus (Opus encoder, BSD-3-Clause). Autotools like x264, static and
+    # PIC, and LGPL-clean like SVT-AV1 above.
+    #
+    # This enables the encoder only. Opus DECODING already runs through
+    # FFmpeg's own native decoder, which is what the decode whitelist names,
+    # so --enable-libopus adds a second decoder that is never built: the
+    # decoder list says opus, not libopus.
+    if has enc-opus && [ ! -f "$DEPS/lib/libopus.a" ]; then
+        fetch opus.tar.gz \
+            "https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz" \
+            "https://github.com/xiph/opus/releases/download/v$OPUS_VERSION/opus-$OPUS_VERSION.tar.gz"
+        rm -rf "opus-$OPUS_VERSION"
+        tar -xzf opus.tar.gz
+        (
+            cd "opus-$OPUS_VERSION"
+            # CLANGARM64 has no gcc, as for libvpx and x264 above.
+            if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
+                export CC=clang AR=llvm-ar RANLIB=llvm-ranlib STRIP=llvm-strip
+            fi
+            ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
+                --disable-doc --disable-extra-programs \
+                ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
+            make -j"$JOBS"
+            make install
+        ) || exit 1
+    fi
+    if has enc-opus; then license "opus-$OPUS_VERSION/COPYING" "opus-COPYING"; fi
 fi
 
 if [ "${STATIC_DEPS:-}" = "1" ] && has subs; then
@@ -823,10 +916,10 @@ fi
 # playback-rate filter chain (atempo plus its abuffer/abuffersink ends).
 # Each optional feature adds its decoders/demuxers and, for av1/vpx, links
 # its external library; vp8/vp9 ride the vpx feature because the bundle
-# uses libvpx (the native decoders drop the webm alpha channel). Any
-# encoder (software x264/x265 or hardware VAAPI) pulls in the output muxers
-# and the native aac/flac encoders; only the software x264/x265 flip
-# --enable-gpl -- the VAAPI encoder lives in the driver and stays LGPL.
+# uses libvpx (the native decoders drop the webm alpha channel). Any encoder
+# at all pulls in the output muxers and the native aac/flac/pcm encoders;
+# only the software x264/x265 flip --enable-gpl -- the VAAPI encoder lives in
+# the driver, and SVT-AV1 and libopus are BSD, so those three stay LGPL.
 DEMUX="mov,matroska,gif,apng,image2,image_png_pipe,image_jpeg_pipe,ogg,mp3,flac,wav,ac3,eac3"
 DECODE="h264,hevc,mjpeg,png,apng,gif,aac,mp3,opus,vorbis,flac,ac3,eac3,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le"
 PARSE="h264,hevc,mjpeg,png,gif,aac,mpegaudio,opus,vorbis,flac,ac3"
@@ -871,6 +964,14 @@ has formats && {
 has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); GPL=(--enable-gpl); }
 has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); GPL=(--enable-gpl); }
 
+# Software AV1 and Opus encoders -- BSD, so no --enable-gpl and no GPL
+# obligation for a consumer who ships them. That is why they ride the decode
+# tier: what the GPL tier adds is H.264 and HEVC output, not "encoding".
+# Only the encoders are named: libdav1d already decodes AV1 and FFmpeg's own
+# decoder already decodes Opus, so neither library is asked to decode here.
+has enc-av1  && { LIBS+=(--enable-libsvtav1); ENC+=(libsvtav1); }
+has enc-opus && { LIBS+=(--enable-libopus); ENC+=(libopus); }
+
 # Hardware H.264/HEVC encoders (M13). The codec runs in the GPU driver
 # (Mesa/iHD for VAAPI), so these are LGPL -- they do NOT flip --enable-gpl,
 # the licence-clean route to GPU output. VAAPI is Linux-only; a silent
@@ -884,12 +985,23 @@ fi
 
 ENCFLAG=()
 MUXFLAG=()
+MUXERS=""
 if [ ${#ENC[@]} -gt 0 ]; then
     # Any encoder (software or hardware) needs the output muxers and the
     # native LGPL audio encoders; the GPL flip above is x264/x265 only.
-    ENC+=(aac flac)
+    # pcm_s16le is what a wav file is made of, and it is the sample format
+    # the writer already hands in.
+    ENC+=(aac flac pcm_s16le)
     ENCFLAG=(--enable-encoder="$(IFS=,; echo "${ENC[*]}")")
-    MUXFLAG=(--enable-muxer=mov,mp4,matroska,webm)
+    # Four A/V containers and three audio-only ones. The audio three are the
+    # containers a sound track can be written to on its own -- .opus, .flac
+    # and .wav -- where before this every output had to be one of the four,
+    # all of which expect a video stream. `ogg` is not named because nothing
+    # here would fill one that `opus` does not: it comes in anyway as the
+    # opus muxer's own dependency, and the whitelist names what the bundle is
+    # meant to produce rather than everything it ends up holding.
+    MUXERS="mov,mp4,matroska,webm,opus,flac,wav"
+    MUXFLAG=(--enable-muxer="$MUXERS")
 fi
 
 # STATIC_DEPS needs the dep prefix on the search paths: zlib ships a .pc that
@@ -985,7 +1097,7 @@ if [ -f config_components.h ]; then
         verify_enabled hwaccel "$(printf '%s\n' "${HWACCEL[@]}" | sed -n 's/^--enable-hwaccel=//p')"
     fi
     [ ${#ENC[@]} -gt 0 ] && verify_enabled encoder "$(IFS=,; echo "${ENC[*]}")"
-    [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "mov,mp4,matroska,webm"
+    [ ${#MUXFLAG[@]} -gt 0 ] && verify_enabled muxer "$MUXERS"
     if [ -n "$WHITELIST_GAPS" ]; then
         echo "build-natives: configure silently dropped:$WHITELIST_GAPS" >&2
         echo "  (the whitelist names a component this FFmpeg line does not have under that name)" >&2
