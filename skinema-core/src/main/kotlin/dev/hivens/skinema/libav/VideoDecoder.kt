@@ -617,6 +617,22 @@ class VideoDecoder private constructor(
         return true
     }
 
+    /**
+     * Never executed by any test, and that is a measured statement rather than
+     * an omission -- so do not spend another afternoon trying to reach it.
+     *
+     * Both callers fire only when swscale refuses the 16-bit setup, and no
+     * supported input makes it refuse: every real HDR stream is YUV, which is
+     * exactly the case sws_setColorspaceDetails accepts. Manufacturing the
+     * other side does not work either -- an RGB source tagged PQ loses the tag
+     * on the way into a container (ffmpeg normalises such a stream to gbr with
+     * an unknown transfer), so the HDR branch is never entered at all and the
+     * file decodes through the ordinary path.
+     *
+     * Reaching it would take a test-only injection point in the decode path.
+     * That was weighed and declined: this is a boolean latch, a message and a
+     * return, and a seam through the hot path costs more than it covers.
+     */
     private fun fallBackFromHdr(reason: String): Boolean {
         hdrFallback = true
         System.err.println("[skinema] HDR tone-mapping unavailable ($reason); playing through the SDR path")

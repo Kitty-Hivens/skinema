@@ -9,13 +9,22 @@
 #   2. A claim is edited or dropped from the table while docs/format-claims.txt
 #      keeps asserting it, leaving the join stale and the check meaningless.
 #
-# Usage: check-readme-formats.sh <manifest.txt> [README.md] [format-claims.txt]
+# The same check serves the write side: the encode surface is advertised in a
+# table of its own, and a claim about an ENCODER is exactly as capable of going
+# stale as one about a decoder. Hence the section and the floor are arguments
+# rather than constants -- one script, two tables, the same two directions.
+#
+# Usage: check-readme-formats.sh <manifest.txt> [README.md] [claims.txt] [section] [min-claims]
 set -euo pipefail
 
 MANIFEST="${1:?usage: check-readme-formats.sh <manifest.txt> [README.md] [claims.txt]}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 README="${2:-$ROOT/README.md}"
 CLAIMS="${3:-$ROOT/docs/format-claims.txt}"
+SECTION="${4:-What it plays}"
+# A truncated or emptied claims file would otherwise report success over
+# nothing, which is the failure mode this whole script exists to prevent.
+MIN_CLAIMS="${5:-60}"
 
 for f in "$MANIFEST" "$README" "$CLAIMS"; do
     [ -f "$f" ] || { echo "check-readme-formats: no such file: $f" >&2; exit 1; }
@@ -26,10 +35,14 @@ done
 # paragraph, the subtitle section -- kept matching claim texts after the table
 # was gone, so fifteen claims including every subtitle one survived deleting
 # the table outright.
-TABLE="$(awk '/^## What it plays/ {inside = 1; next}
+# Matched whole rather than by prefix: "What it plays" is a prefix of nothing
+# today, but a second heading that started with the first one's text would
+# silently read the wrong table.
+TABLE="$(awk -v want="## $SECTION" '
+              $0 == want {inside = 1; next}
               /^## / {inside = 0}
               inside && /^\|/ {print}' "$README")"
-[ -n "$TABLE" ] || { echo "check-readme-formats: found no table under '## What it plays' in $README" >&2; exit 1; }
+[ -n "$TABLE" ] || { echo "check-readme-formats: found no table under '## $SECTION' in $README" >&2; exit 1; }
 
 # The manifest is one line per component kind: "<kind> <name> <name> ...".
 # Matched by word rather than by pipeline: a `grep -q` closing the pipe early
@@ -89,9 +102,6 @@ while IFS= read -r line || [ -n "$line" ]; do
     set +f
 done < "$CLAIMS"
 
-# A truncated or emptied claims file would otherwise report success over
-# nothing, which is the failure mode this whole script exists to prevent.
-MIN_CLAIMS=60
 if [ "$claims" -lt "$MIN_CLAIMS" ]; then
     echo "check-readme-formats: only $claims claims parsed, expected at least $MIN_CLAIMS" >&2
     echo "$(basename "$CLAIMS") looks truncated; a near-empty file would pass every other check here." >&2
@@ -103,4 +113,4 @@ if [ "$missing" != 0 ] || [ "$stale" != 0 ]; then
     echo "Either the bundle lost something it advertises, or $(basename "$CLAIMS") needs updating." >&2
     exit 1
 fi
-echo "README format claims verified: $claims claims, every component present"
+echo "'$SECTION' claims verified: $claims claims, every component present"

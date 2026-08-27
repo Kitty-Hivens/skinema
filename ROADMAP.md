@@ -142,15 +142,19 @@ weighs a lot and not every consumer wants it. The always-on base is the
 core playback set (H.264/HEVC, the native audio decoders, the still images,
 the containers, the atempo chain); each tier layers features on:
 
-| Tier     | Features over the base                       | License |
-|----------|----------------------------------------------|---------|
-| `core`   | av1 vpx webp                                  | LGPL    |
-| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi | LGPL  |
-| `full`   | + enc-vaapi + enc-h264 enc-hevc (x264/x265)   | GPL     |
+| Tier     | Features over the base                                            | License |
+|----------|-------------------------------------------------------------------|---------|
+| `core`   | av1 vpx webp                                                      | LGPL    |
+| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi enc-av1 enc-opus  | LGPL    |
+| `full`   | + enc-h264 enc-hevc (x264/x265)                                   | GPL     |
 
-`enc-vaapi` (M13) is the LGPL hardware H.264/HEVC encoder -- the codec lives
-in the GPU driver, so it adds no GPL surface and rides the `decode` tier as
-well as `full`. It is Linux/VAAPI only; a no-op on the other platforms.
+Three of the five encoder features carry no GPL surface, so they ride
+`decode` as well as `full`. `enc-vaapi` (M13) is the hardware H.264/HEVC
+encoder, whose codec lives in the GPU driver; it is Linux/VAAPI only and a
+no-op elsewhere. `enc-av1` (SVT-AV1) and `enc-opus` (libopus) are BSD
+software encoders and run everywhere. So the LGPL tier can WRITE -- AV1
+video, Opus/AAC/FLAC audio, and H.264/HEVC through the GPU on Linux -- and
+what the GPL tier buys is specifically SOFTWARE H.264 and HEVC.
 
 The `formats` feature is the broad legacy/extended decode set: the avi,
 MPEG-PS/TS, flv, asf, dv and RealMedia demuxers, and the older video (MPEG-1/2,
@@ -161,13 +165,14 @@ All native FFmpeg components, so it adds no external library and stays LGPL;
 it rides decode/full and is left out of the lean core tier (the policy in #10
 generalized -- broad support is cheap once the lean consumer can opt out).
 
-A bundle stays LGPL until an `enc-*` feature pulls in GPL x264/x265, so
-`core` and `decode` are LGPL and only `full` is GPL -- the LGPL decode path
-is a first-class tier now, not "ship your own FFmpeg". enc-hevc (x265)
-ships on Linux only for the moment: cmake 4.x cannot configure x265 4.1
-(issue #22), so macOS/Windows `full` carry x264 alone. CI builds the
-3 x 5 tier-by-platform matrix; the natives module publishes each as the
-classifier `<tier>-<platform>`.
+A bundle stays LGPL until `enc-h264` or `enc-hevc` pulls in GPL x264/x265, so
+`core` and `decode` are LGPL and only `full` is GPL -- the LGPL path is a
+first-class tier now, for writing as well as reading, not "ship your own
+FFmpeg". enc-hevc (x265) ships on every platform since the source patch that
+answered issue #22 (x265 4.1 sets pre-3.5 cmake policies to OLD, which cmake
+4.x refuses; the build rewrites those lines rather than pinning an old cmake
+into three CI images). CI builds the 3 x 8 tier-by-platform matrix; the
+natives module publishes each as the classifier `<tier>-<platform>`.
 
 ## 5. Bindings
 
@@ -572,10 +577,14 @@ README once the library is usable.
   if a consumer ever scrubs a looping webp). Frameless playback takes
   the audio side's value. The demo grew a timeline: dragging scrubs
   with inexact keyframe landings, release settles with an exact seek --
-  both seek modes in their intended roles. Known edge, documented not
-  handled: nonzero start_time streams (TS captures) report positions
-  offset against the container duration; no supported consumer format
-  does this in practice.
+  both seek modes in their intended roles. The nonzero start_time edge
+  (TS captures, IPTV) was recorded here as documented-not-handled, and is
+  handled: both decoders normalize the timeline to a zero origin against
+  the CONTAINER's start_time -- the minimum across streams, so video and
+  audio cannot drift apart -- and every seek re-applies the offset before
+  asking libav (`formatStartTimeNanos`, VideoDecoder). The entry said no
+  supported format does this in practice; DVB ended that, since a
+  broadcast recording is exactly a TS capture.
 
   Audio track selection followed (same date): AudioTrack enumeration
   (language/title via av_dict_get, channels, rate, the default
@@ -817,10 +826,11 @@ README once the library is usable.
   within yuv tolerance), and a video+audio file -> libx264+aac decoded back
   through BOTH VideoDecoder and AudioDecoder (MediaWriterTest, gated on the
   loaded libav carrying the encoder, so a decode-only bundle skips).
-  PENDING: the trimmed-bundle encoder build -- the GPL flip plus
-  x264/x265/SVT-AV1/libopus in build-natives.sh (accepted 2026-06-22; the
-  bundle grows ~3x toward ~40 MB) and the README/section-10 licence rewrite
-  that ships with it -- then M13 GPU encode on the same MediaWriter.
+  The trimmed-bundle encoder build landed as M16 and the licence rewrite
+  shipped with it, so a shipped bundle runs MediaWriter rather than only a
+  full system FFmpeg. What that leaves is named in M16: SVT-AV1 and libopus
+  are still absent, so the writer's AV1 and Opus paths have no encoder to
+  reach outside a system build.
 
 - **M13 -- GPU encode (DONE, 2026-06-30).** MediaWriter drives a hardware
   encoder on the GPU without a new class: a named encoder ("h264_vaapi",
@@ -860,6 +870,34 @@ README once the library is usable.
   UNVALIDATED on a real GPU in CI (no GPU runners, issue #29); the other
   backends are a build-flag-plus-verification round each on their hardware.
 
+- **M14 -- transcode (DONE, 2026-08-20; recording NOT built).** `Transcoder`
+  joins the two halves that had existed separately -- it reads a file through
+  the decode side and writes another through `MediaWriter`. It is a class
+  here rather than a snippet in the guide because the join carries two traps
+  a consumer cannot see from outside, and both are timing. ONE ORIGIN: the
+  writer times video by the timestamp it is handed and audio by a running
+  sample count from the first sample pushed, so a source whose sound starts
+  after its picture would come out with the tracks shifted apart; the gap is
+  padded with silence. ONE CADENCE: the muxer interleaves by timestamp and
+  holds one stream's packets until the other catches up, so pushing a whole
+  track and then the other queues the first in native memory without bound --
+  both go in timestamp order, a chunk at a time, audio leading. Geometry
+  comes from the source rather than the config (this converts a file, it does
+  not resize one) and a source that changes geometry mid-stream is refused
+  rather than written into a stream opened at the first frame's size.
+  Rotation is APPLIED rather than carried, because the writer has no
+  orientation tag and a silently sideways file is the worse answer. What it
+  deliberately does NOT do is copy streams: every frame leaves the decoder as
+  RGBA and enters the encoder as RGBA, two swscale passes and a chroma
+  generation apiece. That is stated in the class and the guide rather than
+  hidden -- a caller who already has the codec they want is better served by
+  not decoding at all, and that is the thing this cannot do. `cancel()` stops
+  at the next frame and still writes the trailer, so a cancelled run leaves a
+  shorter file that plays rather than a broken one. The other half of M10's
+  fourth step, RECORDING, is not built: nothing here captures a live source,
+  and `--disable-network` plus the absent capture devices (`--disable-avdevice`)
+  mean it would be a new subsystem rather than a wiring job.
+
 - **M15 -- custom AVIO input (streaming primitive, 2026-06-23).** VideoDecoder
   gains `open(MediaSource)` beside `open(Path)`: a public `MediaSource`
   (read/seek/size) lets a consumer feed bytes -- segments, a download, memory
@@ -883,8 +921,8 @@ README once the library is usable.
   buffered/seekable source, not a forkable live one) or a single unified
   demux. That decision belongs with the streaming consumer.
 
-- **M16 -- GPL encode bundle (x264 landed; x265/SVT-AV1/libopus pending,
-  2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
+- **M16 -- GPL encode bundle (x264 and x265 landed; SVT-AV1/libopus
+  pending, 2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
   H.264 encoder (static, folded in like dav1d/libvpx -- no runtime
   dependency), the libx264/aac/flac encoders and the mov/mp4/matroska/webm
   muxers, so a SHIPPED bundle runs MediaWriter, not only a full system
@@ -895,6 +933,11 @@ README once the library is usable.
   round (and x265/SVT-AV1 add cmake to the CI image). The MediaWriter encode
   test stops skipping once the bundle carries libx264, so the natives
   acceptance suite exercises encode on metal.
+
+  x265 landed on every platform once issue #22 was answered: x265 4.1 sets
+  pre-3.5 cmake policies to OLD, which cmake 4.x refuses outright, so the
+  build patches those policy lines out of x265's own CMakeLists before
+  configuring rather than pinning an old cmake into three CI images.
 
 - **M17 -- natives on their own version line (2026-07-15).** `skinema-natives`
   stops riding the library's version and publishes as `<ffmpeg>-<revision>`
@@ -927,6 +970,53 @@ README once the library is usable.
   reason bundles change -- touches every platform and costs the same 211 MiB
   either way.
 
+- **M18 -- the LGPL tier learns to write (2026-08-27).** The licence line was
+  drawn in the wrong place. `full` was "the tier that encodes" and `decode`
+  "the tier that plays", so a consumer who needed to write a file took on GPL
+  whether or not the codec they actually wanted was GPL. Two BSD encoders move
+  the line to where it belongs: SVT-AV1 (`enc-av1`) and libopus (`enc-opus`)
+  are built static and folded in like x264, add no GPL surface, and therefore
+  ride `decode` as well as `full` -- the argument `enc-vaapi` already made in
+  M13. What `full` buys is now specifically SOFTWARE H.264 and HEVC, which is
+  what x264 and x265 are.
+
+  The tier placement was decided on a measurement rather than an estimate,
+  because the estimate was wrong: a decode bundle grows **+3.4 MiB compressed**
+  (3.2 -> 6.6 on the comparison build), +7.9 MiB unpacked, libavcodec 4.5 ->
+  12.0 MiB. The first guess had been +5 to +7 compressed.
+
+  Both dependencies are pinned from two hosts, and the two cases differ.
+  libopus publishes a release tarball that is byte-identical from xiph and from
+  the GitHub release, so one digest covers both. SVT-AV1 publishes no release
+  tarball at all -- only GitLab's on-demand archive, the same shape that took
+  dav1d and x264 down mid-matrix -- so the second source is GitHub's mirror,
+  both hosts GENERATE an archive, and the two differ in bytes and root name
+  while extracting to the same 1292 files. Both digests are recorded and the
+  directory is normalised after unpacking. FFmpeg 9.0.1's wrapper carries
+  explicit `SVT_AV1_CHECK_VERSION(4, 0, 0)` branches, so 4.x is the line it was
+  written against; configure's `>= 0.9.0` is not the version to read that from.
+
+  The muxers gained the three audio-only containers, and `MediaWriter` gained a
+  second entry point to fill them: `open(path, audio)` beside
+  `open(path, video, audio)`. An overload rather than a nullable video
+  parameter, so a writer with no streams at all cannot be asked for -- each
+  overload requires one and `open(path, null)` does not compile. `writeFrame`
+  on an audio-only writer is refused by name, the way `writeAudio` already
+  refuses on one opened without sound.
+
+  The write surface is advertised in a table of its own now and checked against
+  the bundle's manifest by the same script the read side uses, which took the
+  section and the claim floor as arguments. The reason is the one that produced
+  the read-side check: an encoder can go missing exactly as quietly as the
+  mov_text decoder did.
+
+  One lesson worth keeping, because it cost a dispatch: the feature list per
+  tier was declared in `build-natives.sh` AND in `natives.yml`. Adding the two
+  encoders to the script alone failed all eight platforms in fifteen seconds --
+  the script refuses when a FEATURES it is handed disagrees with its TIER. The
+  guard worked; the second declaration should not have existed, and the
+  workflow now passes TIER and lets the script decide.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
@@ -949,9 +1039,12 @@ without breaking changes. Not before.
 
 - ~~Core API shape~~ resolved in M1: poll-based, no coroutines in core;
   skinema-compose owns the adaptation.
-- dav1d in trimmed builds: build it ourselves or take BtbN's? (Spike does
-  not care; M3 does.) Same question now applies to libvpx, which the
-  alpha path requires.
+- ~~dav1d in trimmed builds: build it ourselves or take BtbN's?~~ settled
+  by M3 and everything after it: every source dependency is built here,
+  static, from a pinned tarball with a recorded sha256 -- dav1d and libvpx
+  included. BtbN builds no macOS at all, which decided it, and taking a
+  third party's binary would put a component in the bundle whose contents
+  no check in this repo can state.
 - ~~Windows/macOS arena + library unloading behavior on session close~~
   answered by construction, not by a platform test: every `libraryLookup`
   and both upcall stubs take `Arena.global()`, so the libraries load once

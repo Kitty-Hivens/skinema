@@ -54,22 +54,34 @@ jobs:
           # required capability above: absent, it fails the row loudly rather
           # than skipping quietly, which is what the required list is for. The
           # three run everywhere -- the Alpine containers' own ffmpeg encodes
-          # dvbsub too, which was the open question -- so these ceilings are
-          # back where they were before the feature, and read off a run rather
-          # than subtracted: 25 on the glibc and musl Linux rows, 31 on
-          # Windows, 21 on macOS.
+          # dvbsub too, which was the open question -- so those ceilings went
+          # back where they were before the feature, read off a run rather than
+          # subtracted: 25 on the glibc and musl Linux rows, 31 on Windows, 21
+          # on macOS.
+          #
+          # Then two, and exactly two, were added to each: the sink contract
+          # grew a volume pair, and the row that runs it against a REAL output
+          # line skips everywhere here for the reason every audio test does.
+          # Derived rather than measured this once, because the arithmetic is
+          # the whole of it -- two tests, one class, no runner has a device --
+          # and the next run that reads them will say so either way.
+          #
+          # 'encav1' and 'encopus' join the required list on the same argument
+          # as dvbsub, and under names of their own rather than riding
+          # 'encode': that one probes libx264, which is the GPL tier's tell,
+          # while these two are BSD and ride decode as well.
           - os: ubuntu-latest
             platform: linux-x64
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 25
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-arm64
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 25
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 27
           - os: windows-latest
             platform: windows-x64
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 31
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 33
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -77,8 +89,8 @@ jobs:
           # cannot tell a self-contained bundle from one leaning on the runner.
           - os: windows-11-arm
             platform: windows-arm64
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 31
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 33
           # Twenty-one, and every one of them named, re-counted from the run:
           # nine audio suites needing a real output line (as everywhere else)
           # and the mastered clock's pacing test; six hardware (four VAAPI-only
@@ -109,9 +121,9 @@ jobs:
           # machine decodes on the GPU, and this one does not.
           - os: macos-14
             platform: macos-arm64
-            caps: decode,subs,dvbsub,webp,encode,formats
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             hwaccel: "1"
-            maxSkipped: 21
+            maxSkipped: 23
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -121,13 +133,13 @@ jobs:
           - os: ubuntu-latest
             platform: linux-musl-x64
             libc: musl
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 25
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             libc: musl
-            caps: decode,subs,dvbsub,webp,encode,formats
-            maxSkipped: 25
+            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            maxSkipped: 27
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
@@ -248,6 +260,10 @@ jobs:
         run: |
           bash tools/check-readme-formats.sh libav-bundle/manifest.txt
           bash tools/check-readme-formats.sh libav-bundle/manifest.txt docs/guide/formats-and-behavior.md
+          # And the write side, which had no such join at all until the encode
+          # surface grew past one codec. Its own claims file and its own floor:
+          # thirteen claims, not sixty.
+          bash tools/check-readme-formats.sh libav-bundle/manifest.txt README.md docs/encode-claims.txt "What it writes" 12
 
       - name: Point skinema at the bundle under test
         if: matrix.libc != 'musl'

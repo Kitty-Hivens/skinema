@@ -223,6 +223,87 @@ abstract class PcmSinkContract {
         assertTrue(!writer.isAlive, "the writer must be gone")
     }
 
+    /**
+     * Volume is best-effort by contract -- not every line exposes a gain --
+     * but "best effort" is about what it achieves, never about whether it
+     * survives the call. Out-of-range values are clamped rather than
+     * rejected, and the call is legal before the device is open and after it
+     * is closed, because it arrives from whatever thread the consumer uses
+     * and at whatever moment.
+     *
+     * Written because nothing exercised the real line's gain path at all:
+     * every setVolume in this suite ran against a double, and all three
+     * doubles implement it as a no-op, so the dB conversion and the
+     * control-support probe behind it had never executed anywhere.
+     */
+    @Test
+    fun `volume is accepted at any value and leaves the device playing`() {
+        val sink = newSink()
+        sink.setVolume(0.5f)
+        sink.open(sampleRate)
+        for (v in listOf(0f, 0.25f, 1f, -1f, 2f, Float.NaN)) sink.setVolume(v)
+
+        // Surviving the call is the weaker half, and on its own it is nearly
+        // unfalsifiable -- the only way to fail is to throw. The half that
+        // has teeth is that the device is still playing afterwards: a
+        // setVolume that reached for the line's gain by stopping it, or that
+        // flushed to apply a change, would leave a consumer's UI slider
+        // silently pausing the sound.
+        writeHalfSecond(sink)
+        advance(sink, halfSecondFrames())
+        val before = sink.framePosition()
+        sink.setVolume(0.3f)
+        writeHalfSecond(sink)
+        advance(sink, halfSecondFrames())
+        assertTrue(
+            sink.framePosition() > before,
+            "the playhead must keep moving across a volume change, was $before then ${sink.framePosition()}",
+        )
+
+        sink.close()
+        sink.setVolume(0.5f)
+    }
+
+    /**
+     * And it must not wait for a write to finish.
+     *
+     * Every clock reader in the player reaches the device through this sink,
+     * and a consumer setting volume from its UI thread is the ordinary case;
+     * a setVolume that parked behind a blocking write would hold that thread
+     * for the length of the device buffer. The bound here is deliberately
+     * enormous -- this asserts that the call RETURNS, not that it is quick,
+     * because how quick is the scheduler's business and not this suite's.
+     */
+    @Test
+    fun `volume does not wait for a write in flight`() {
+        val sink = newSink()
+        sink.open(sampleRate)
+        sink.stop()
+
+        val entered = CountDownLatch(1)
+        val writer = Thread({
+            entered.countDown()
+            runCatching {
+                val huge = frames(sampleRate * 10)
+                sink.write(huge, 0, huge.size)
+            }
+        }, "contract-volume-writer")
+        writer.isDaemon = true
+        writer.start()
+        assertTrue(entered.await(2, TimeUnit.SECONDS), "the writer thread must start")
+        Thread.sleep(500) // let it fill the buffer and park
+
+        val done = CountDownLatch(1)
+        val setter = Thread({ sink.setVolume(0.3f); done.countDown() }, "contract-volume-setter")
+        setter.isDaemon = true
+        setter.start()
+        val returned = done.await(5, TimeUnit.SECONDS)
+        sink.close()
+        writer.join(1_000)
+        setter.join(1_000)
+        assertTrue(returned, "setVolume must not park behind a blocking write")
+    }
+
     @Test
     fun `close is idempotent`() {
         val sink = newSink()
