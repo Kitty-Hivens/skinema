@@ -305,7 +305,7 @@ jobs:
           # And the write side, which had no such join at all until the encode
           # surface grew past one codec. Its own claims file and its own floor:
           # thirteen claims, not sixty.
-          bash tools/check-readme-formats.sh libav-bundle/manifest.txt README.md docs/encode-claims.txt "What it writes" 12
+          bash tools/check-readme-formats.sh libav-bundle/manifest.txt README.md docs/encode-claims.txt "What it writes" 13
 
       - name: Point skinema at the bundle under test
         if: matrix.libc != 'musl'
@@ -354,7 +354,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-${{ matrix.platform }}
+          # The tier belongs in the name now that two rows share a platform:
+          # both linux-x64 jobs uploaded under one name, and while the upload
+          # allows it, the pair is then impossible to tell apart.
+          name: test-results-${{ matrix.platform }}-${{ matrix.tier }}
           path: "**/build/test-results/test/*.xml"
           if-no-files-found: warn
           retention-days: 14
