@@ -514,9 +514,24 @@ class VideoPlayer internal constructor(
      */
     fun stepBackward() = submit(Command.StepBackward)
 
-    /** Linear 0..1 volume; no-op for silent playback. */
+    /**
+     * Linear 0..1 volume; no-op for silent playback.
+     *
+     * Clamped here rather than trusted, and NaN refused outright, because the
+     * value does not stop at this library: [dev.hivens.skinema.audio.PcmSink]
+     * is a documented seam and a consumer's implementation multiplies samples
+     * by whatever arrives. The bundled sink clamps for itself, which is why
+     * this went unseen -- the defect only appears through the seam.
+     *
+     * NaN is refused rather than clamped for the reason [setRate] gives:
+     * coerceIn does not stop it, since every comparison with NaN is false. It
+     * reaches a gain control that accepts it without complaint, and the line
+     * then scales every sample by NaN -- silence, until some later call
+     * happens to set a real number.
+     */
     fun setVolume(volume: Float) {
-        audioPipeline?.setVolume(volume)
+        if (volume.isNaN()) return
+        audioPipeline?.setVolume(volume.coerceIn(0f, 1f))
     }
 
     /** Playback speed; 1.0 until [setRate] changes it. */

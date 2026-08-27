@@ -276,7 +276,10 @@ class MediaWriterTest {
         val ext = when (codec) {
             "libopus" -> "opus"
             "flac" -> "flac"
-            else -> "m4a"
+            // mp4 rather than m4a: .m4a is claimed only by the ipod muxer, which
+            // the whitelist does not carry, so the fallback would have failed
+            // the open rather than skipping.
+            else -> "mp4"
         }
         val out = dir.resolve("sound-only.$ext")
 

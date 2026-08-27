@@ -1667,6 +1667,38 @@ class VideoPlayerTest {
      * it decodes, while a seek commits a preview and a landing back to back
      * and at depth 1 the landing must wait out the preview's pop.
      */
+    /**
+     * What reaches a consumer's own sink through the documented seam.
+     *
+     * The bundled sink clamps for itself, so nothing here was visibly wrong --
+     * and that is exactly why it went unseen: the defect only appears through
+     * PcmSink, where a consumer's implementation multiplies samples by whatever
+     * arrives. NaN is the sharp case. coerceIn does not stop it (every
+     * comparison with NaN is false), a gain control accepts it without
+     * complaint, and the line then scales every sample by NaN -- silence, until
+     * some later call happens to pass a real number.
+     */
+    @Test
+    fun `volume reaching a consumer sink is finite and within range`() {
+        Fixtures.assumeDecodeEnvironment()
+        val tone = Fixtures.generate(
+            dir.resolve("volume-seam.flac"),
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
+        )
+        val seen = java.util.Collections.synchronizedList(mutableListOf<Float>())
+        val recording = object : PcmSink by FakePcmSink() {
+            override fun setVolume(volume: Float) {
+                seen += volume
+            }
+        }
+        VideoPlayer(tone, loop = false, audio = true, sink = recording).use { player ->
+            for (v in listOf(0.5f, Float.NaN, 5f, -1f, Float.POSITIVE_INFINITY, 1f)) player.setVolume(v)
+        }
+        assertTrue(seen.isNotEmpty(), "the seam must have been reached at all")
+        val bad = seen.filter { it.isNaN() || it < 0f || it > 1f }
+        assertTrue(bad.isEmpty(), "a consumer sink must never see $bad")
+    }
+
     @Test
     fun `a pacer that dies fails the player instead of parking the decode thread`() {
         val inner = PlaybackClock()

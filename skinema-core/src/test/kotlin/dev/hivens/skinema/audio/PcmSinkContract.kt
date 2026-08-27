@@ -226,10 +226,11 @@ abstract class PcmSinkContract {
     /**
      * Volume is best-effort by contract -- not every line exposes a gain --
      * but "best effort" is about what it achieves, never about whether it
-     * survives the call. Out-of-range values are clamped rather than
-     * rejected, and the call is legal before the device is open and after it
-     * is closed, because it arrives from whatever thread the consumer uses
-     * and at whatever moment.
+     * survives the call. Out-of-range values are clamped, NaN is refused
+     * outright -- clamping cannot catch it, since every comparison with NaN is
+     * false -- and the call is legal before the device is open and after it is
+     * closed, because it arrives from whatever thread the consumer uses and at
+     * whatever moment.
      *
      * Written because nothing exercised the real line's gain path at all:
      * every setVolume in this suite ran against a double, and all three
