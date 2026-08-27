@@ -359,8 +359,8 @@ README once the library is usable.
   vp8/vp9 decoders silently drop the webm alpha side-channel; the decoder
   swaps to libvpx for those streams (see `pickDecoder`), so trimmed builds
   must carry libvpx.
-- **M2 -- skiko + compose: modules DONE (2026-06-10); Nexira wiring
-  pending.** VideoFrameImage raster-copies a frame into a Skia image and
+- **M2 -- skiko + compose: DONE (2026-06-10); the consumer wired it in
+  2026-08.** VideoFrameImage raster-copies a frame into a Skia image and
   closes the previous one (straight/UNPREMUL alpha); deliberately
   core-independent -- it takes width/height/bytes, so skinema-compose is
   what ties core and skiko together. VideoSurface pumps frames on
@@ -796,7 +796,7 @@ README once the library is usable.
   like fontconfig). NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are
   deferred.
 
-- **M12 -- software encode + mux (video + audio DONE; bundle pending, 2026-06-22).**
+- **M12 -- software encode + mux (DONE, 2026-06-22; the bundle followed in M16/M18).**
   The push-side inverse of the decode pipeline. `MediaWriter`
   (dev.hivens.skinema.encode) takes a `VideoEncodeConfig` (encoder name,
   geometry, fps, bitrate, private options), opens the muxer inferred from the
@@ -921,8 +921,7 @@ README once the library is usable.
   buffered/seekable source, not a forkable live one) or a single unified
   demux. That decision belongs with the streaming consumer.
 
-- **M16 -- GPL encode bundle (x264 and x265 landed; SVT-AV1/libopus
-  pending, 2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
+- **M16 -- GPL encode bundle (DONE; the series closed in M18, 2026-06-23).** The trimmed natives flip to `--enable-gpl` and gain the x264
   H.264 encoder (static, folded in like dav1d/libvpx -- no runtime
   dependency), the libx264/aac/flac encoders and the mov/mp4/matroska/webm
   muxers, so a SHIPPED bundle runs MediaWriter, not only a full system
@@ -1067,8 +1066,25 @@ without breaking changes. Not before.
   starvation guard surfaces one per 150 ms, so a chase costs bare
   decode and an overloaded machine degrades to a slideshow instead of
   a freeze.
-- Whether Nexira's existing background "animated" path (Coil) migrates to
-  skinema or stays separate until skinema proves itself.
+- ~~Whether Nexira's existing background "animated" path (Coil) migrates to
+  skinema or stays separate until skinema proves itself~~ settled by the
+  consumer rather than by this file, and settled the way it hoped: the two
+  libraries split by whether the picture moves. Coil keeps static images --
+  it fetches over the network and decodes through Skia, which is what it is
+  good at -- and everything that moves goes through skinema, which is stated
+  in the consumer's own build file. What forced the split is not a
+  preference: `coil-gif` is Android-only and does not resolve on desktop at
+  all, so there was no animated path in Coil to keep.
+
+  It is a normal published dependency, not a source include: `skinema-compose`
+  and `skinema-skiko` at 0.7.0, `skinema-natives` at 8.1.1-1, and the `decode`
+  tier -- the same one M18 taught to write. Only the HOST classifier ships,
+  because bundling all of them put ~35 MB of other platforms' libraries into
+  every package. Eleven files use it, audio among them.
+
+  That closes the first two clauses of the adoption bar below: on Central with
+  bundled natives for its platforms, and adopted as an artifact. The third --
+  a milestone without breaking changes -- is the one still running.
 - HDR: PQ and HLG are tone-mapped to SDR in software on the RGBA path
   (ToneMap.kt) -- detected by color_trc, swscaled to 16-bit RGBA, then
   inverse-EOTF -> extended-Reinhard knee against BT.2408 diffuse white
