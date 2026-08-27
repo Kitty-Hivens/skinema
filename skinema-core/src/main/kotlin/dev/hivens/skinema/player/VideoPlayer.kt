@@ -1326,6 +1326,27 @@ class VideoPlayer internal constructor(
                 // VLC and Media3 all agree on the rule this now follows --
                 // the last picture stays up, the sound plays out, and the lap
                 // turns when the FILE ends.
+                // With nothing left anywhere, the timeline still has to move to
+                // where the press asked. It used to be left where the press came
+                // FROM: neither side sets it in this case -- the video branch
+                // does not touch the clock, the audio side's crop returns
+                // nothing and it detaches to wall time without one, and
+                // finishLanding only lands a pts of zero or more. The EOF path
+                // below then waits out awaitLapPlayedOut against that stale
+                // reading, at wall speed.
+                //
+                // Measured on a looping 6 s file seeked past its end from 0.7 s:
+                // the picture stood still for 5.3 s with the position crawling
+                // up to 5989 ms and the state reporting Playing the whole way.
+                // On an hour-long background that is most of an hour.
+                //
+                // This changes none of the rules above -- the picture stays up,
+                // and where there is sound left the audio side still owns the
+                // clock and is left alone. It only stops the lap being replayed
+                // in real time before it is allowed to turn.
+                if (audioPipeline?.hasSoundLeft != true) {
+                    durationNanos?.let { clock.seek(minOf(targetNanos, it)) }
+                }
                 finishSeek(State.Playing)
                 eofPending = true
                 // Only the Playing arm of the decode loop ever consumes that

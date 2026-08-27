@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -286,6 +287,63 @@ class VideoPlayerTest {
             )
             Thread.sleep(300)
             assertEquals(at, player.positionNanos(), "the timeline must not run on past the end")
+        }
+    }
+
+    /**
+     * The same press on a LOOPING player, which is a different path and had a
+     * different defect: the lap turned, but only after replaying the rest of
+     * the file in real time.
+     *
+     * Nothing set the clock in that case. The video branch that finds no frame
+     * does not touch it, the audio side's crop comes back empty and it detaches
+     * to wall time without setting one, and the landing handshake only lands a
+     * pts of zero or more. So the EOF path waited out the lap against a reading
+     * left where the press came FROM -- at wall speed, with the picture frozen
+     * on the preview frame and the state reporting Playing throughout. Measured
+     * before the fix on this fixture: 5.3 seconds of stillness, position
+     * crawling to 5989 ms.
+     *
+     * The bar is a fraction of the DURATION rather than a millisecond count,
+     * because the quantity the defect adds is the file's own length replayed.
+     * The scheduler contributes milliseconds to this; the defect contributed
+     * seconds, so half the duration separates the two with room on both sides.
+     */
+    @Test
+    fun `a looping player seeked past the end wraps without replaying the file`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Its own fixture rather than silent(), and the difference is the
+        // whole scenario: silent() encodes at 10 fps on x264's default GOP,
+        // which puts ONE keyframe in the file. A seek past the end then lands
+        // its preview on frame zero, lapEndNanos collapses to almost nothing,
+        // and the wait it is supposed to measure is over before it starts --
+        // the broken code passed this test until the fixture grew keyframes.
+        // Twelve-frame GOPs at 25 fps put one near the end, which is what
+        // makes the lap's declared end the file's own duration.
+        val video = Fixtures.generate(
+            dir.resolve("past-end-loop.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=96x64:rate=25", "-t", "6",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-g", "12", "-an",
+        )
+        VideoPlayer(video, loop = true, audio = false).use { player ->
+            assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
+            val duration = assertNotNull(player.durationNanos, "the fixture must declare a duration")
+            Thread.sleep(700)
+            val before = player.positionNanos()
+            assertTrue(before < duration / 2, "the press must come from well short of the end, was ${before}ns")
+
+            player.seek(duration + 1_000_000_000L)
+            // The lap turning is the observable: the timeline goes BACKWARD,
+            // which on a looping player only a wrap does.
+            val wrapped = awaitTrue(deadlineMs = duration / 2_000_000) {
+                player.acquireFrame()
+                player.positionNanos() < before
+            }
+            assertTrue(
+                wrapped,
+                "the lap must turn without walking the rest of the file out, " +
+                    "position ${player.positionNanos()}ns after seeking past ${duration}ns",
+            )
         }
     }
 
