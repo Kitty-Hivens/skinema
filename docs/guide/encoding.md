@@ -6,8 +6,13 @@ encodes and muxes them into a file. Same bindings, same fail-closed
 discipline -- any libav refusal throws `LibavException`, and `close()`
 still releases everything.
 
-The encoders live in the `full` native tier. `core` and `decode` carry
-none, so a bundle check belongs in your build, not at runtime.
+Which encoders you get is a property of the native tier. `core` carries
+none. `decode` carries every encoder that adds no GPL surface -- AV1
+(`libsvtav1`), Opus (`libopus`), AAC and FLAC, plus `h264_vaapi` and
+`hevc_vaapi` on Linux, where the codec runs in the GPU driver. `full` adds
+`libx264` and `libx265`, the software H.264 and HEVC encoders, and is GPL
+because they are. Pick the tier for what you need to write; a missing
+encoder is refused by name when you open the writer.
 
 ```kotlin
 MediaWriter.open(
@@ -21,7 +26,23 @@ MediaWriter.open(
 }
 ```
 
-The muxer is inferred from the extension: mp4/mov, mkv and webm.
+The muxer is inferred from the extension: mp4/mov, mkv and webm for
+pictures, and `.opus`, `.flac` and `.wav` for sound on its own.
+
+Sound on its own is a second `open`:
+
+```kotlin
+MediaWriter.open(Path.of("out.opus"), AudioEncodeConfig("libopus", 48_000)).use { writer ->
+    writer.writeAudio(pcm)      // interleaved S16LE stereo
+    writer.finish()
+}
+```
+
+Two entries rather than a nullable video parameter, so a writer with no
+streams at all cannot be asked for. `writeFrame` on an audio-only writer
+is refused by name, the way `writeAudio` already refuses on one opened
+without sound. An audio-only mp4 or mkv is equally legal -- the
+extension picks the container, not the number of streams.
 
 ## Configuration
 

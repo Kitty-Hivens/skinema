@@ -18,6 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * Encode acceptance: push synthetic RGBA frames through [MediaWriter] and
@@ -252,6 +253,111 @@ class MediaWriterTest {
         }
         // A run that silently matched nothing would pass on any code at all.
         assertTrue(ran.size >= 2, "too few encoders present to mean anything, ran $ran")
+    }
+
+    /**
+     * A file with sound and no picture, which is what the audio-only
+     * containers exist for and what nothing here could produce until the
+     * writer grew a second entry point.
+     *
+     * Asserted on both halves, because either alone is satisfied by the old
+     * behaviour: the sound has to decode back, AND the file must carry no
+     * video stream. A writer that quietly kept a video track would pass the
+     * first assertion with an empty picture nobody asked for.
+     */
+    @Test
+    fun `an audio-only writer produces a file with sound and no picture`() {
+        Fixtures.assumeDecodeEnvironment()
+        val codec = listOf("libopus", "flac", "aac").firstOrNull { Fixtures.libraryHasEncoder(it) }
+            ?: return
+        val rate = 48000
+        // The container follows the codec: Opus in Ogg, FLAC native, AAC in
+        // mp4 -- each the ordinary home for a track of that kind.
+        val ext = when (codec) {
+            "libopus" -> "opus"
+            "flac" -> "flac"
+            else -> "m4a"
+        }
+        val out = dir.resolve("sound-only.$ext")
+
+        MediaWriter.open(out, AudioEncodeConfig(codec, rate)).use { writer ->
+            val chunk = ByteArray(rate / 10 * 4)
+            repeat(10) { writer.writeAudio(chunk) }
+            writer.finish()
+        }
+
+        assertTrue(Files.size(out) > 0, "the audio-only file must not be empty")
+        val decoded = AudioDecoder.openOrNull(out)
+        assertNotNull(decoded, "$codec produced no decodable audio stream")
+        decoded.use { assertNotNull(it.nextChunk(), "$codec produced a stream with no samples") }
+        // No picture: opening it for video is refused, the same answer the
+        // decode side already gives a file whose only video stream is a
+        // cover.
+        assertFailsWith<LibavException>("a file written without video must not open as video") {
+            VideoDecoder.open(out).close()
+        }
+    }
+
+    /** The other half of the split: asking an audio-only writer for a frame. */
+    @Test
+    fun `writeFrame on an audio-only writer is refused by name`() {
+        Fixtures.assumeDecodeEnvironment()
+        val codec = listOf("libopus", "flac", "aac").firstOrNull { Fixtures.libraryHasEncoder(it) }
+            ?: return
+        MediaWriter.open(dir.resolve("refuse.mkv"), AudioEncodeConfig(codec, 48000)).use { writer ->
+            // The message matters, not the type: without the guard this
+            // reaches a null video track and arrives as an NPE from deeper
+            // in, which says nothing about what the caller did wrong.
+            assertEquals(
+                "this MediaWriter has no video stream",
+                assertFailsWith<LibavException> { writer.writeFrame(solidGreen(64, 64), 0) }.message,
+            )
+        }
+    }
+
+    /**
+     * The two encoders the bundle gained with the LGPL encode tier. Both are
+     * skipped where the loaded library lacks them, so this asserts over what
+     * the runner actually carries -- and against a bundle that has them, it
+     * is the only thing here that proves they encode rather than merely
+     * appearing in a manifest.
+     */
+    @Test
+    fun `the AV1 encoder round-trips through a file that decodes back`() {
+        Fixtures.assumeLibraryEncoder("libsvtav1")
+        // A round trip needs BOTH ends, and gating on the encoder alone is
+        // how this failed rather than skipped on a bundle carrying one and
+        // not the other -- measured against exactly such a build, where the
+        // file encoded and then had nothing to read it. The tiers that ship
+        // carry both; a custom FEATURES set need not.
+        assumeTrue(
+            Fixtures.libraryHasDecoder("libdav1d") || Fixtures.libraryHasDecoder("av1"),
+            "the bundle encodes AV1 but cannot decode it back -- skipping the round trip",
+        )
+        val w = 64
+        val h = 64
+        val fps = 10
+        val frames = 10
+        val out = dir.resolve("av1.mkv")
+
+        MediaWriter.open(
+            out,
+            // SVT-AV1's fastest preset: this asserts that the encoder runs at
+            // all, and its slower presets cost seconds per frame.
+            VideoEncodeConfig("libsvtav1", w, h, fps, options = mapOf("preset" to "12")),
+        ).use { writer ->
+            repeat(frames) { i -> writer.writeFrame(solidGreen(w, h), i * 1_000_000_000L / fps) }
+            writer.finish()
+        }
+
+        assertTrue(Files.size(out) > 0, "the AV1 file must not be empty")
+        VideoDecoder.open(out).use { decoder ->
+            val decoded = generateSequence { decoder.nextFrame() }.toList()
+            assertEquals(frames, decoded.size, "every pushed frame must come back out of AV1")
+            val first = assertNotNull(decoded.firstOrNull())
+            assertEquals(w, first.width, "the AV1 file must keep its width")
+            assertEquals(h, first.height, "the AV1 file must keep its height")
+        }
     }
 
     @Test
