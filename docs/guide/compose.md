@@ -139,8 +139,14 @@ holds a strong reference, so the images are neither freed nor collectable,
 and a heap profiler shows nothing. Measured on a caller that never
 reclaimed: two hundred 1080p frames took resident memory from 250 MB to
 1796 MB, and one `reclaim` put it back to 245. `VideoFrameImage` therefore
-says so on stderr once the backlog passes a second of frames, and `pending`
-is readable at any time if you would rather watch it yourself.
+says so on stderr, once, if a backlog builds and `reclaim` has never been
+called at all.
+
+That last clause is the whole condition, and it is deliberately not a size or
+a rate. A correct drawer does fall behind -- a hitch, a resize, a collection
+pause -- and at 240 frames a second a quarter of one is sixty images, so
+judging by the depth would warn exactly the callers doing it right. Watch
+`pending` yourself if that case is the one you care about.
 
 `update` answers `null` once `close` has run, which is what a raster
 already in flight when the surface goes away comes back with.

@@ -125,5 +125,22 @@ class VideoFrameImageTest {
             assertEquals(0, img.pending, "a drained backlog must stay empty")
             assertFalse(img.warnedAboutBacklog, "a caller that reclaims must not be warned")
         }
+
+        // And the case that decides the condition: a correct caller that falls
+        // a long way behind. A hitch, a resize, a collection pause -- at 240
+        // frames a second, a quarter of a second of any of them is sixty
+        // images. Judging the backlog by its size would fire here, at a caller
+        // doing it right, which is the failure this whole warning exists to
+        // avoid causing.
+        VideoFrameImage().use { img ->
+            img.update(w, h, rgba)
+            img.reclaim()
+            repeat(300) { img.update(w, h, rgba) }
+            assertTrue(img.pending > 200, "the backlog must be deep for this to mean anything")
+            assertFalse(
+                img.warnedAboutBacklog,
+                "a caller that reclaims and merely falls behind must not be warned",
+            )
+        }
     }
 }
