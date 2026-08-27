@@ -664,11 +664,25 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
         (
             cd "opus-$OPUS_VERSION"
             # CLANGARM64 has no gcc, as for libvpx and x264 above.
+            OPUS_FLAGS=""
             if [ "$HOST_OS" = windows ] && [ "$HOST_ARCH" = arm64 ]; then
                 export CC=clang AR=llvm-ar RANLIB=llvm-ranlib STRIP=llvm-strip
+                # opus turns ARM assembly on and then needs a way to ask the
+                # CPU what it supports at run time. It knows how on Linux
+                # (getauxval), macOS (sysctl) and MSVC-style Windows, and not
+                # on this combination -- MinGW on Windows-on-ARM -- where it
+                # stops at "no CPU detection method available for" rather than
+                # falling back. Measured: the whole tier failed here and
+                # nowhere else.
+                #
+                # Detection is what is dropped, not the optimisations. NEON is
+                # part of the ARMv8-A baseline, so on aarch64 there is nothing
+                # to detect: every CPU that can run this binary has it, and
+                # the asm compiles in unconditionally.
+                OPUS_FLAGS="--disable-rtcd"
             fi
             ./configure --prefix="$DEPS" --disable-shared --enable-static --with-pic \
-                --disable-doc --disable-extra-programs \
+                --disable-doc --disable-extra-programs $OPUS_FLAGS \
                 ${MAC_CROSS_X64:+--host=x86_64-apple-darwin}
             make -j"$JOBS"
             make install
