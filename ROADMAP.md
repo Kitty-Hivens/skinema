@@ -970,6 +970,53 @@ README once the library is usable.
   reason bundles change -- touches every platform and costs the same 211 MiB
   either way.
 
+- **M18 -- the LGPL tier learns to write (2026-08-27).** The licence line was
+  drawn in the wrong place. `full` was "the tier that encodes" and `decode`
+  "the tier that plays", so a consumer who needed to write a file took on GPL
+  whether or not the codec they actually wanted was GPL. Two BSD encoders move
+  the line to where it belongs: SVT-AV1 (`enc-av1`) and libopus (`enc-opus`)
+  are built static and folded in like x264, add no GPL surface, and therefore
+  ride `decode` as well as `full` -- the argument `enc-vaapi` already made in
+  M13. What `full` buys is now specifically SOFTWARE H.264 and HEVC, which is
+  what x264 and x265 are.
+
+  The tier placement was decided on a measurement rather than an estimate,
+  because the estimate was wrong: a decode bundle grows **+3.4 MiB compressed**
+  (3.2 -> 6.6 on the comparison build), +7.9 MiB unpacked, libavcodec 4.5 ->
+  12.0 MiB. The first guess had been +5 to +7 compressed.
+
+  Both dependencies are pinned from two hosts, and the two cases differ.
+  libopus publishes a release tarball that is byte-identical from xiph and from
+  the GitHub release, so one digest covers both. SVT-AV1 publishes no release
+  tarball at all -- only GitLab's on-demand archive, the same shape that took
+  dav1d and x264 down mid-matrix -- so the second source is GitHub's mirror,
+  both hosts GENERATE an archive, and the two differ in bytes and root name
+  while extracting to the same 1292 files. Both digests are recorded and the
+  directory is normalised after unpacking. FFmpeg 9.0.1's wrapper carries
+  explicit `SVT_AV1_CHECK_VERSION(4, 0, 0)` branches, so 4.x is the line it was
+  written against; configure's `>= 0.9.0` is not the version to read that from.
+
+  The muxers gained the three audio-only containers, and `MediaWriter` gained a
+  second entry point to fill them: `open(path, audio)` beside
+  `open(path, video, audio)`. An overload rather than a nullable video
+  parameter, so a writer with no streams at all cannot be asked for -- each
+  overload requires one and `open(path, null)` does not compile. `writeFrame`
+  on an audio-only writer is refused by name, the way `writeAudio` already
+  refuses on one opened without sound.
+
+  The write surface is advertised in a table of its own now and checked against
+  the bundle's manifest by the same script the read side uses, which took the
+  section and the claim floor as arguments. The reason is the one that produced
+  the read-side check: an encoder can go missing exactly as quietly as the
+  mov_text decoder did.
+
+  One lesson worth keeping, because it cost a dispatch: the feature list per
+  tier was declared in `build-natives.sh` AND in `natives.yml`. Adding the two
+  encoders to the script alone failed all eight platforms in fifteen seconds --
+  the script refuses when a FEATURES it is handed disagrees with its TIER. The
+  guard worked; the second declaration should not have existed, and the
+  workflow now passes TIER and lets the script decide.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
