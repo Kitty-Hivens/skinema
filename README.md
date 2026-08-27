@@ -71,8 +71,8 @@ license:
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
 | `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
-| `decode` | core + GPU decode + subtitles + the broad legacy/extended format set; on Linux also GPU H.264/HEVC encode, AAC/FLAC encode and the mp4/mkv/webm muxers | LGPL |
-| `full`   | decode + H.264/HEVC software encode                                | GPL     |
+| `decode` | core + GPU decode + subtitles + the broad legacy/extended format set; and writing -- AV1 video, Opus/AAC/FLAC audio, the mp4/mkv/webm containers and the audio-only .opus/.flac/.wav ones, plus GPU H.264/HEVC encode on Linux | LGPL |
+| `full`   | decode + H.264 and HEVC **software** encode (x264/x265)             | GPL     |
 
 `core` is the lean tier -- the modern codecs only, no subtitles, no GPU
 decode -- for apps that just play current video. It is also the portable one:
@@ -81,9 +81,12 @@ container and on a distribution that keeps no libraries at the usual paths.
 The desktop tiers carry GPU decode, which means they need libva alongside
 fontconfig. `decode` (used above) is the complete LGPL
 player: it adds the libass subtitle stack and the broad `formats` set (the
-legacy and broadcast containers and codecs in "What it plays" below). `full`
-adds software encode and is GPL because it bundles x264/x265; HEVC encode
-ships everywhere since the x265 source patch (issue #22). On first use the jars unpack to a per-user cache. Without a
+legacy and broadcast containers and codecs in "What it plays" below). It is
+also the complete LGPL WRITER -- SVT-AV1 and libopus are BSD, so AV1 video
+and Opus audio come out of a bundle carrying no GPL at all. What `full` adds
+is software H.264 and HEVC specifically, and that is what makes it GPL,
+since x264 and x265 are; HEVC encode ships everywhere since the x265 source
+patch (issue #22). On first use the jars unpack to a per-user cache. Without a
 natives jar, skinema looks for matching system libraries -- fine for
 development, not what you ship.
 
@@ -224,10 +227,12 @@ maintainer's discretion.
 ## License
 
 skinema itself (core, skiko, compose) is Apache-2.0. The natives bundle's
-license is set by its tier (see Dependencies): the `core` and `decode` tiers
-carry no encoders and are LGPL; the `full` tier adds the x264/x265 software
-encoders, which are GPL, so its FFmpeg build is configured `--enable-gpl` and
-its libraries are GPL. Either way the natives ride in separate per-tier,
+license is set by its tier (see Dependencies): `core` and `decode` are LGPL
+-- `decode` does carry encoders, but only ones that add no GPL surface (the
+BSD SVT-AV1 and libopus, FFmpeg's own AAC and FLAC, and the VAAPI encoders
+whose codec lives in the GPU driver); the `full` tier adds the x264/x265
+software encoders, which are GPL, so its FFmpeg build is configured
+`--enable-gpl` and its libraries are GPL. Either way the natives ride in separate per-tier,
 per-platform classifier jars, dynamically linked, never statically embedded
 into the Apache code, and every bundle ships its license texts (the GPL text
 on `full`, LGPL on the rest). An application that distributes the `full`
@@ -235,8 +240,10 @@ natives takes on FFmpeg's GPL obligations, as anyone distributing a GPL
 FFmpeg build does; a consumer that needs to stay LGPL takes `core` or
 `decode`. skinema's own Apache code is unaffected either way.
 
-libvpx and dav1d are BSD-family; x264 and x265 are GPL (the reason
-the `full` build is `--enable-gpl`). libass (ISC) ships with FreeType and
+libvpx, dav1d, SVT-AV1 and libopus are BSD-family -- SVT-AV1 additionally
+carries the Alliance for Open Media patent grant, whose text ships beside its
+license; x264 and x265 are GPL (the reason the `full` build is
+`--enable-gpl`). libass (ISC) ships with FreeType and
 HarfBuzz folded in
 -- portions of the bundled software are copyright The FreeType Project
 (freetype.org), licensed under the FreeType License -- while FriBidi stays a
