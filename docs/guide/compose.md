@@ -133,6 +133,15 @@ thread at the start of a draw, is what closes retired images, and
 `close` frees everything left. Skia images hold native memory, so
 neither is optional -- waiting for a finalizer is a leak in practice.
 
+Forgetting `reclaim` is the easy mistake, and a quiet one: the picture is
+still right, so nothing looks wrong until the process is large. The queue
+holds a strong reference, so the images are neither freed nor collectable,
+and a heap profiler shows nothing. Measured on a caller that never
+reclaimed: two hundred 1080p frames took resident memory from 250 MB to
+1796 MB, and one `reclaim` put it back to 245. `VideoFrameImage` therefore
+says so on stderr once the backlog passes a second of frames, and `pending`
+is readable at any time if you would rather watch it yourself.
+
 `update` answers `null` once `close` has run, which is what a raster
 already in flight when the surface goes away comes back with.
 

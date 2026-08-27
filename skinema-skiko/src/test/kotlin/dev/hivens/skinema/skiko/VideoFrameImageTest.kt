@@ -94,4 +94,36 @@ class VideoFrameImageTest {
         assertTrue(image.isClosed)
         assertNull(holder.image)
     }
+    /**
+     * The half of the contract a caller can drop in silence.
+     *
+     * update() alone looks like it works -- the picture is right -- while every
+     * superseded image stays alive in native memory that no heap profiler shows
+     * and no collector can take, because the queue holds a strong reference.
+     * A real consumer did exactly this; measured at 1080p it took resident
+     * memory from 250 MB to 1796 MB over two hundred frames.
+     *
+     * So the class says so once. Asserted in both directions, because a warning
+     * that fires for a correct caller is worse than none.
+     */
+    @Test
+    fun `a backlog nobody reclaims is reported once, and a drained one is not`() {
+        val w = 4
+        val h = 4
+        val rgba = ByteArray(w * h * 4)
+
+        VideoFrameImage().use { img ->
+            repeat(80) { img.update(w, h, rgba) }
+            assertTrue(
+                img.warnedAboutBacklog,
+                "a caller that never reclaims must be told, pending=${img.pending}",
+            )
+        }
+
+        VideoFrameImage().use { img ->
+            repeat(80) { img.update(w, h, rgba); img.reclaim() }
+            assertEquals(0, img.pending, "a drained backlog must stay empty")
+            assertFalse(img.warnedAboutBacklog, "a caller that reclaims must not be warned")
+        }
+    }
 }
