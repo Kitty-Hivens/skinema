@@ -555,8 +555,17 @@ if [ "${STATIC_DEPS:-}" = "1" ]; then
     fi
     if has enc-h264; then license "x264-$X264_VERSION/COPYING" "x264-COPYING"; fi
 
-    # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit (10/12-bit HDR
-    # multilib skipped -- 8-bit is the common case), PIC, folded in. x265 is
+    # x265 (HEVC encoder, GPL). cmake + nasm; static 8-bit, PIC, folded in.
+    #
+    # 8-bit is not a preference here, it is the only depth reachable: the
+    # writer's input contract is RGBA8888 and the decoder's output is the same,
+    # so nothing in this library can produce a sample wider than eight bits.
+    # A 10/12-bit multilib would cost build time and size for an encoder no
+    # caller could feed. Widening it is a pipeline change -- the RGBA chokepoint
+    # at both ends, not a cmake flag -- and until that happens this line is a
+    # consequence rather than a choice. (An earlier comment here claimed 8-bit
+    # was picked because it is the common case; no such decision was ever
+    # taken, and the real reason is stronger.) x265 is
     # C++, so on Windows the ffmpeg link folds the C++ runtime in (see FFLD
     # at the configure below); Linux/macOS take the system C++ runtime.
     if has enc-hevc && [ ! -f "$DEPS/lib/libx265.a" ]; then
