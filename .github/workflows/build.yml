@@ -165,14 +165,17 @@ jobs:
           # this tier does not carry. The AV1 and Opus encoders are still
           # required, because this is the tier M18 taught to write.
           #
-          # maxSkipped is provisional until it is read off a run -- every
-          # libx264-gated test skips here and the count is not knowable from
-          # this side. It is tightened in a follow-up once measured.
+          # Forty-two measured, declared at forty-three. Fifteen over the full
+          # row on the same machine, and all fifteen are the encode suites that
+          # gate on libx264: the round trips, the colour comparisons, the
+          # encoder-negotiation cases. That gap IS the tier difference, so a
+          # number that stops matching it means a test started depending on the
+          # GPL encoders without saying so.
           - os: ubuntu-latest
             platform: linux-x64
             tier: decode
             caps: decode,subs,dvbsub,webp,encav1,encopus,formats
-            maxSkipped: 70
+            maxSkipped: 43
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
