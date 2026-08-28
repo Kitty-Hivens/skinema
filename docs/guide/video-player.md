@@ -18,6 +18,9 @@ VideoPlayer(
     readAheadFrames: Int = 1,
     audioTrack: Int? = null,
     hardware: HwAccel = HwAccel.OFF,
+    unwatched: WhenUnwatched = WhenUnwatched.Freeze,
+    startPaused: Boolean = false,
+    volume: Float = 1f,
 )
 ```
 
@@ -55,6 +58,20 @@ VideoPlayer(
   hardware decode cannot be set up. The RGBA frame contract is identical
   on every path -- frames still come back through system memory, so this
   buys decode cost, not a zero-copy path.
+- `unwatched` -- what the timeline does while nobody is taking the
+  picture. See the `WhenUnwatched` discussion below.
+- `startPaused` -- open onto the first frame and stay on it. `state`
+  settles `Paused` rather than `Playing`, and `resume()` is what starts
+  the file; the picture is up before that, because the first frame
+  publishes the way a seek landing does. It is a caller's pause, so
+  `WhenUnwatched` never lifts it. Default `false`.
+- `volume` -- linear 0..1 from the first sample onward, rather than from
+  whenever a `setVolume` call gets through: the sink opens and takes its
+  first chunk on the audio thread's own schedule, so there is no moment
+  after the constructor that beats it. Applied to every line the player
+  opens, so a track switch or a device-loss recovery comes back at the
+  volume you asked for. Clamped; `NaN` leaves the default standing.
+  Nothing at all without `audio = true`. Default `1f`.
 
 Whether the GPU actually took the stream is only knowable once a frame
 has come back from it, so read it rather than assume it:

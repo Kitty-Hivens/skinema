@@ -104,7 +104,7 @@ class StepBackwardTest {
         val frames = AtomicLong(0)
         val clock = AudioClock(48_000) { frames.get() }
         val source = ScriptedFrameSource(frameCount = 100, keyframeEvery = 10)
-        VideoPlayer(Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze) { source }.use { player ->
+        VideoPlayer(Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f) { source }.use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // Media time 2000 ms at the 48 kHz test rate: frame 20, which is
             // a keyframe, so the first press also pays the discovery pass.
