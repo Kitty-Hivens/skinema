@@ -4,7 +4,6 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Owns the Skia image for the current video frame. [update] raster-copies the
@@ -20,52 +19,62 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * about.
  *
  * - [update] runs on whatever thread rasters. It publishes the new image and
- *   RETIRES the old one rather than closing it: the drawing thread may still
- *   be holding it.
- * - [reclaim] closes what has been retired and must be called from the
- *   DRAWING thread, at the start of a draw. An image retired while a draw is
- *   running is closed at the start of the next one, by which time that draw
- *   has finished with it -- and since only the drawing thread closes, and
- *   only between draws, nothing is ever freed under a draw that is using it.
+ *   frees what neither side can still be holding.
+ * - [image] is how the DRAWING thread takes the current picture.
+ * - [reclaim] hands that borrow back a frame early. Call it at the start of a
+ *   draw or not at all; nothing leaks either way.
  * - [close] may come from either, and shuts the door: an [update] racing it
- *   returns null rather than rastering into a closed session.
+ *   returns null rather than publishing into a closed session.
+ *
+ * ## One live borrow per side
+ *
+ * There are two ways to get an image out of this class, and both hand over
+ * whichever one is current at the time:
+ *
+ * - what [update] returns lasts until your next [update] publishes over it,
+ * - what [image] returns lasts until your next read of [image] (or a
+ *   [reclaim]), because the drawing thread's most recent read is the one
+ *   reference kept alive after the picture it names has been superseded.
+ *
+ * Everything older than those is unreachable -- no caller has a way to name
+ * it again -- so the class closes it itself. That is what bounds the native
+ * memory at one superseded frame without asking the caller for anything.
+ *
+ * The rule this leaves is to read [image] ONCE per draw and not keep the
+ * result: a drawer that reads twice and holds both can have the older closed
+ * under it. One read per draw is what a painter does anyway.
+ *
+ * Two sides means two threads, and only two. A second drawing thread reading
+ * [image] takes the borrow away from the first, and two threads calling
+ * [update] supersede each other's returns.
  */
 class VideoFrameImage : AutoCloseable {
 
-    private companion object {
-        /**
-         * How many retired images it takes to be sure, given that [reclaim] has
-         * never run at all. Not a frame rate and not a duration: a caller who
-         * never reclaims passes any number, and one who does is not judged by
-         * this at all.
-         */
-        const val BACKLOG_WARN_AT = 60
-    }
-
     private val lock = Any()
 
-    /** The current frame's image; null before the first [update]. */
-    @Volatile
-    var image: Image? = null
-        private set
+    // The current frame, and the drawing thread's borrow against an older
+    // one. Both guarded by [lock] -- the whole point is that a publish and a
+    // read cannot interleave, since a read landing just after the publish
+    // that superseded its image would take a reference to something the same
+    // publish had already freed.
+    private var current: Image? = null
+    private var lastDrawn: Image? = null
 
-    // Images the drawing thread has not been past yet. Never closed here.
-    private val retired = ConcurrentLinkedQueue<Image>()
-
-    /** Images published but not yet reclaimed -- the drawer's backlog. */
-    val pending: Int get() = retired.size
+    // Superseded images still spoken for. Holds the drawing thread's borrow
+    // and nothing else, so it is empty or holds one.
+    private val retired = ArrayDeque<Image>()
 
     private var closed = false
 
-    @Volatile
-    private var backlogSaid = false
+    /**
+     * The current frame's image, null before the first [update] and after
+     * [close]. Reading it is the drawing thread's borrow: that image stays
+     * alive until this is read again.
+     */
+    val image: Image? get() = synchronized(lock) { current.also { lastDrawn = it } }
 
-    @Volatile
-    private var everReclaimed = false
-
-    /** Whether the backlog warning has been printed. For tests. */
-    internal val warnedAboutBacklog: Boolean get() = backlogSaid
-
+    /** Superseded images still spoken for -- one at most. */
+    val pending: Int get() = synchronized(lock) { retired.size }
 
     /**
      * Replaces [image] with [rgba] ([width] x [height], straight alpha,
@@ -83,73 +92,84 @@ class VideoFrameImage : AutoCloseable {
             "a ${width}x$height RGBA frame needs ${width * height * 4} bytes, got ${rgba.size}"
         }
         val info = ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL)
-        // The copy runs under the lock, which is what makes a close racing it
-        // safe: closing waits for the raster in flight rather than freeing the
-        // session under it. The lock is uncontended in the steady state --
-        // only a teardown ever asks for it.
+        // Rastered OUTSIDE the lock, which the drawing thread now takes on
+        // every read: holding it across an eight-megabyte copy would stall the
+        // draw for the length of one, every frame. Nothing in the copy touches
+        // this object's state, so the lock only has to cover the swap -- and a
+        // close that wins the race leaves an image nobody published, closed
+        // below rather than dropped on the floor.
+        val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
         synchronized(lock) {
-            if (closed) return null
-            val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
-            image?.let { retired.add(it) }
-            image = next
-            warnIfBacklogging()
+            if (closed) {
+                next.close()
+                return null
+            }
+            current?.let { retired.addLast(it) }
+            current = next
+            disposeUnreachable()
             return next
         }
     }
 
     /**
-     * Says something, once, when the backlog has clearly stopped being drained.
+     * Closes every retired image the drawing thread can no longer name.
      *
-     * [reclaim] is half of this class's contract and the half that is easy to
-     * leave out: [update] on its own looks like it works, because the picture
-     * is right. What it costs is invisible to a heap profiler and to the
-     * collector alike -- the queue holds a strong reference, so the images are
-     * neither freed nor reclaimable, and a consumer sees only that the process
-     * is large. Measured on a caller that never reclaimed: two hundred frames
-     * of 1080p took resident memory from 250 MB to 1796 MB, and one reclaim
-     * put it back to 245.
+     * This is what makes the mistake impossible rather than merely visible.
+     * [reclaim] used to be the only thing that closed anything, and a caller
+     * who did not call it got no error, no ceiling and no signal beyond
+     * process size: the queue held a strong reference, so the images were
+     * neither freed nor collectable and a heap profiler showed nothing.
+     * Measured on a caller that never reclaimed, at 1080p: two hundred frames
+     * took resident memory from 250 MB to 1796 MB, and one reclaim returned it
+     * to 245.
      *
-     * So the silence is the defect worth fixing. The condition is that
-     * [reclaim] has NEVER run, which is what the mistake actually is -- and it
-     * deliberately does not measure a backlog against a frame rate. A correct
-     * drawer does fall behind: a hitch, a resize, a collection pause, and at
-     * 240 fps a quarter of a second of that is sixty images. Warning on the
-     * count alone would fire at exactly the callers doing it right, and a
-     * warning that fires on correct code is worse than none. A caller who
-     * never reclaims, meanwhile, passes any threshold at any frame rate, so
-     * the number below only decides how soon.
+     * What could not be closed eagerly was real -- the drawing thread may
+     * still be using an image and only it knows when it is done -- but it can
+     * only be using the one it took most recently. Everything before that is
+     * unreachable by construction, whoever published it.
      *
-     * Printed unconditionally rather than behind SKINEMA_DEBUG, because the
-     * person who needs it is exactly the one who does not know to turn a flag
-     * on. Someone watching for the other case -- reclaiming but not keeping up
-     * -- has [pending] for it.
-     *
-     * It warns and does nothing else. Closing the backlog from here would free
-     * an image the drawing thread may be holding, which is the crash this
-     * class's whole retire-then-reclaim shape exists to avoid.
+     * Must run under [lock]: it decides what to free from the same field a
+     * read writes.
      */
-    private fun warnIfBacklogging() {
-        if (backlogSaid || everReclaimed || retired.size < BACKLOG_WARN_AT) return
-        backlogSaid = true
-        System.err.println(
-            "[skinema] $BACKLOG_WARN_AT frames are retired and unreclaimed. VideoFrameImage.reclaim() " +
-                "must be called from the drawing thread at the start of each draw, or every frame's " +
-                "native memory is held until close().",
-        )
+    private fun disposeUnreachable() {
+        val iterator = retired.iterator()
+        while (iterator.hasNext()) {
+            val image = iterator.next()
+            if (image === lastDrawn) continue
+            iterator.remove()
+            image.close()
+        }
     }
 
-    /** Closes retired images. The drawing thread only, at the start of a draw. */
+    /**
+     * Gives up the drawing thread's borrow: the image it last took is closed
+     * now rather than when it takes the next one. From the DRAWING thread, at
+     * the start of a draw.
+     *
+     * Optional, and it is no longer a correctness requirement -- the class
+     * bounds itself without it. What it still buys is one frame of native
+     * memory held for one frame less, which is worth having in a drawer that
+     * knows exactly where its draw begins. The Compose surface calls it for
+     * that reason.
+     *
+     * At the START of a draw, not inside one: it says the previous draw is
+     * finished, and a caller that reads [image] first and reclaims afterwards
+     * has told the class its own frame is past.
+     */
     fun reclaim() {
-        everReclaimed = true
-        while (true) (retired.poll() ?: return).close()
+        synchronized(lock) {
+            lastDrawn = null
+            disposeUnreachable()
+        }
     }
 
     override fun close() {
         synchronized(lock) {
             closed = true
-            reclaim()
-            image?.close()
-            image = null
+            lastDrawn = null
+            disposeUnreachable()
+            current?.close()
+            current = null
         }
     }
 }

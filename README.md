@@ -209,6 +209,14 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
   `VideoPlayer.State.Failed` -- show your fallback. No partial recovery,
   no garbage frames, no hangs.
 - **Drop late.** A slow consumer skips frames; the clock never lags.
+- **It stops for a consumer that stops looking.** A mailbox that was
+  being read and then is not -- a minimised window, a surface off
+  screen -- is noticed on its own, and the player stops decoding and
+  converting for it. `WhenUnwatched` decides whether the clock stops
+  with the pictures (`Freeze`, the default, which reads `Paused` for
+  as long as it lasts) or runs on (`KeepTime`). The next
+  `acquireFrame` undoes either; `setPresenting` marks the moment
+  exactly.
 - **Seeks answer immediately.** An exact seek previews its keyframe
   while the frame-precise landing decodes behind it; `exact = false`
   lands on the keyframe outright -- picture and sound at once, position
@@ -231,7 +239,7 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
 | Module            | Contents                                                | Floor                            |
 |-------------------|---------------------------------------------------------|----------------------------------|
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
-| `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
+| `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
 | `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
 | `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 

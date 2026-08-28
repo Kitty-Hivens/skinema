@@ -74,6 +74,14 @@ player the size you rasterize at with `setSubtitleCanvasSize` -- post it
 on every resize, the way `VideoSurface` does, so text is sized to the
 display rather than the coded video.
 
+**On resize, not per frame.** `setSubtitleCanvasSize` is not idempotent: it
+queues work unconditionally and the size is compared on the subtitle thread,
+after that thread has been woken to read it. Posting from a draw loop hands an
+unbounded queue sixty announcements a second, which the subtitle pump reads as
+work pending -- it then refills a packet at a time and never reaches its own
+render cadence. Keep the last size you posted and call this only when it
+differs, which is what `VideoSurface` does.
+
 What comes back:
 
 ```kotlin
@@ -99,10 +107,16 @@ announces, so map them onto wherever the video actually lands. And the
 yours until your next `acquireSubtitles`, and anything you keep past
 that you must copy.
 
-`skinema-skiko` provides `SubtitleOverlayImage` to turn those
-positioned, premultiplied-alpha patches into placed
-`org.jetbrains.skia.Image`s, with the same close-the-previous discipline
-as `VideoFrameImage` (see [compose.md](compose.md)).
+`skinema-skiko` provides `SubtitleOverlayImage` to turn those positioned,
+premultiplied-alpha patches into placed `org.jetbrains.skia.Image`s (see
+[compose.md](compose.md)).
+
+Its rule is not `VideoFrameImage`'s. `update` closes the images it replaces
+immediately, so **call it from the thread that draws**: elsewhere, a draw
+holding the previous `images` can have the pixels freed under it, which is a
+native crash rather than a wrong picture. `VideoFrameImage` is the one built
+to raster off the drawing thread, because a frame is eight megabytes and an
+overlay is a handful of small patches.
 
 ## The libass capability
 
