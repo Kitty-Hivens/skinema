@@ -72,6 +72,21 @@ class VideoPlayer internal constructor(
         audio: Boolean = false,
         /** Overrides the clock entirely; with audio on, prefer not to. */
         explicitClock: MediaClock? = null,
+        /**
+         * Where the sound goes. An implementation of [PcmSink] takes the
+         * player's S16LE stereo PCM instead of the platform line, which is how
+         * a consumer plays through its own audio stack -- no change in this
+         * library is needed for that, the seam is here. Null (the default)
+         * takes [JavaSoundSink].
+         *
+         * Read [PcmSink] before writing one: it is called from several threads,
+         * its [PcmSink.close] must be idempotent, and [PcmSink.framePosition]
+         * is the clock the whole player runs on.
+         *
+         * Ignored entirely when [audio] is false -- nothing decodes sound, so
+         * nothing ever opens it. That is not an error, and the sink is left
+         * untouched rather than opened and closed.
+         */
         sink: PcmSink? = null,
         /**
          * How many decoded frames the player holds ahead of the clock,
@@ -466,7 +481,16 @@ class VideoPlayer internal constructor(
     /** Freezes playback; the surface keeps showing the last frame. */
     fun pause() = submit(Command.Pause)
 
-    /** Continues from where [pause] froze, without a frame jump. */
+    /**
+     * Continues from where [pause] froze, without a frame jump.
+     *
+     * Not the way back from a pause the player imposed on itself because
+     * nobody was taking the picture ([WhenUnwatched.Freeze]) -- the next
+     * [acquireFrame] lifts that one. Calling this instead takes the automatic
+     * lift out of play and publishes [State.Playing], while nothing is decoded
+     * until frames are being taken again: what stopped is the pictures, and
+     * nothing here starts them for a mailbox no one is emptying.
+     */
     fun resume() = submit(Command.Resume)
 
     /**
@@ -611,6 +635,15 @@ class VideoPlayer internal constructor(
      * displayed rect, in pixels. VideoSurface posts it on every resize;
      * a consumer drawing frames itself should do the same, or accept
      * storage-resolution text scaled along with the pixels.
+     *
+     * **On change, not per frame.** This is not idempotent, whatever the
+     * unchanged arguments suggest: it queues work unconditionally, and the
+     * size is compared on the subtitle thread only after that thread has been
+     * woken to read it. A caller that posts from its draw loop therefore hands
+     * an unbounded queue sixty announcements a second, which the subtitle pump
+     * reads as work pending -- so it refills a packet at a time and never
+     * reaches its own render cadence. Compare against what you posted last and
+     * call this only when it differs.
      */
     fun setSubtitleCanvasSize(width: Int, height: Int) {
         announcedCanvas = width to height

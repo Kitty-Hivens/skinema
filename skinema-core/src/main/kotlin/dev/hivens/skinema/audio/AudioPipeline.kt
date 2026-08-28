@@ -694,6 +694,24 @@ internal class AudioPipeline(
             val resumeAt = theClock.mediaNanos()
             decoder.seekTo(resumeAt)
             pendingPcm = null
+            // The same shutter [guardedWrite] keeps, one step earlier. Opening
+            // is not a write, but it reaches into the same object: a consumer's
+            // sink is a device, a socket or a server connection that [close]
+            // has already promised back, and open() starts it by contract.
+            //
+            // Asked HERE rather than at the top, because [recover] reads
+            // [closing] once per attempt and the seek above sits between that
+            // read and this call -- on a slow source that is milliseconds, not
+            // the instruction or two the loop's own check leaves.
+            //
+            // Deliberately not tested. What is left is the gap between this
+            // read and sink.open() on the next line, and there is no lever from
+            // outside that lands a close inside it: the recovery loop answers a
+            // Close from its own command poll long before, so a close announced
+            // at any reachable moment exits through that instead. The guard is
+            // a contract made true by construction, like the terminal Failed
+            // state in the player.
+            if (closing) return@runCatching false
             openLine(sampleRate)
             theClock.rebase(resumeAt, sampleRate)
             // open() starts the device by contract; honour a pause, landing
