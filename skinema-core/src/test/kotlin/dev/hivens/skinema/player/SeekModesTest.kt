@@ -34,7 +34,7 @@ class SeekModesTest {
     }
 
     private fun player(source: ScriptedFrameSource, readAheadFrames: Int = 1) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze,
+        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze, false, 1f,
     ) { source }
 
     /**
@@ -277,7 +277,7 @@ class PhantomChaseTest {
         )
         val sink = BoundedPcmSink(capacityFrames = 11_025)
         val source = ScriptedFrameSource(frameCount = 300)
-        val player = VideoPlayer(tone, false, true, null, sink, 1, null, WhenUnwatched.Freeze) { source }
+        val player = VideoPlayer(tone, false, true, null, sink, 1, null, WhenUnwatched.Freeze, false, 1f) { source }
         player.use { p ->
             try {
                 assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")

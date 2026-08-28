@@ -70,17 +70,17 @@ fun setSubtitleCanvasSize(width: Int, height: Int)
 
 `acquireSubtitles` returns the newest overlay, or `null` for "nothing
 newer." Gate drawing on `activeSubtitleTrack` being non-null. Tell the
-player the size you rasterize at with `setSubtitleCanvasSize` -- post it
-on every resize, the way `VideoSurface` does, so text is sized to the
-display rather than the coded video.
+player the size you rasterize at with `setSubtitleCanvasSize`, the way
+`VideoSurface` does, so text is sized to the display rather than the
+coded video.
 
-**On resize, not per frame.** `setSubtitleCanvasSize` is not idempotent: it
-queues work unconditionally and the size is compared on the subtitle thread,
-after that thread has been woken to read it. Posting from a draw loop hands an
-unbounded queue sixty announcements a second, which the subtitle pump reads as
-work pending -- it then refills a packet at a time and never reaches its own
-render cadence. Keep the last size you posted and call this only when it
-differs, which is what `VideoSurface` does.
+`setSubtitleCanvasSize` is idempotent, so posting it from a draw loop is
+fine: the same size twice costs a comparison and queues nothing. That was
+worth fixing rather than documenting -- it used to compare on the subtitle
+thread, after that thread had been woken to read the command, so a steady
+window handed an unbounded queue sixty announcements a second and the pump,
+which reads a non-empty queue as work pending, refilled a packet at a time and
+never reached its own render cadence. `VideoSurface` posts it unguarded now.
 
 What comes back:
 
@@ -111,12 +111,18 @@ that you must copy.
 premultiplied-alpha patches into placed `org.jetbrains.skia.Image`s (see
 [compose.md](compose.md)).
 
-Its rule is not `VideoFrameImage`'s. `update` closes the images it replaces
-immediately, so **call it from the thread that draws**: elsewhere, a draw
-holding the previous `images` can have the pixels freed under it, which is a
-native crash rather than a wrong picture. `VideoFrameImage` is the one built
-to raster off the drawing thread, because a frame is eight megabytes and an
-overlay is a handful of small patches.
+It keeps `VideoFrameImage`'s rule: one live borrow per side, so `update` may
+run off the drawing thread and what `images` returns stays alive until that
+thread reads it again. Read `images` once per draw and do not keep it. It used
+to close every image it replaced on the spot, which quietly made `update` the
+drawing thread's alone while the compose guide told you -- correctly, for
+frames -- to raster elsewhere; a consumer generalising from one to the other
+freed overlay pixels under a draw.
+
+`close` is where the two differ, and deliberately: it frees what is held and
+leaves the object usable, because turning subtitles off is a reason to drop
+the pixels while the surface lives on, and the re-selection after it has to be
+able to publish again.
 
 ## The libass capability
 

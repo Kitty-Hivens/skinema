@@ -199,12 +199,23 @@ re-anchored only at points where nothing is in flight on either side,
 and the decode thread is the one that picks those points because it is
 the one that knows when a lap or a landing is complete.
 
-It re-anchors in three places, all of them on the decode thread: at the
-end of playback (stopped, then placed on the duration), at a lap (after
-the queue has drained and the file's own time is up, restarting the
-sound with the same call), and at a seek landing. The audio thread
-re-anchors at its own landing, and the watchdog hands the clock to the
-wall when the device dies. Nothing parks waiting for another side to
+Media time is PLACED only by the decode thread, and only where it knows
+nothing is in flight:
+
+- the end of playback -- stopped first, then placed on the duration;
+- a lap -- after the queue has drained and the file's own time is up,
+  restarting the sound with the same call;
+- a seek landing, including the one that lands past the end of the
+  footage: neither side sets the clock there, so the target is placed
+  against the duration explicitly, or the EOF path waits the lap out at
+  wall speed against the reading the press came FROM;
+- a frame step, which anchors on the frame it stopped at so a resume
+  continues from it;
+- a paused start, where the first frame is decoded, published forced and
+  the clock stopped on it.
+
+The audio thread re-anchors at its own landing, and the watchdog hands the
+clock to the wall when the device dies. Nothing parks waiting for another side to
 move time -- the earlier arrangement, where the sound wrapped the clock
 at its own end and the picture waited for that, could not describe a
 file whose track is shorter than its picture: the timeline sawed back
@@ -285,8 +296,19 @@ cannot freeze the whole pipeline (a blocking JavaSound write on a
 vanished device raises nothing) and the stuck write returns into
 recovery.
 
-It deliberately asks the device nothing, because the answer would be
-worthless. It used to poll the frame position and call the device stuck
+**The volume belongs to this side, not to the line.** A fresh line starts
+at whatever gain the device gives it, so `AudioPipeline` holds the last
+value asked for and applies it inside `openLine`, before the first write.
+Without that a muted player came back at full on the other side of a
+track switch or a recovery -- and the reopen is the case that matters,
+because nobody asked for it. Keeping it here rather than in the sink is
+deliberate: the sink is a seam a consumer implements, and remembering a
+value across a reopen it does not control is not a rule worth handing
+them. It is also what makes an initial volume possible at all, since the
+first chunk is written by this thread the moment the device opens.
+
+The watchdog deliberately asks the device nothing, because the answer
+would be worthless. It used to poll the frame position and call the device stuck
 when that stopped advancing, which cannot work: a frozen position is
 also what a paused line reports, and the answer comes from the device
 being judged. How long its own write has been outstanding is a fact this
@@ -331,7 +353,11 @@ resources safe. Once a close is announced `AudioPipeline` starts no new
 write, and one already inside the sink is broken out of by the
 watchdog -- the same rescue it performs for a dead device, from the same
 thread `PcmSink` already names for it, so a consumer's own sink never
-sees a new caller. A sink that is not draining is the ordinary worst
+sees a new caller. Device-loss recovery keeps the same shutter one step
+earlier: it reads `closing` once per attempt and a seek sits between that
+read and the reopen, so the reopen asks again rather than opening a sink
+the caller has already been told it has back. Opening is not a write, but
+it reaches into the same object and `open()` starts it by contract. A sink that is not draining is the ordinary worst
 case rather than an exotic one (every paused device, every line whose
 consumer went away), and it used to put the watchdog's whole stall bound
 on an ordinary close.
@@ -368,6 +394,15 @@ before code:
   forward seek past the fed window re-numbers the landing cue into a
   ReadOrder collision and dedup eats the new event -- which is why
   converted codecs flush.
+- **The canvas announcement is deduplicated on the CALLER's thread.**
+  The handler compares too, and by then the command is on the queue and
+  this thread has been woken to read it -- and a pump that reads a
+  non-empty queue as work pending refills a packet at a time and never
+  reaches its own render cadence. The displayed rect is known in a draw
+  scope, so a consumer posts it per frame; `setCanvasSize` therefore
+  returns early on an unchanged size before it queues anything. A fresh
+  pipeline is not deduplicated against the old one's value, which is what
+  lets the player re-state the size it was told while none existed.
 
 Bitmap tracks convert to premultiplied patches once at decode time and
 live in a window schedule (a window closes at its own end, the packet

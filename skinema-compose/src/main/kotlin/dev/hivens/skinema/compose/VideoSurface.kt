@@ -83,11 +83,6 @@ fun VideoSurface(
     // this surface promises to drop would stay on screen until something
     // else recomposed it.
     var failed by remember(player) { mutableStateOf(false) }
-    // The size last posted to the player, held outside Compose state on
-    // purpose: it is written from the draw scope, and a snapshot write there
-    // would invalidate the very frame writing it.
-    val postedCanvas = remember(player) { intArrayOf(-1, -1) }
-
     // The raster's own side of the frame clock. A permit per composition
     // frame, a stamp back when a frame has been made into an image, and the
     // throw that stops it -- Compose state is written on the composition
@@ -303,22 +298,17 @@ fun VideoSurface(
         // the libass frame aspect matched to the video and glyphs crisp at
         // any window size.
         //
-        // Only when it changes, and the comparison belongs here. It used to
-        // be described as idempotent and was not: the call queues a command
-        // unconditionally and the size is compared on the subtitle thread,
-        // after that thread has already been woken to read it. This draw
-        // scope runs on every painted frame, so a steady window posted sixty
-        // commands a second onto an unbounded queue -- which the subtitle
-        // pump treats as work pending, so it refilled a packet at a time and
-        // never reached its own render cadence.
+        // Posted unguarded, from a draw scope that runs on every painted
+        // frame, because the announcement is idempotent now: the same size
+        // twice costs a comparison and queues nothing. This used to keep its
+        // own copy of the last size, back when it did not -- a second place
+        // holding the same rule, and the one a consumer drawing its own frames
+        // could not see.
         if (player.activeSubtitleTrack != null) {
-            val postW = subtitleRect.width.roundToInt()
-            val postH = subtitleRect.height.roundToInt()
-            if (postW != postedCanvas[0] || postH != postedCanvas[1]) {
-                postedCanvas[0] = postW
-                postedCanvas[1] = postH
-                player.setSubtitleCanvasSize(postW, postH)
-            }
+            player.setSubtitleCanvasSize(
+                subtitleRect.width.roundToInt(),
+                subtitleRect.height.roundToInt(),
+            )
         }
     }
 }

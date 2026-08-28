@@ -214,9 +214,44 @@ internal class SubtitlePipeline(
         commands.put(Command.Seek(ptsNanos))
     }
 
-    /** The subtitle render size; the surface posts its displayed rect. */
+    // The last size a caller asked for, compared on the CALLER's thread.
+    //
+    // The handler below compares too, and by then the damage is done: the
+    // command is on an unbounded queue and the subtitle thread has been woken
+    // to read it. A consumer posting from its draw loop -- which is the
+    // natural place, since the displayed rect is known there -- handed this
+    // sixty announcements a second, and the pump reads a non-empty queue as
+    // work pending, so it refilled a packet at a time and never reached its
+    // own render cadence.
+    //
+    // Two volatiles rather than a pair, because this is called per frame and
+    // the allocation would be the next thing to notice. Read then written
+    // without a lock: the announcement comes from one consumer thread, and the
+    // worst a torn read can cost is one redundant command, never a missed
+    // resize.
+    @Volatile
+    private var requestedWidth = Int.MIN_VALUE
+
+    @Volatile
+    private var requestedHeight = Int.MIN_VALUE
+
+    /** Announcements that actually reached the queue. For tests. */
+    @Volatile
+    internal var canvasSets = 0
+        private set
+
+    /**
+     * The subtitle render size; the surface posts its displayed rect.
+     *
+     * Idempotent, which it says here because it did not used to be: the same
+     * size twice is one command, and a caller may post on every frame.
+     */
     fun setCanvasSize(width: Int, height: Int) {
         if (isDead) return
+        if (width == requestedWidth && height == requestedHeight) return
+        requestedWidth = width
+        requestedHeight = height
+        canvasSets++
         commands.put(Command.SetCanvasSize(width, height))
     }
 
