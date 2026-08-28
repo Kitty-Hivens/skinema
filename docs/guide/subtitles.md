@@ -70,17 +70,17 @@ fun setSubtitleCanvasSize(width: Int, height: Int)
 
 `acquireSubtitles` returns the newest overlay, or `null` for "nothing
 newer." Gate drawing on `activeSubtitleTrack` being non-null. Tell the
-player the size you rasterize at with `setSubtitleCanvasSize` -- post it
-on every resize, the way `VideoSurface` does, so text is sized to the
-display rather than the coded video.
+player the size you rasterize at with `setSubtitleCanvasSize`, the way
+`VideoSurface` does, so text is sized to the display rather than the
+coded video.
 
-**On resize, not per frame.** `setSubtitleCanvasSize` is not idempotent: it
-queues work unconditionally and the size is compared on the subtitle thread,
-after that thread has been woken to read it. Posting from a draw loop hands an
-unbounded queue sixty announcements a second, which the subtitle pump reads as
-work pending -- it then refills a packet at a time and never reaches its own
-render cadence. Keep the last size you posted and call this only when it
-differs, which is what `VideoSurface` does.
+`setSubtitleCanvasSize` is idempotent, so posting it from a draw loop is
+fine: the same size twice costs a comparison and queues nothing. That was
+worth fixing rather than documenting -- it used to compare on the subtitle
+thread, after that thread had been woken to read the command, so a steady
+window handed an unbounded queue sixty announcements a second and the pump,
+which reads a non-empty queue as work pending, refilled a packet at a time and
+never reached its own render cadence. `VideoSurface` posts it unguarded now.
 
 What comes back:
 

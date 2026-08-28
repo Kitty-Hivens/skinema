@@ -304,7 +304,9 @@ lands, or about what an effect is ordered against.
 
 - `setVolume` runs on your own thread, straight through to the sink.
 - `setSubtitleCanvasSize` hands the subtitle thread a command from your
-  thread, without going past the decode thread at all.
+  thread, without going past the decode thread at all -- and only when the
+  size differs from the last one announced, so a draw loop may post it
+  every frame.
 - `addExternalSubtitles` probes the file on your thread and has published
   the tracks by the time it returns, which is why the list it hands back
   is usable at once.
