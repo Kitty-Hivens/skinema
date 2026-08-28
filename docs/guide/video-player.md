@@ -82,7 +82,7 @@ val state: VideoPlayer.State   // @Volatile, read anywhere
 |--------------|-------------------------------------------------------------|
 | `Opening`    | Initial; the decode thread is opening the file.             |
 | `Playing`    | Frames are advancing.                                       |
-| `Paused`     | Frozen; the last frame stays on screen.                     |
+| `Paused`     | Frozen; the last frame stays on screen. Also how a `Freeze` player reads while nobody takes the picture -- see below. |
 | `Seeking`    | A landing is in flight (a loading affordance can show).     |
 | `Ended`      | EOF with nothing left to play -- see below.                 |
 | `Failed`     | `Failed(cause: Throwable)` -- open or mid-decode error.     |
@@ -247,6 +247,15 @@ val coverArt: ByteArray?           // encoded png/jpeg bytes, as stored
 val rotationDegrees: Int           // 0/90/180/270, clockwise, from phone orientation
 ```
 
+`positionNanos()` and `durationNanos` are the timeline together, and the
+position is deliberately **not** clamped to the duration. A container's
+declared duration is not a number libav guarantees in either direction, and
+clamping made a file that understates itself pin its position while the
+picture went on playing -- measured at 500 ms reported against 2900 ms of
+frames actually shown. The overshoot is the smaller lie: at the end of a lap
+the position can read tens of milliseconds past `durationNanos`. Clamp it in
+your own progress bar if that matters there.
+
 `Chapter` carries `startNanos`, `endNanos`, `title`. `coverArt` is the
 container's embedded art as the stored bytes -- decode it with your own
 image stack. A file whose only video stream is the cover plays
@@ -272,11 +281,20 @@ every method is safe to call from any thread. You do not synchronize
 around the player.
 
 Most methods work by queueing a command for the decode thread, which is
-why order is preserved and nothing races. A few act on the spot instead
--- `setVolume` goes straight to the audio sink, and the track and
-subtitle selectors publish before they announce -- so a caller's own
-thread does the work. Both are safe; the distinction only matters if you
-are reasoning about when an effect lands.
+why order is preserved among them and nothing races. Four do not. All are
+safe; the distinction only matters when you reason about when an effect
+lands, or about what an effect is ordered against.
+
+- `setVolume` runs on your own thread, straight through to the sink.
+- `setSubtitleCanvasSize` hands the subtitle thread a command from your
+  thread, without going past the decode thread at all.
+- `addExternalSubtitles` probes the file on your thread and has published
+  the tracks by the time it returns, which is why the list it hands back
+  is usable at once.
+- `selectAudioTrack` queues -- onto the audio thread's own queue, not the
+  decode thread's. It is therefore ordered against other audio work and
+  not against a `seek` you issued a moment earlier, which reaches the
+  audio side only when the decode thread gets to it.
 
 The one rule is the ownership window: the `FrameSlot` from
 `acquireFrame` is yours only until the next `acquireFrame`, and the same

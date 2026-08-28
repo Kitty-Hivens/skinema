@@ -6,12 +6,23 @@ import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
 
 /**
- * Owns the Skia images for the current subtitle overlay, the
- * [VideoFrameImage] discipline: every update closes its predecessors
- * (Skia objects hold native memory). Premultiplied alpha -- the blend
- * pipeline emits it, and PREMUL skips a per-pixel conversion on upload.
- * Like its sibling, deliberately core-independent: positioned pixel
- * patches in, placed images out.
+ * Owns the Skia images for the current subtitle overlay: positioned pixel
+ * patches in, placed images out, premultiplied alpha -- the blend pipeline
+ * emits it, and PREMUL skips a per-pixel conversion on upload. Deliberately
+ * core-independent, like its sibling [VideoFrameImage].
+ *
+ * ## The drawing thread owns this one
+ *
+ * [update] closes every image it replaces on the spot, so it belongs to the
+ * thread that draws. Called anywhere else, a draw holding [images] can have
+ * the pixels freed under it -- a native crash, not a wrong picture.
+ *
+ * That is the opposite of [VideoFrameImage], which keeps whatever its drawer
+ * last took, and the difference is about what a copy costs. A frame is eight
+ * megabytes at 1080p and rastering it where the picture is drawn is taken
+ * straight out of the host's own rendering, which is what the borrow there
+ * buys room for. An overlay is a handful of small patches, and the natural
+ * place to build one is the thread that is about to paint it.
  */
 class SubtitleOverlayImage : AutoCloseable {
 

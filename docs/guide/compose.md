@@ -160,6 +160,10 @@ most.
 `update` answers `null` once `close` has run, which is what a raster
 already in flight when the surface goes away comes back with.
 
-For subtitle overlays drawn this way, `SubtitleOverlayImage` does the
-same for the positioned subtitle patches returned by
-`player.acquireSubtitles()` -- see [subtitles.md](subtitles.md).
+For subtitle overlays drawn this way, `SubtitleOverlayImage` turns the
+positioned patches from `player.acquireSubtitles()` into placed images. It
+does **not** follow the borrow rule above -- its `update` closes what it
+replaces on the spot, so it belongs on the thread that draws. An overlay is a
+handful of small patches, where a frame is eight megabytes; the borrow exists
+to get that copy off the drawing thread, and there is nothing here to get off
+it. See [subtitles.md](subtitles.md).
