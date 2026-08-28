@@ -27,15 +27,6 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
-/**
- * Images the raster thread may leave for the drawing thread to close before
- * it stops making more. Three is the handover in flight -- the one being
- * drawn, the one just published, and the one behind them -- so reaching it
- * means the draw is not running, and making more would only spend native
- * memory nobody is going to look at.
- */
-private const val MAX_RETIRED_FRAMES = 3
-
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
     /** Fill the bounds completely, cropping overflow -- backgrounds. */
@@ -130,10 +121,10 @@ fun VideoSurface(
                     return@Thread
                 }
                 if (stop.get()) return@Thread
-                // The drawing thread closes what this one retires, so its
-                // backlog is this one's bound: skip a turn rather than pile
-                // native memory behind a draw that is not running.
-                if (frames.pending > MAX_RETIRED_FRAMES) continue
+                // Nothing here bounds the images: VideoFrameImage keeps one
+                // superseded frame, the drawing thread's own, and frees the
+                // rest as it publishes. What paces this thread is the permit,
+                // and the permits come from the composition's frame clock.
                 try {
                     val slot = player.acquireFrame() ?: continue
                     frames.update(slot.width, slot.height, slot.rgba) ?: continue
