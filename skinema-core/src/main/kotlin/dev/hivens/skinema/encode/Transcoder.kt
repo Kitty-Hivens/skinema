@@ -71,6 +71,7 @@ class Transcoder private constructor(
 
     private var writer: MediaWriter? = null
     private var closed = false
+    private var ran = false
 
     @Volatile
     private var cancelled = false
@@ -107,6 +108,22 @@ class Transcoder private constructor(
      */
     fun run() {
         check(!closed) { "run after close()" }
+        // One transcode per instance, and refused by name rather than left to
+        // go wrong quietly. A second call used to proceed: it opened a fresh
+        // MediaWriter on the same path, whose avio_open truncates, so the
+        // finished file from the first run was destroyed -- and the first
+        // writer was orphaned by the field assignment below, taking its
+        // confined arena, its format and codec contexts and its file handle
+        // with it, since close() only ever sees the last one. Reproduced on a
+        // cancelled run: 153 frames and 1.6 MB of valid output, then a second
+        // run() replaced the file and carried the frame counter on from 153.
+        //
+        // Resuming after cancel is the natural thing to try, which is why this
+        // says so. A cancelled transcode is finished, not paused -- the
+        // trailer is written and the short file plays. Transcoding the rest
+        // means a new Transcoder and a new output.
+        check(!ran) { "run() is one-shot; a cancelled transcode is finished, not paused" }
+        ran = true
         val rotation = video.rotationDegrees()
         // The first frame settles the geometry, and the second the cadence,
         // so the writer cannot be opened before both are in hand.
