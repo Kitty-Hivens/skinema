@@ -48,7 +48,7 @@ class UnwatchedTest {
         // depth, so what the fill side's own gate saves is bounded and once.
         readAheadFrames: Int = 1,
     ) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, unwatched,
+        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, unwatched, false, 1f,
     ) { source }
 
     /** Media time forward by [millis], the way a device consuming would. */

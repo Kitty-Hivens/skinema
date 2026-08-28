@@ -385,6 +385,42 @@ class AudioPipelineTest {
         }
     }
 
+    /**
+     * A line starts at whatever gain the device gives it, so the volume has to
+     * be put back on every line this side opens. It was not, and a muted
+     * player came back at full the moment anything reopened one -- a track
+     * switch here, a device-loss recovery in the field, which is the worse of
+     * the two because nobody asked for it.
+     *
+     * Held on this side rather than left to the sink: the sink is a seam a
+     * consumer implements, and remembering a value across a reopen it does not
+     * control is not a rule worth handing them. The bundled sink keeps it too;
+     * what is asserted here is the half that holds whichever sink is in use.
+     */
+    @Test
+    fun `the volume survives the line being reopened`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val pipeline = AudioPipeline(twoTracks("volume-switch.mka"), sink, initialVolume = 0.2f)
+        try {
+            assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
+            assertTrue(awaitTrue { sink.volumeAtFirstWrite >= 0f }, "sound must reach the line")
+            assertEquals(0.2f, sink.volumeAtFirstWrite, "the first line opens at the volume asked for")
+
+            pipeline.setVolume(0.5f)
+            pipeline.selectTrack(1)
+            assertTrue(awaitTrue { pipeline.activeAudioTrack == 1 }, "the switch must land")
+            assertTrue(awaitTrue { sink.volumeAtFirstWrite >= 0f }, "the new line must be written to")
+            assertEquals(
+                0.5f,
+                sink.volumeAtFirstWrite,
+                "a reopened line must not come back at the device's default gain",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
     @Test
     fun `the switch freezes the line before reading the playhead`() {
         Fixtures.assumeDecodeEnvironment()

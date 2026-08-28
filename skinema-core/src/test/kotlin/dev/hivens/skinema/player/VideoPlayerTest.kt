@@ -111,7 +111,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
         )
         val boom = LibavException("no decoder for this video stream")
-        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze) { throw boom }.use { player ->
+        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze, false, 1f) { throw boom }.use { player ->
             assertTrue(
                 awaitTrue { player.state is VideoPlayer.State.Failed },
                 "an unopenable video must surface as Failed, state=${player.state}",
@@ -1605,7 +1605,7 @@ class VideoPlayerTest {
         // the state reporting Playing. Each turn is a seek, and for a source
         // whose demuxer cannot seek it is a reopen from disk.
         val source = ScriptedFrameSource(frameCount = 0)
-        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze) { source }.use { player ->
+        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f) { source }.use { player ->
             assertTrue(
                 awaitTrue(3_000) { player.state is VideoPlayer.State.Ended },
                 "a lap with no frames must end, state was ${player.state}",
@@ -1625,7 +1625,7 @@ class VideoPlayerTest {
         // version of it did.
         val opening = CountDownLatch(1)
         val source = ScriptedFrameSource(frameCount = 50)
-        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze) {
+        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f) {
             opening.await(20, TimeUnit.SECONDS)
             source
         }
@@ -1717,7 +1717,7 @@ class VideoPlayerTest {
             }
         }
         val source = ScriptedFrameSource(frameCount = 500)
-        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze) { source }
+        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f) { source }
         try {
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Failed },
