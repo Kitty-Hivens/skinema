@@ -19,6 +19,13 @@ tasks.withType<JavaCompile>().configureEach {
 
 dependencies {
     implementation(project(":skinema-compose"))
+    // Declared rather than taken transitively, because skinema-compose keeps
+    // skiko off its consumers' compile classpath on purpose: a Compose
+    // consumer needs VideoSurface and not the image holders. The soak uses
+    // VideoFrameImage directly, which is exactly the shape of a consumer that
+    // renders through Skia without Compose -- so it depends on it the same way
+    // that consumer would.
+    implementation(project(":skinema-skiko"))
     implementation(compose.desktop.currentOs)
 }
 
@@ -44,10 +51,16 @@ val demoReadAhead = providers.gradleProperty("readAhead")
 // device handles or the downloaded frames live.
 val demoSoakAudio = providers.gradleProperty("soakAudio")
 val demoSoakHardware = providers.gradleProperty("hardware")
+// Frames through a real VideoFrameImage, on the two threads a consumer uses.
+// Without it the soak stops at the mailbox and never builds a Skia image --
+// which left the one component whose job IS native memory outside the run
+// that exists to prove native memory does not grow.
+val demoSoakImages = providers.gradleProperty("soakImages")
 tasks.withType<JavaExec>().configureEach {
     demoReadAhead.orNull?.let { systemProperty("skinema.demo.readAhead", it) }
     demoSoakAudio.orNull?.let { systemProperty("skinema.demo.soakAudio", it) }
     demoSoakHardware.orNull?.let { systemProperty("skinema.demo.hardware", it) }
+    demoSoakImages.orNull?.let { systemProperty("skinema.demo.soakImages", it) }
 }
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
@@ -129,7 +142,7 @@ val soakMinutes = providers.gradleProperty("minutes")
 val soakHeap = providers.gradleProperty("heap")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m] [-PsoakImages=true]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
