@@ -1020,7 +1020,30 @@ Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
 a long soak without RSS growth, and the API has gone a full milestone
-without breaking changes. Not before.
+without breaking changes.
+
+All three clauses are now answered. The first two by the consumer itself
+(section 13, the Coil question): it takes compose/skiko/natives from Central
+as ordinary dependencies, on the `decode` tier.
+
+The soak clause is measured, 2026-08-28: two hours of looping 1080p30 through
+the published full-tier bundle with GPU decode, 214692 frames at 29.8 fps,
+`hardwareActive` true throughout. What it took to answer honestly is worth
+recording, because two shorter runs answered it wrongly first. An instantaneous
+RSS is a sawtooth whose teeth depend on where the collector happened to be, so
+the tool reports the LOW-WATER MARK -- and even that needs a long enough run:
+warm-up here lasts twenty-five minutes, which is why a thirty-minute run's
+windows all contain climb and reported drift that was not there.
+
+Over two hours the floor climbs to 334 and holds nine samples, to 366 and
+holds, then to 391 where it sits for THIRTY consecutive samples -- half an
+hour flat. It reaches 408, and then falls: 402, 397, 397, 397, 348, 291. A
+hundred and seventeen megabytes handed back to the operating system, after
+which it climbs gently again.
+
+That drop is the evidence, and it is stronger than a flat line would have
+been: a leak cannot return memory. What the series shows is a runtime taking
+and releasing, not a pipeline accumulating.
 
 ## 12. Version pins (2026-06)
 
