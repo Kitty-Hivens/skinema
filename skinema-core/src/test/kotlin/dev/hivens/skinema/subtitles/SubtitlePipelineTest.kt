@@ -95,6 +95,41 @@ class SubtitlePipelineTest {
         }
     }
 
+    /**
+     * The canvas announcement is idempotent, and the surface posts it from a
+     * draw scope that runs on every painted frame.
+     *
+     * The handler compares too, and by then the cost is already paid: the
+     * command is on an unbounded queue and this thread has been woken to read
+     * it. A pump that reads a non-empty queue as work pending then refills a
+     * packet at a time and never reaches its own render cadence -- so the
+     * comparison has to happen where the call is made.
+     *
+     * Both directions, because a guard that swallowed a real resize would be
+     * the worse defect: text would rasterize at the old size for good.
+     */
+    @Test
+    fun `announcing the same canvas size twice queues one command`() {
+        Fixtures.assumeDecodeEnvironment()
+        val path = fixture("canvas.mkv", writeSrt("canvas.srt"), "srt", 10)
+        clock.start(0)
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            repeat(120) { pipeline.setCanvasSize(800, 600) }
+            assertEquals(1, pipeline.canvasSets, "a steady window must post once, not once a frame")
+
+            pipeline.setCanvasSize(801, 600)
+            assertEquals(2, pipeline.canvasSets, "a width that changed must get through")
+            pipeline.setCanvasSize(801, 601)
+            assertEquals(3, pipeline.canvasSets, "and so must a height")
+
+            repeat(120) { pipeline.setCanvasSize(801, 601) }
+            assertEquals(3, pipeline.canvasSets, "settling at a new size posts nothing more")
+        } finally {
+            pipeline.close()
+        }
+    }
+
     @Test
     fun `a cue appears inside its window and clears after it`() {
         Fixtures.assumeDecodeEnvironment()

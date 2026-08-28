@@ -680,17 +680,17 @@ class VideoPlayer internal constructor(
      * a consumer drawing frames itself should do the same, or accept
      * storage-resolution text scaled along with the pixels.
      *
-     * **On change, not per frame.** This is not idempotent, whatever the
-     * unchanged arguments suggest: it queues work unconditionally, and the
-     * size is compared on the subtitle thread only after that thread has been
-     * woken to read it. A caller that posts from its draw loop therefore hands
-     * an unbounded queue sixty announcements a second, which the subtitle pump
-     * reads as work pending -- so it refills a packet at a time and never
-     * reaches its own render cadence. Compare against what you posted last and
-     * call this only when it differs.
+     * Idempotent, so posting it on every frame is allowed: the same size twice
+     * costs one comparison and queues nothing. It was not, and the difference
+     * mattered -- the size used to be compared on the subtitle thread, after
+     * that thread had been woken to read the command, so a caller posting from
+     * its draw loop handed an unbounded queue sixty announcements a second and
+     * the pump, which reads a non-empty queue as work pending, refilled a
+     * packet at a time and never reached its own render cadence.
      */
     fun setSubtitleCanvasSize(width: Int, height: Int) {
-        announcedCanvas = width to height
+        announcedWidth = width
+        announcedHeight = height
         subtitlePipeline?.setCanvasSize(width, height)
     }
 
@@ -706,9 +706,17 @@ class VideoPlayer internal constructor(
      * the 800x600 asked for. A surface that resizes later papers over it,
      * which is why it survived; a consumer drawing frames itself, or a
      * window that never resizes, does not get that second chance.
+     *
+     * Two fields rather than a pair, because [setSubtitleCanvasSize] may be
+     * called on every frame and the allocation would be the next thing to
+     * notice. Zero is "never announced", which is also the only size not
+     * worth re-stating.
      */
     @Volatile
-    private var announcedCanvas: Pair<Int, Int>? = null
+    private var announcedWidth = 0
+
+    @Volatile
+    private var announcedHeight = 0
 
     /**
      * Current media position in nanoseconds; zero until playback starts.
@@ -1705,7 +1713,7 @@ class VideoPlayer internal constructor(
         // consumer somewhere to put it, and re-stating a value that already
         // arrived costs nothing.
         subtitlePipeline = fresh
-        announcedCanvas?.let { (w, h) -> fresh.setCanvasSize(w, h) }
+        if (announcedWidth > 0 && announcedHeight > 0) fresh.setCanvasSize(announcedWidth, announcedHeight)
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */
