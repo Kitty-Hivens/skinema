@@ -91,6 +91,10 @@ interleaved stereo through it instead of opening a platform line -- an
 adapter onto your own mixer, a socket, a server connection. No change is
 needed on this side; the adapter is yours.
 
+It only means anything with `audio = true`. A silent player decodes no sound,
+so it never opens the sink at all -- passing one is not an error and not a
+substitute for turning audio on.
+
 ```kotlin
 interface PcmSink : AutoCloseable {
     fun open(sampleRate: Int)                                  // and starts it

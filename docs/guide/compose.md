@@ -118,7 +118,7 @@ player.acquireFrame()?.let { f ->
     frameImage.update(f.width, f.height, f.rgba)
 }
 // on the thread that draws:
-frameImage.reclaim()                 // frees what the last draw finished with
+frameImage.reclaim()                 // optional: gives back the last draw's image
 frameImage.image?.let { canvas.drawImage(it, x, y) }
 // on teardown:
 frameImage.close()
@@ -127,30 +127,43 @@ frameImage.close()
 The raster copy is the expensive part -- eight megabytes a frame at
 1080p, four times that at 4K -- so `update` is built to run off the
 thread that draws, which is where `VideoSurface` runs it. That is why a
-replaced image is *retired* rather than closed on the spot: the drawing
-thread may still be holding it. `reclaim`, called from the drawing
-thread at the start of a draw, is what closes retired images, and
-`close` frees everything left. Skia images hold native memory, so
-neither is optional -- waiting for a finalizer is a leak in practice.
+replaced image is not closed the moment it is replaced: the drawing
+thread may still be painting with it.
 
-Forgetting `reclaim` is the easy mistake, and a quiet one: the picture is
-still right, so nothing looks wrong until the process is large. The queue
-holds a strong reference, so the images are neither freed nor collectable,
-and a heap profiler shows nothing. Measured on a caller that never
-reclaimed: two hundred 1080p frames took resident memory from 250 MB to
-1796 MB, and one `reclaim` put it back to 245. `VideoFrameImage` therefore
-says so on stderr, once, if a backlog builds and `reclaim` has never been
-called at all.
+**You get one live image per side, and the class frees the rest.**
 
-That last clause is the whole condition, and it is deliberately not a size or
-a rate. A correct drawer does fall behind -- a hitch, a resize, a collection
-pause -- and at 240 frames a second a quarter of one is sixty images, so
-judging by the depth would warn exactly the callers doing it right. Watch
-`pending` yourself if that case is the one you care about.
+- What `update` returns is yours until your next `update` publishes over it.
+- What `image` returns is yours until your next read of `image`.
+
+Everything older than those two is unreachable -- you have no way to name it
+again -- so `VideoFrameImage` closes it itself as it publishes. Native memory
+is therefore bounded at one superseded frame no matter what the caller does,
+and `close` frees what is left at teardown.
+
+The one rule that leaves: read `image` **once** per draw and do not keep the
+result. A drawer that reads twice and holds both can have the older one closed
+under it. One read per draw is what a painter does anyway.
+
+`reclaim` is now optional. It gives the drawing side's image back at the start
+of a draw rather than at the next publish -- one frame of native memory held
+for one frame less -- so it is worth calling in a loop that knows where its
+draw begins, and nothing leaks if you never call it. `VideoSurface` calls it.
+
+This is the fix for the failure the class used to allow: retiring into a queue
+that only `reclaim` drained gave a caller who forgot it no error, no ceiling
+and no signal beyond process size, because the queue held a strong reference
+and a heap profiler shows none of it. Measured on such a caller at 1080p: two
+hundred frames took resident memory from 250 MB to 1796 MB, and one `reclaim`
+put it back to 245. `pending` reports what is still spoken for, and is one at
+most.
 
 `update` answers `null` once `close` has run, which is what a raster
 already in flight when the surface goes away comes back with.
 
-For subtitle overlays drawn this way, `SubtitleOverlayImage` does the
-same for the positioned subtitle patches returned by
-`player.acquireSubtitles()` -- see [subtitles.md](subtitles.md).
+For subtitle overlays drawn this way, `SubtitleOverlayImage` turns the
+positioned patches from `player.acquireSubtitles()` into placed images. It
+does **not** follow the borrow rule above -- its `update` closes what it
+replaces on the spot, so it belongs on the thread that draws. An overlay is a
+handful of small patches, where a frame is eight megabytes; the borrow exists
+to get that copy off the drawing thread, and there is nothing here to get off
+it. See [subtitles.md](subtitles.md).
