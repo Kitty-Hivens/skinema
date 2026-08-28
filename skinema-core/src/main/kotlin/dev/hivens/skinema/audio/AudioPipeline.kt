@@ -28,6 +28,7 @@ internal class AudioPipeline(
     private val path: Path,
     private val sink: PcmSink,
     private val initialTrack: Int? = null,
+    initialVolume: Float = 1f,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
     private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
 ) {
@@ -262,7 +263,22 @@ internal class AudioPipeline(
         commands.put(Command.VideoLanded(atNanos))
     }
 
-    fun setVolume(volume: Float) = sink.setVolume(volume)
+    /**
+     * The last volume asked for, and the reason it is remembered here.
+     *
+     * A line starts at whatever gain the device gives it, so every reopen --
+     * a track switch, a device-loss recovery -- put a muted player back at
+     * full volume. Kept on this side rather than left to the sink because the
+     * sink is a seam a consumer implements, and remembering a value across a
+     * reopen it does not control is not a rule worth handing them.
+     */
+    @Volatile
+    private var volume: Float = initialVolume
+
+    fun setVolume(volume: Float) {
+        this.volume = volume
+        sink.setVolume(volume)
+    }
 
     /**
      * Tells this side to go, without waiting for it.
@@ -518,6 +534,11 @@ internal class AudioPipeline(
      */
     private fun openLine(rate: Int) {
         sink.open(rate)
+        // Before a single sample goes in, so a player asked to start quiet is
+        // quiet from its first chunk rather than from whenever a setVolume
+        // call gets through -- the first write follows this immediately, on
+        // this thread.
+        sink.setVolume(volume)
         // open() starts the device by contract, so the clock may fill the
         // gaps between its position refreshes again. Null on the very first
         // open, which happens before the clock exists.

@@ -52,6 +52,8 @@ class VideoPlayer internal constructor(
     readAheadFrames: Int,
     audioTrack: Int?,
     private val unwatched: WhenUnwatched,
+    private val startPaused: Boolean,
+    volume: Float,
     // The test seam: a Path is the only public way in, so deterministic
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
@@ -124,8 +126,36 @@ class VideoPlayer internal constructor(
          * mailbox it HAD been reading goes unread.
          */
         unwatched: WhenUnwatched = WhenUnwatched.Freeze,
+        /**
+         * Open onto the first frame and stay on it: [state] settles
+         * [State.Paused] rather than [State.Playing], and [resume] is what
+         * starts the file.
+         *
+         * The picture is up before that -- the first frame publishes the way a
+         * seek landing does, so the surface shows it while the player waits.
+         * A poster frame with no picture would be a black rectangle, which is
+         * not what asking for one means.
+         *
+         * The pause belongs to the caller from the start, so it is the kind
+         * [WhenUnwatched] never lifts: only [resume] ends it.
+         */
+        startPaused: Boolean = false,
+        /**
+         * Linear 0..1 volume from the first sample onward, rather than from
+         * whenever a [setVolume] call gets through -- a player that has to
+         * start quiet cannot afford the gap, since the sink opens and takes
+         * its first chunk on the audio thread's own schedule.
+         *
+         * Applied to every line this player opens, so a track switch or a
+         * device-loss recovery comes back at the volume asked for instead of
+         * the device's default. Out-of-range values are clamped; NaN is not a
+         * volume and leaves the default standing, as [setVolume] does with
+         * one. Nothing at all without `audio = true`.
+         */
+        volume: Float = 1f,
     ) : this(
         path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
+        startPaused, volume,
         { FrameSources.open(it, hardware) },
     )
 
@@ -344,7 +374,21 @@ class VideoPlayer internal constructor(
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
-        if (audio) AudioPipeline(path, sink ?: JavaSoundSink(), audioTrack) else null
+        if (audio) {
+            AudioPipeline(
+                path,
+                sink ?: JavaSoundSink(),
+                audioTrack,
+                // Clamped here because this is the public edge; the pipeline
+                // stores what it is handed. NaN leaves the default rather than
+                // reaching a gain control, for the reason [setVolume] gives --
+                // and there it means "keep what you had", which at the open is
+                // the full volume below.
+                initialVolume = if (volume.isNaN()) 1f else volume.coerceIn(0f, 1f),
+            )
+        } else {
+            null
+        }
 
     // Owned by the decode thread (selection runs there, where the clock
     // exists by construction); volatile because consumers poll
@@ -636,17 +680,17 @@ class VideoPlayer internal constructor(
      * a consumer drawing frames itself should do the same, or accept
      * storage-resolution text scaled along with the pixels.
      *
-     * **On change, not per frame.** This is not idempotent, whatever the
-     * unchanged arguments suggest: it queues work unconditionally, and the
-     * size is compared on the subtitle thread only after that thread has been
-     * woken to read it. A caller that posts from its draw loop therefore hands
-     * an unbounded queue sixty announcements a second, which the subtitle pump
-     * reads as work pending -- so it refills a packet at a time and never
-     * reaches its own render cadence. Compare against what you posted last and
-     * call this only when it differs.
+     * Idempotent, so posting it on every frame is allowed: the same size twice
+     * costs one comparison and queues nothing. It was not, and the difference
+     * mattered -- the size used to be compared on the subtitle thread, after
+     * that thread had been woken to read the command, so a caller posting from
+     * its draw loop handed an unbounded queue sixty announcements a second and
+     * the pump, which reads a non-empty queue as work pending, refilled a
+     * packet at a time and never reached its own render cadence.
      */
     fun setSubtitleCanvasSize(width: Int, height: Int) {
-        announcedCanvas = width to height
+        announcedWidth = width
+        announcedHeight = height
         subtitlePipeline?.setCanvasSize(width, height)
     }
 
@@ -662,9 +706,17 @@ class VideoPlayer internal constructor(
      * the 800x600 asked for. A surface that resizes later papers over it,
      * which is why it survived; a consumer drawing frames itself, or a
      * window that never resizes, does not get that second chance.
+     *
+     * Two fields rather than a pair, because [setSubtitleCanvasSize] may be
+     * called on every frame and the allocation would be the next thing to
+     * notice. Zero is "never announced", which is also the only size not
+     * worth re-stating.
      */
     @Volatile
-    private var announcedCanvas: Pair<Int, Int>? = null
+    private var announcedWidth = 0
+
+    @Volatile
+    private var announcedHeight = 0
 
     /**
      * Current media position in nanoseconds; zero until playback starts.
@@ -880,7 +932,7 @@ class VideoPlayer internal constructor(
                 start()
             }
             if (ownsClock) clock.start(0)
-            publishState(State.Playing)
+            if (startPaused) enterStartPaused(decoder) else publishState(State.Playing)
             decodeLoop(decoder)
             loopReturned = true
         } catch (t: Throwable) {
@@ -905,6 +957,37 @@ class VideoPlayer internal constructor(
             // A failure has already published its own state and keeps it.
             if (loopReturned && state !is State.Failed) publishState(State.Closed)
         }
+    }
+
+    /**
+     * Opens onto the first frame and stays on it.
+     *
+     * Straight to [State.Paused], never through [State.Playing]: the pacer is
+     * already running by the time this is reached, so the transient would be
+     * observable, and a player asked to start paused reporting itself playing
+     * is the kind of lie the state contract is built to refuse.
+     *
+     * The frame is committed FORCED, which is what a seek landing does -- the
+     * pacer publishes forced frames whatever the state says, so the picture is
+     * on screen while the player waits. Without it a paused start is a black
+     * rectangle, and showing a poster frame is the reason to ask for one.
+     *
+     * A file that yields nothing here is at its end already; the EOF flag says
+     * so, and the decode loop acts on it when something resumes.
+     */
+    private fun enterStartPaused(decoder: FrameSource) {
+        // The pair pauseNow uses, in the same order and for the same reason:
+        // the sound stops, then the clock it may be mastering stops with it.
+        audioPipeline?.pause()
+        clock.pause()
+        publishState(State.Paused)
+        val first = decoder.nextFrame(convert = false)
+        if (first == null) {
+            eofPending = true
+            return
+        }
+        enqueue(decoder, first, forced = true)
+        anchorPausedAt(first.ptsNanos)
     }
 
     /**
@@ -951,7 +1034,16 @@ class VideoPlayer internal constructor(
 
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
-        publishState(State.Playing)
+        if (startPaused) {
+            // No picture to land on, so this is the whole of it: the sound
+            // holds and the lap-done check below never runs, since it asks
+            // for Playing.
+            audioPipeline?.pause()
+            clock.pause()
+            publishState(State.Paused)
+        } else {
+            publishState(State.Playing)
+        }
         while (true) {
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
@@ -1621,7 +1713,7 @@ class VideoPlayer internal constructor(
         // consumer somewhere to put it, and re-stating a value that already
         // arrived costs nothing.
         subtitlePipeline = fresh
-        announcedCanvas?.let { (w, h) -> fresh.setCanvasSize(w, h) }
+        if (announcedWidth > 0 && announcedHeight > 0) fresh.setCanvasSize(announcedWidth, announcedHeight)
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */

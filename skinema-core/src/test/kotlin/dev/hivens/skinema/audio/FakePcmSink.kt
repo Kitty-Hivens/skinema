@@ -16,7 +16,22 @@ class FakePcmSink : PcmSink {
         private set
     var stopped = false
         private set
+
+    @Volatile
     var volume = 1f
+        private set
+
+    /**
+     * The gain standing when the first write of the CURRENT line arrived, or
+     * -1f before one has.
+     *
+     * What a player asked to start quiet has to get right is not the volume
+     * eventually but the volume when the first sample goes in: a line set
+     * afterwards has already played a chunk at whatever the device gave it.
+     * Reset by [open], so a reopened line is judged on its own.
+     */
+    @Volatile
+    var volumeAtFirstWrite = -1f
         private set
 
     /** open() calls; a track switch reopens the line. */
@@ -67,6 +82,7 @@ class FakePcmSink : PcmSink {
         // kept, because tests assert on them across the reopen; only the
         // playhead restarts, which is what a track switch rebases against.
         openedAtFrames = (totalBytes / 4).toLong()
+        volumeAtFirstWrite = -1f
         opens++
     }
 
@@ -87,6 +103,7 @@ class FakePcmSink : PcmSink {
             throw IllegalStateException("the audio line took 0 of $length bytes")
         }
         synchronized(all) {
+            if (volumeAtFirstWrite < 0f) volumeAtFirstWrite = volume
             if (stopped) writesWhileStopped++
             all.write(data, offset, length)
             sinceFlush.write(data, offset, length)

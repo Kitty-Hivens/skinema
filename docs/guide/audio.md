@@ -48,6 +48,23 @@ player owns its own audio stream and the OS audio server (PipeWire,
 WASAPI, CoreAudio) mixes them. Cross-source ducking and master volume
 are your application's concern.
 
+To start quiet, pass the `volume` constructor parameter rather than calling
+this straight after constructing. The audio thread opens the device and writes
+its first chunk on its own schedule, so there is no moment after the
+constructor that reliably beats it -- a player meant to fade in from silence
+would let a chunk through at full.
+
+```kotlin
+val player = VideoPlayer(Path.of("clip.mkv"), audio = true, volume = 0f)
+```
+
+Either way the value sticks to the player, not to the line: every line it
+opens is set to it, so a track switch or a device-loss recovery comes back at
+the volume you asked for instead of at the device's default. Out-of-range
+values are clamped, and `NaN` is refused outright rather than clamped --
+every comparison with it is false, so a clamp passes it straight to a gain
+control that accepts it and silences the line.
+
 ## Multiple audio tracks
 
 A container with several audio streams exposes them, and you can switch

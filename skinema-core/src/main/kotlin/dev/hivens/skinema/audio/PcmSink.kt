@@ -58,6 +58,15 @@ interface PcmSink : AutoCloseable {
     /** Sample frames played since [open]; freezes while stopped. */
     fun framePosition(): Long
 
-    /** Linear 0..1 volume; best-effort (not every line exposes gain). */
+    /**
+     * Linear 0..1 volume; best-effort (not every line exposes gain).
+     *
+     * Never called with NaN or with a value outside the range -- the player
+     * clamps and refuses at its own edge, so an implementation does not have
+     * to. It also does not have to remember the value across an [open]: the
+     * player re-applies it to every line it opens, before the first [write],
+     * which is what keeps a quiet player quiet through a track switch or a
+     * device coming back.
+     */
     fun setVolume(volume: Float)
 }
