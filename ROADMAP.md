@@ -1045,6 +1045,43 @@ That drop is the evidence, and it is stronger than a flat line would have
 been: a leak cannot return memory. What the series shows is a runtime taking
 and releasing, not a pipeline accumulating.
 
+The frame rate in that line says the run kept up on the machine it ran on. It
+is not a benchmark and must not be quoted as one: the same machine has since
+been found to degrade over its own uptime for reasons outside this project, so
+a throughput number from it means "did not fall behind" and nothing more. The
+FLOOR is the measurement, and a floor is what it is whether the run is fast or
+slow -- which is why that is the quantity the tool reports.
+
+### What that run did NOT cover, and the gate that follows
+
+`SoakMain`'s only consumer-side call was `acquireFrame`, so the run exercised
+decode, pacing and the mailbox and stopped there. It never built a Skia image.
+That left `VideoFrameImage` -- the one component whose whole job is holding
+native memory, and the memory a heap profiler cannot account for -- outside
+the run that exists to prove native memory does not grow. The run also predates
+the rewrite of that class and of its overlay sibling.
+
+So the soak now carries `-PsoakImages=true`, which puts frames through a real
+`VideoFrameImage` in the shape a consumer uses it: the loop rasters, because it
+holds the frames, and a second thread draws -- reclaiming and reading at a
+screen's cadence. That is the Compose surface's split with the roles named the
+other way round, and it is what puts the borrow across a thread boundary rather
+than leaving it a single-threaded exercise.
+
+**This is a pre-release gate, not a pre-merge one.** The unit tests and their
+mutation checks answer what closes and when; they run for milliseconds over
+four-by-four images and cannot answer whether a native allocator accumulates
+over hours of eight-megabyte rasters. Only a long run does, and only the floor
+in it. Two runs are owed before a release: images with sound off, comparable
+with the series above, and images with sound on, which is the consumer's own
+shape and the only thing that exercises the audio thread, its watchdog and a
+device handle held for hours.
+
+Run it with `-Phardware=OFF`. The question is whether the image holder
+accumulates, and that does not depend on where the frame came from -- while GPU
+decode puts the frame download on the same memory bus the compositor uses,
+which makes the run intrusive on a desktop for no gain in what it measures.
+
 ## 12. Version pins (2026-06)
 
 | Component  | Version        | Note                                   |
