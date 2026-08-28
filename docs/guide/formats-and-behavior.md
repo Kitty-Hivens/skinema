@@ -20,10 +20,13 @@ decoder -- the libwebp that used to carry it is no longer built or
 shipped.
 
 Decode is not all of it: `MediaWriter` encodes video and audio into
-mp4/mov, mkv and webm, in software everywhere and on the GPU where VAAPI
-is available. What it is either way is offline by construction -- the
-bundled FFmpeg is built `--disable-network`, so the library physically
-cannot perform any I/O beyond the file you hand it.
+mp4/mov, mkv and webm, and sound on its own into .opus, .flac and .wav --
+in software everywhere and on the GPU where VAAPI is available. Which
+encoders a build carries is a property of its tier, and only the software
+H.264/HEVC pair is GPL; see the "What it writes" table in the README.
+What it is either way is offline by construction -- the bundled FFmpeg is
+built `--disable-network`, so the library physically cannot perform any
+I/O beyond the file you hand it.
 
 HDR (PQ or HLG over BT.2020) is tone-mapped to SDR on the decode path,
 so it no longer plays washed out. Driving an actual HDR display
@@ -50,11 +53,29 @@ The clock never waits for a slow consumer. If your render loop falls
 behind, the player skips frames to stay on time rather than building
 latency.
 
-The pump does not stop for a consumer that stops polling. The mailbox is
-latest-wins and the pacer keeps filling it, so decode, convert and pace
-go on at full rate with the results overwritten unseen. A Compose
-consumer gets the stop at its own level instead: `VideoSurface` draws on
-the frame clock, and a hidden window does not run one.
+The mailbox is latest-wins, so a render loop that falls behind sees the
+newest frame rather than a backlog of stale ones.
+
+### It stops for a consumer that stops looking
+
+A mailbox that was being read and then is not is noticed on its own --
+sixty pictures published into it and not taken, over at least two
+seconds -- and the player stops decoding and converting for it. Nothing
+has to be said: a Compose window that goes off screen stops running a
+frame clock, `VideoSurface` stops polling, and the player follows.
+
+What stopping costs the timeline is the `unwatched` constructor
+parameter's to say. `WhenUnwatched.Freeze` (the default) stops the clock
+with the pictures and reads `Paused` while it lasts, which is what a
+background wants; `WhenUnwatched.KeepTime` lets time run on and rejoins
+the picture wherever it got to, which is what a live source wants. The
+next `acquireFrame` undoes either. A consumer that would rather mark the
+moment exactly calls `setPresenting`, and saying it once takes the
+automatic notice out of play for good.
+
+A player whose mailbox has never been read is not covered: it may be
+feeding something that is not a screen, so the notice only applies after
+a first read.
 
 ### Seeks answer immediately
 
