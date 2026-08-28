@@ -32,6 +32,16 @@ import java.util.concurrent.ConcurrentLinkedQueue
  */
 class VideoFrameImage : AutoCloseable {
 
+    private companion object {
+        /**
+         * How many retired images it takes to be sure, given that [reclaim] has
+         * never run at all. Not a frame rate and not a duration: a caller who
+         * never reclaims passes any number, and one who does is not judged by
+         * this at all.
+         */
+        const val BACKLOG_WARN_AT = 60
+    }
+
     private val lock = Any()
 
     /** The current frame's image; null before the first [update]. */
@@ -46,6 +56,16 @@ class VideoFrameImage : AutoCloseable {
     val pending: Int get() = retired.size
 
     private var closed = false
+
+    @Volatile
+    private var backlogSaid = false
+
+    @Volatile
+    private var everReclaimed = false
+
+    /** Whether the backlog warning has been printed. For tests. */
+    internal val warnedAboutBacklog: Boolean get() = backlogSaid
+
 
     /**
      * Replaces [image] with [rgba] ([width] x [height], straight alpha,
@@ -72,12 +92,55 @@ class VideoFrameImage : AutoCloseable {
             val next = Image.makeRaster(info, rgba, rowBytes = width * 4)
             image?.let { retired.add(it) }
             image = next
+            warnIfBacklogging()
             return next
         }
     }
 
+    /**
+     * Says something, once, when the backlog has clearly stopped being drained.
+     *
+     * [reclaim] is half of this class's contract and the half that is easy to
+     * leave out: [update] on its own looks like it works, because the picture
+     * is right. What it costs is invisible to a heap profiler and to the
+     * collector alike -- the queue holds a strong reference, so the images are
+     * neither freed nor reclaimable, and a consumer sees only that the process
+     * is large. Measured on a caller that never reclaimed: two hundred frames
+     * of 1080p took resident memory from 250 MB to 1796 MB, and one reclaim
+     * put it back to 245.
+     *
+     * So the silence is the defect worth fixing. The condition is that
+     * [reclaim] has NEVER run, which is what the mistake actually is -- and it
+     * deliberately does not measure a backlog against a frame rate. A correct
+     * drawer does fall behind: a hitch, a resize, a collection pause, and at
+     * 240 fps a quarter of a second of that is sixty images. Warning on the
+     * count alone would fire at exactly the callers doing it right, and a
+     * warning that fires on correct code is worse than none. A caller who
+     * never reclaims, meanwhile, passes any threshold at any frame rate, so
+     * the number below only decides how soon.
+     *
+     * Printed unconditionally rather than behind SKINEMA_DEBUG, because the
+     * person who needs it is exactly the one who does not know to turn a flag
+     * on. Someone watching for the other case -- reclaiming but not keeping up
+     * -- has [pending] for it.
+     *
+     * It warns and does nothing else. Closing the backlog from here would free
+     * an image the drawing thread may be holding, which is the crash this
+     * class's whole retire-then-reclaim shape exists to avoid.
+     */
+    private fun warnIfBacklogging() {
+        if (backlogSaid || everReclaimed || retired.size < BACKLOG_WARN_AT) return
+        backlogSaid = true
+        System.err.println(
+            "[skinema] $BACKLOG_WARN_AT frames are retired and unreclaimed. VideoFrameImage.reclaim() " +
+                "must be called from the drawing thread at the start of each draw, or every frame's " +
+                "native memory is held until close().",
+        )
+    }
+
     /** Closes retired images. The drawing thread only, at the start of a draw. */
     fun reclaim() {
+        everReclaimed = true
         while (true) (retired.poll() ?: return).close()
     }
 

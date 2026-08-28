@@ -72,14 +72,17 @@ jobs:
           # while these two are BSD and ride decode as well.
           - os: ubuntu-latest
             platform: linux-x64
+            tier: full
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-arm64
+            tier: full
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: windows-latest
             platform: windows-x64
+            tier: full
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 33
           # windows-arm64 is here for the clean-PATH step below, which is the
@@ -89,6 +92,7 @@ jobs:
           # cannot tell a self-contained bundle from one leaning on the runner.
           - os: windows-11-arm
             platform: windows-arm64
+            tier: full
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 33
           # Twenty-one, and every one of them named, re-counted from the run:
@@ -121,6 +125,7 @@ jobs:
           # machine decodes on the GPU, and this one does not.
           - os: macos-14
             platform: macos-arm64
+            tier: full
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             hwaccel: "1"
             maxSkipped: 23
@@ -132,14 +137,45 @@ jobs:
           # skiko ships no musl native, so :skinema-skiko cannot run there.
           - os: ubuntu-latest
             platform: linux-musl-x64
+            tier: full
             libc: musl
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
+            tier: full
             libc: musl
             caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
             maxSkipped: 27
+          # The tier the consumer actually ships, run through the same suite.
+          # Every other row here takes `full`, which nobody deploys: the
+          # launcher takes `decode`, and until this row existed that tier saw
+          # only its own acceptance run inside natives.yml -- one pass, on the
+          # runner that built it, under a ceiling deliberately loose enough to
+          # cover the leanest tier. So the bundle that reaches people had less
+          # scrutiny than the one that does not.
+          #
+          # linux-x64 rather than all eight: what differs between the tiers is
+          # which components are compiled in, and that is identical across
+          # platforms. What differs BETWEEN platforms -- loading, the import
+          # closure, the symbol floors -- is asserted per platform and per tier
+          # by the natives build itself, before anything uploads.
+          #
+          # No 'encode' capability: that probes libx264, which is exactly what
+          # this tier does not carry. The AV1 and Opus encoders are still
+          # required, because this is the tier M18 taught to write.
+          #
+          # Forty-two measured, declared at forty-three. Fifteen over the full
+          # row on the same machine, and all fifteen are the encode suites that
+          # gate on libx264: the round trips, the colour comparisons, the
+          # encoder-negotiation cases. That gap IS the tier difference, so a
+          # number that stops matching it means a test started depending on the
+          # GPL encoders without saying so.
+          - os: ubuntu-latest
+            platform: linux-x64
+            tier: decode
+            caps: decode,subs,dvbsub,webp,encav1,encopus,formats
+            maxSkipped: 43
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
@@ -223,7 +259,7 @@ jobs:
           tag="natives-${nv%%-*}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           rev=$(gh api "repos/${{ github.repository }}/releases/tags/$tag" \
-            --jq '[.assets[] | select(.name == "skinema-natives-full-${{ matrix.platform }}.tar.gz")][0].updated_at' \
+            --jq '[.assets[] | select(.name == "skinema-natives-${{ matrix.tier }}-${{ matrix.platform }}.tar.gz")][0].updated_at' \
             2>/dev/null | tr -dc '0-9TZ:-' || true)
           # A constant fallback would be a STABLE key, so one lookup failure
           # would pin a stale bundle in the cache and serve it to every later
@@ -236,7 +272,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: libav-bundle
-          key: skinema-${{ steps.natives-rev.outputs.tag }}-full-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
+          key: skinema-${{ steps.natives-rev.outputs.tag }}-${{ matrix.tier }}-${{ matrix.platform }}-${{ steps.natives-rev.outputs.rev }}
 
       - name: Download the trimmed natives bundle
         if: steps.libav-cache.outputs.cache-hit != 'true'
@@ -246,7 +282,7 @@ jobs:
         run: |
           mkdir -p libav-bundle
           curl -fsSL -o bundle.tar.gz \
-            "https://github.com/${{ github.repository }}/releases/download/$TAG/skinema-natives-full-${{ matrix.platform }}.tar.gz"
+            "https://github.com/${{ github.repository }}/releases/download/$TAG/skinema-natives-${{ matrix.tier }}-${{ matrix.platform }}.tar.gz"
           tar -xzf bundle.tar.gz -C libav-bundle
 
       # Once per matrix, not seven times: the claims are about the format set,
@@ -254,8 +290,14 @@ jobs:
       #
       # Both tables, because there are two. The guide's copy went unchecked
       # and drifted a whole tier behind the one in the README.
+      # The full tier specifically, not merely linux-x64. Both claims files are
+      # written against full as the superset -- it is the only build carrying
+      # both the GPL software encoders and the VAAPI ones -- so running them
+      # against a leaner tier reports its missing components as broken claims.
+      # Which is exactly what the decode row did on its first run: correct
+      # check, wrong gate, and the row earned its keep by finding it.
       - name: Check the format claims against the bundle
-        if: matrix.platform == 'linux-x64'
+        if: matrix.platform == 'linux-x64' && matrix.tier == 'full'
         shell: bash
         run: |
           bash tools/check-readme-formats.sh libav-bundle/manifest.txt
@@ -263,7 +305,7 @@ jobs:
           # And the write side, which had no such join at all until the encode
           # surface grew past one codec. Its own claims file and its own floor:
           # thirteen claims, not sixty.
-          bash tools/check-readme-formats.sh libav-bundle/manifest.txt README.md docs/encode-claims.txt "What it writes" 12
+          bash tools/check-readme-formats.sh libav-bundle/manifest.txt README.md docs/encode-claims.txt "What it writes" 13
 
       - name: Point skinema at the bundle under test
         if: matrix.libc != 'musl'
@@ -312,7 +354,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-${{ matrix.platform }}
+          # The tier belongs in the name now that two rows share a platform:
+          # both linux-x64 jobs uploaded under one name, and while the upload
+          # allows it, the pair is then impossible to tell apart.
+          name: test-results-${{ matrix.platform }}-${{ matrix.tier }}
           path: "**/build/test-results/test/*.xml"
           if-no-files-found: warn
           retention-days: 14

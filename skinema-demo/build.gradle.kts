@@ -119,12 +119,21 @@ tasks.register<JavaExec>("seekbench") {
 // Headless soak for the adoption bar:
 //   ./gradlew :skinema-demo:soak -Pvideo=/path/file.mp4 [-Pminutes=N]
 val soakMinutes = providers.gradleProperty("minutes")
+// A heap cap for the soak, and the reason it is worth a knob: the question the
+// adoption bar asks is whether RSS grows, and an unconstrained run answers it
+// badly. Left to a default heap, one collection happened in a whole hour --
+// so the series showed heap climbing and RSS following it, which looks like a
+// leak and is only allocation outpacing a collector that had no reason to run.
+// Capping the heap makes collections frequent, and a floor that repeats across
+// many of them is the actual evidence that nothing accumulates.
+val soakHeap = providers.gradleProperty("heap")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    soakHeap.orNull?.let { jvmArgs("-Xmx$it") }
     argumentProviders.add {
         listOfNotNull(demoVideo.orNull, soakMinutes.orNull)
     }

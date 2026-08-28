@@ -144,6 +144,10 @@ class JavaSoundSink : PcmSink {
         synchronized(positionLock) { line?.let { it.longFramePosition - playedBias } ?: 0L }
 
     override fun setVolume(volume: Float) {
+        // NaN before the clamp, which does not catch it: both of coerceIn's
+        // comparisons are false for NaN, so it passes through to a gain
+        // control that takes it without complaint and silences the line.
+        if (volume.isNaN()) return
         this.volume = volume.coerceIn(0f, 1f)
         applyVolume()
     }
