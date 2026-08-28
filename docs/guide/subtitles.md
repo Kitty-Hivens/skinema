@@ -111,12 +111,18 @@ that you must copy.
 premultiplied-alpha patches into placed `org.jetbrains.skia.Image`s (see
 [compose.md](compose.md)).
 
-Its rule is not `VideoFrameImage`'s. `update` closes the images it replaces
-immediately, so **call it from the thread that draws**: elsewhere, a draw
-holding the previous `images` can have the pixels freed under it, which is a
-native crash rather than a wrong picture. `VideoFrameImage` is the one built
-to raster off the drawing thread, because a frame is eight megabytes and an
-overlay is a handful of small patches.
+It keeps `VideoFrameImage`'s rule: one live borrow per side, so `update` may
+run off the drawing thread and what `images` returns stays alive until that
+thread reads it again. Read `images` once per draw and do not keep it. It used
+to close every image it replaced on the spot, which quietly made `update` the
+drawing thread's alone while the compose guide told you -- correctly, for
+frames -- to raster elsewhere; a consumer generalising from one to the other
+freed overlay pixels under a draw.
+
+`close` is where the two differ, and deliberately: it frees what is held and
+leaves the object usable, because turning subtitles off is a reason to drop
+the pixels while the surface lives on, and the re-selection after it has to be
+able to publish again.
 
 ## The libass capability
 
