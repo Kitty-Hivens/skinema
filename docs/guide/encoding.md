@@ -65,6 +65,20 @@ AudioEncodeConfig(
 )
 ```
 
+`width` and `height` must be positive and **even**, and `fps` positive. The
+even constraint belongs to the encoders: every one any tier ships takes a
+chroma-subsampled format (yuv420p in software, NV12 on the GPU), and a
+subsampler cannot halve an odd side. `Transcoder` takes its geometry from the
+source, so an odd-sided file -- a cropped clip, an unusual capture -- is
+refused rather than quietly padded.
+
+Those are argument checks and they throw `IllegalArgumentException`, not
+`LibavException`. So do a frame whose byte count does not match the configured
+size and a PCM buffer that is not a whole number of stereo samples.
+`LibavException` is what a *libav* refusal becomes; a
+`catch (e: LibavException)` around the encode does not see these, the same way
+it does not see the `WrongThreadException` above.
+
 Nothing is assumed about what an encoder takes. The pixel format and the
 sample format are both negotiated -- the writer asks the encoder what it
 accepts and converts into that -- so `libx264rgb`, `prores`, `qtrle`,

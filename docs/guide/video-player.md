@@ -36,10 +36,13 @@ VideoPlayer(
   taking the default.
 - `audio` -- decode and play sound. Default `false`. See
   [audio.md](audio.md).
-- `explicitClock`, `sink` -- test and advanced seams; leave them at the
-  defaults for normal use. `explicitClock` forces a `MediaClock`
-  (otherwise the player picks the audio clock when sound is present,
-  the wall clock otherwise); `sink` substitutes the audio output.
+- `explicitClock` -- forces a `MediaClock`; leave it at the default for
+  normal use, where the player picks the audio clock when sound is present
+  and the wall clock otherwise.
+- `sink` -- where the sound goes. The default opens a platform line; an
+  implementation of `PcmSink` takes the PCM instead, which is how a consumer
+  plays through its own audio stack. Ignored entirely with `audio = false`.
+  See [audio.md](audio.md).
 - `readAheadFrames` -- decoded-frame inventory depth, clamped to 1..8.
   Default 1. See the read-ahead note in
   [formats-and-behavior.md](formats-and-behavior.md).
@@ -118,14 +121,24 @@ the picture and carries on from there, which is what a background wants;
 `WhenUnwatched.KeepTime` lets time run on and rejoins the picture where
 it got to, which is what a live source wants.
 
+`Freeze` stops time with a real pause, so `state` reads `Paused` for as
+long as it lasts -- a pause you never asked for, lifted by the next
+`acquireFrame`. One you *did* ask for is never lifted that way: it
+outlives the picture being wanted again. Calling `resume()` on a player
+that paused itself is the same thing in reverse -- it takes the automatic
+lift out of play and reports `Playing`, while nothing is decoded until
+frames are actually being taken again.
+
 Saying nothing is allowed. A mailbox that was being read and stops being
 read is noticed on its own after a couple of seconds, and the next
 `acquireFrame` undoes it -- so a consumer that never thinks about this
 still stops burning a core behind a hidden window. Saying it once takes
 the automatic notice out of play: a player told to stop presenting is not
-revived by polling its consumer does for some other reason. `close()` tears the player down -- it stops the threads and frees
-native memory -- and it is bounded: one second for the whole teardown,
-not one second per side.
+revived by the polling its consumer does for some other reason.
+
+`close()` tears the player down -- it stops the threads and frees native
+memory -- and it is bounded: one second for the whole teardown, not one
+second per side.
 
 Every side is told to go before any of them is joined, so their exits
 overlap instead of queueing, and a write sitting in the sink is broken

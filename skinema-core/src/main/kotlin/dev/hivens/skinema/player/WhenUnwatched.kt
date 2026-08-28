@@ -18,7 +18,15 @@ package dev.hivens.skinema.player
  */
 enum class WhenUnwatched {
 
-    /** Time stops with the picture and resumes where it stopped. */
+    /**
+     * Time stops with the picture and resumes where it stopped.
+     *
+     * The stop is a real pause, so [VideoPlayer.state] reads
+     * [VideoPlayer.State.Paused] for as long as it lasts -- a consumer
+     * watching state sees a pause it never asked for. The next
+     * [VideoPlayer.acquireFrame] lifts it. A pause the consumer DID ask for is
+     * never lifted this way: it outlives the picture being wanted again.
+     */
     Freeze,
 
     /** Time runs on; the picture rejoins it wherever it has got to. */
