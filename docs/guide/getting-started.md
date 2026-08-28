@@ -22,9 +22,10 @@ library does. It is not expected to match the library version; the release
 notes name the pair.
 
 The natives classifier is `<tier>-<platform>`: pick one tier per platform.
-`decode` (used here) is the complete LGPL player; `core` trims to the modern
-essentials, `full` adds GPL software encode. See the README for what each
-tier carries and its license.
+`decode` (used here) is the complete LGPL build -- the whole player, and every
+encoder that adds no GPL surface; `core` trims to the modern decode essentials;
+`full` adds the software H.264 and HEVC encoders and is GPL because they are.
+See the README for what each tier carries and its license.
 
 If you are not on Compose, depend on `skinema-core` alone (the player
 and decoders) and optionally `skinema-skiko` (frames as
@@ -33,7 +34,7 @@ and decoders) and optionally `skinema-skiko` (frames as
 | Module            | Contents                                                | Runtime floor                    |
 |-------------------|---------------------------------------------------------|----------------------------------|
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
-| `skinema-skiko`   | `VideoFrameImage`: frames as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
+| `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
 | `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
 | `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 
@@ -44,11 +45,12 @@ The library is compiled to JVM 22 bytecode, because `java.lang.foreign`
 
 The `skinema-natives` classifier jars each carry a trimmed FFmpeg build
 (shared libraries) for one tier and platform: `core` is the lean modern
-decode set (LGPL), `decode` adds the libass subtitle stack and the broad
-legacy/extended format set (LGPL), and `full` adds software encode (GPL,
-x264/x265). On first use the matching jar unpacks into a per-user cache
-keyed by a content fingerprint -- atomic and safe across concurrent
-processes.
+decode set (LGPL); `decode` adds the libass subtitle stack, the broad
+legacy/extended format set, and the encoders that carry no GPL surface --
+AV1, Opus, AAC, FLAC and the VAAPI pair (LGPL); `full` adds libx264 and
+libx265 and is GPL for them alone. On first use the matching jar unpacks
+into a per-user cache keyed by a content fingerprint -- atomic and safe
+across concurrent processes.
 
 Without a natives jar on the classpath, skinema falls back to the
 system's FFmpeg libraries (matched by exact soname). That is convenient
