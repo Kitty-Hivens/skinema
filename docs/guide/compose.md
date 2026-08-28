@@ -161,9 +161,14 @@ most.
 already in flight when the surface goes away comes back with.
 
 For subtitle overlays drawn this way, `SubtitleOverlayImage` turns the
-positioned patches from `player.acquireSubtitles()` into placed images. It
-does **not** follow the borrow rule above -- its `update` closes what it
-replaces on the spot, so it belongs on the thread that draws. An overlay is a
-handful of small patches, where a frame is eight megabytes; the borrow exists
-to get that copy off the drawing thread, and there is nothing here to get off
-it. See [subtitles.md](subtitles.md).
+positioned patches from `player.acquireSubtitles()` into placed images, and it
+keeps the same borrow rule: `update` may run wherever your raster runs, and
+what `images` hands the drawing thread stays alive until that thread reads it
+again. One read per draw, same as above.
+
+Its `close` is the one thing that differs. On the frame holder it is a
+teardown and shuts the door; here it frees what is held and leaves the object
+usable, because turning subtitles off is a reason to drop the pixels while the
+surface lives on and a re-selection has to be able to publish again. Stop
+whatever calls `update` before tearing down, the way `VideoSurface` joins its
+raster thread. See [subtitles.md](subtitles.md).
