@@ -71,6 +71,26 @@ accepts and converts into that -- so `libx264rgb`, `prores`, `qtrle`,
 `flac` and `libopus` work without being special-cased. A sample rate the
 encoder does not support is refused by name rather than as a bare errno.
 
+## One thread owns the writer
+
+`MediaWriter` keeps a confined `Arena`, so `open`, every `writeFrame` and
+`writeAudio`, `finish` and `close` must all happen on the thread that called
+`open`. Anything else throws `WrongThreadException` out of FFM rather than a
+`LibavException`, so a `catch (e: LibavException)` around the encode will not
+see it.
+
+`Transcoder` inherits that: it opens its decoder and its writer inside `open`
+and `run`, so `Transcoder.open(...)` on one thread and `run()` on another
+throws. `cancel()` is the exception -- it sets a volatile and is safe from
+anywhere, which is what makes it the way to stop a run from a UI thread.
+
+This bites hardest in a coroutine. `Transcoder.open(...).use { it.run() }`
+split across a dispatcher boundary -- open on the caller, `run()` inside
+`withContext`, `close()` back on the caller through `use` -- throws. Code that
+works today because its only suspension point is `ensureActive()` (which never
+actually suspends) breaks the moment a `yield()` or a `delay()` is added for
+cancellation responsiveness.
+
 ## Timing, which is the part that bites
 
 Video timestamps are yours: `writeFrame(rgba, ptsNanos)` takes the
@@ -143,11 +163,15 @@ default) measures the source's own cadence from its first two frames;
 either way it is a rate-control hint, since the timing that reaches the
 file is each frame's own timestamp. `audioCodec = null` drops the sound.
 
-`run()` blocks until the source ends. `cancel()` stops it at the next
-frame and still writes the trailer, so a cancelled transcode leaves a
-shorter file that plays rather than a broken one. `framesWritten` and
-`positionNanos` are volatile and readable from another thread; against
-`durationNanos` the second one is your progress bar.
+`run()` blocks until the source ends, and is one-shot. `cancel()` stops
+it at the next frame and still writes the trailer, so a cancelled
+transcode leaves a shorter file that plays rather than a broken one --
+finished, not paused. Calling `run()` again is refused: it would open a
+second writer on the same path, and that truncates the file the first
+run completed. Transcode the rest with a new `Transcoder` and a new
+output. `framesWritten` and `positionNanos` are volatile and readable
+from another thread; against `durationNanos` the second one is your
+progress bar.
 
 **It re-renders; it does not copy streams.** Frames leave the decoder as
 RGBA and enter the encoder as RGBA, so each one is converted twice --

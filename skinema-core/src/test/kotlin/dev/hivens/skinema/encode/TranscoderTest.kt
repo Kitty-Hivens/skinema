@@ -7,6 +7,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.math.abs
 import kotlin.test.AfterTest
+import kotlin.concurrent.thread
+import kotlin.test.assertFailsWith
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -321,5 +323,54 @@ class TranscoderTest {
             ),
             Transcoder.rotate(src, 2, 1, 270, ByteArray(8)),
         )
+    }
+    /**
+     * A cancelled transcode is finished, not paused -- and resuming it used to
+     * destroy what it had produced.
+     *
+     * The second `run()` opened a fresh writer on the same path, and avio_open
+     * truncates, so the valid short file from the first run was replaced. The
+     * first writer was orphaned by the field assignment at the same moment,
+     * taking its confined arena, its format and codec contexts and its file
+     * handle with it, because close() only ever sees the last one. Measured
+     * before the guard: 153 frames and 1.6 MB of output, then a second run()
+     * carrying the frame counter on from 153 over a file it had just emptied.
+     *
+     * Cancelling and retrying is a natural thing for a caller to try, so the
+     * refusal names what to do instead.
+     */
+    @Test
+    fun `run is one-shot, and says so after a cancel`() {
+        Fixtures.assumeLibraryEncoder("libx264")
+        val src = Fixtures.generate(
+            dir.resolve("one-shot-src.mp4"),
+            "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=25", "-t", "30",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast",
+        )
+        val out = dir.resolve("one-shot.mp4")
+        Transcoder.open(
+            src,
+            out,
+            TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("preset" to "ultrafast")),
+        ).use { t ->
+            // run() belongs to the thread that opened it; cancel() is the one
+            // call the class documents as safe from anywhere.
+            val canceller = thread { Thread.sleep(400); t.cancel() }
+            t.run()
+            canceller.join(5_000)
+
+            val afterCancel = t.framesWritten
+            val sizeAfterCancel = Files.size(out)
+            assertTrue(afterCancel > 0, "the cancelled run must have written something")
+            assertTrue(sizeAfterCancel > 0, "and left a file")
+
+            val message = assertFailsWith<IllegalStateException> { t.run() }.message
+            assertEquals(
+                "run() is one-shot; a cancelled transcode is finished, not paused",
+                message,
+            )
+            assertEquals(afterCancel, t.framesWritten, "a refused run must not advance the counter")
+            assertEquals(sizeAfterCancel, Files.size(out), "and must not touch the file it already wrote")
+        }
     }
 }
