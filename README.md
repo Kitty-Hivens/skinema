@@ -146,7 +146,7 @@ driver on the machine is versioned against it rather than against ours.
 | Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
 | Animated images | GIF, APNG, animated WebP                                                                      |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
-| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); external .srt/.ass   |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
 
 The legacy and broadcast formats (avi/MPEG-TS/flv/asf/dv/RealMedia and the older codecs) ride the `decode` and `full` tiers; the lean `core` tier carries only the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio). H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
@@ -169,7 +169,11 @@ is not read, so the roll-off uses an assumed peak rather than the
 content's. Native-HDR passthrough (driving an HDR display) is out of scope.
 
 Subtitles: `subtitleTracks` enumerates what the container carries
-(language, title, default/forced); `selectSubtitleTrack` turns one on
+(language, title, default/forced), and grows a CEA-608/708 track the moment
+one is seen -- closed captions are not a stream but ATSC A53 payload inside
+the H.264/HEVC bitstream, so no container can be asked whether a file has
+them and nothing is advertised until a frame answers; `selectSubtitleTrack`
+turns one on
 -- off by default, nothing subtitle-related runs until then. Text
 tracks (ASS/SSA, SRT, mov_text, WebVTT) render through libass with the
 full typesetting, mkv-embedded fonts included; bitmap tracks (PGS,

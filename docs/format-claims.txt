@@ -91,4 +91,5 @@ WebVTT          = decoder:webvtt
 PGS             = decoder:pgssub
 VobSub          = decoder:dvdsub
 DVB             = decoder:dvbsub parser:dvbsub
+CEA-608/708 closed captions = decoder:ccaption
 external .srt/.ass = demuxer:srt demuxer:ass

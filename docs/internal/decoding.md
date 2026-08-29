@@ -112,6 +112,26 @@ the GPU asked to be told.
 The device reference the decoder owns is unref'd at close, after the codec
 has released its own.
 
+### Closed captions come off the frame
+
+CEA-608/708 is the one subtitle kind with no stream behind it. It rides as
+ATSC A53 payload in the H.264/HEVC SEI, and the decoders extract it
+unconditionally -- core behaviour, not a build option -- hanging it off each
+decoded frame as `AV_FRAME_DATA_A53_CC` side data.
+
+`captionBytes()` reads it through `av_frame_get_side_data` and copies, because
+the bytes belong to the frame and the next receive frees them. It is asked on
+every frame while anything is looking for captions, which is one downcall
+answering NULL on the files that have none; against a decode that is not a
+cost worth a flag, and the copy only happens when a file actually carries
+them.
+
+Two consequences reach the rest of the library. There is nothing to enumerate
+at open, so the player advertises a caption track only once a frame has
+carried one. And the payloads have to cross from the decode thread to the
+subtitle thread, which is the mode the subtitle pipeline grew for it -- see
+[threading-and-clocks.md](threading-and-clocks.md).
+
 ### Attached-picture refusal
 
 A file whose only "video" stream is the embedded cover (an mp3 or flac
