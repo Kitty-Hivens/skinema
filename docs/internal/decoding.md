@@ -82,6 +82,36 @@ AV1 decodes through dav1d (the native AV1 decoder is too slow for
 5.5s AV1 keyframe gap at ~1.5s of seek landing; threading cuts that
 roughly threefold.
 
+### Hardware decode
+
+`FrameSources.open(path, hardware)` carries an `HwAccel` policy, and when a
+device negotiates, decoded frames land in GPU memory instead of system
+memory. The platform order is fixed and best-first: VAAPI then CUDA on
+Linux, D3D11VA then DXVA2 on Windows, VideoToolbox on macOS.
+
+Two things about it are easy to get wrong, and both are about what
+"hardware decode" means once a frame exists.
+
+**The frame still comes back through system memory.** `mapHwFrame`
+downloads it with `av_hwframe_transfer_data` into a software frame, and
+everything downstream -- swscale, the tone-map, the RGBA contract -- is
+identical to the software path. What the GPU buys is the decode, not a
+zero-copy path to the screen. A download failure is fatal by design: once
+decoding is on the device there is nothing to fall back to mid-stream.
+
+**A device that opened is not a stream that engaged.** The hwaccel can fail
+to initialise for a profile the device advertises, and libavcodec answers
+that by decoding in software without saying so. `noteHwEngagement` compares
+each frame's format against the negotiated surface format and latches
+`hwFellBack` when they differ -- which is why `hardwareActive` is read off
+the FRAMES rather than off the request, and why it can go true at the open
+and false once decoding starts. Under `HwAccel.AUTO` that fallback is legal
+and silent; under `HwAccel.REQUIRE` it throws, because a caller who demanded
+the GPU asked to be told.
+
+The device reference the decoder owns is unref'd at close, after the codec
+has released its own.
+
 ### Attached-picture refusal
 
 A file whose only "video" stream is the embedded cover (an mp3 or flac
