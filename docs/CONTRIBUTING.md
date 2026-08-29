@@ -38,6 +38,15 @@ the playback loop, bench 60fps content -- 24fps masks dead time in the
 pacer. When you touch seeking, drive `:skinema-demo:seekbench` with
 `SKINEMA_DEBUG_SEEK=1` and prove the fix with data, not feel.
 
+**Break your own test before you believe it.** Every behavioural change here
+is mutation-checked: undo the fix, or invert the branch the test claims to
+cover, and confirm the run fails by name -- in each direction the test
+asserts, not just one. A test that stays green against a broken
+implementation is not evidence, and a mutation that survives means the
+SCENARIO is too weak rather than that a threshold needs loosening. The
+reasoning and the shapes that keep catching people are in
+[internal/testing.md](internal/testing.md).
+
 ## Where decisions live
 
 `../ROADMAP.md` is the project's working memory. Every architectural
