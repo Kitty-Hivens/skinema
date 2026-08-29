@@ -67,14 +67,25 @@ class ClosedCaptionFixtureTest {
      * file, decodes the video, and exposes the closed captions it finds as a
      * second output, which is written here as SubRip so the assertion can be
      * about text rather than about bytes.
+     *
+     * The file is named RELATIVELY, with the process started in its directory,
+     * and that is not tidiness. A filter graph's argument syntax spends both
+     * characters a Windows path is made of: ':' separates options and '\'
+     * escapes, so an absolute path arrives mangled and the filter opens
+     * nothing -- which reads exactly like a fixture carrying no captions.
+     * Escaping it is possible and is a second thing to get right per platform;
+     * having no colon and no backslash in the argument at all is not.
      */
     private fun readCaptionsThroughFFmpeg(file: Path): String {
         val cmd = listOf(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "movie=${file.toAbsolutePath()}[out+subcc]",
+            "-f", "lavfi", "-i", "movie=${file.fileName}[out+subcc]",
             "-map", "0:1", "-f", "srt", "-",
         )
-        val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val proc = ProcessBuilder(cmd)
+            .directory(file.toAbsolutePath().parent.toFile())
+            .redirectErrorStream(true)
+            .start()
         val out = proc.inputStream.readAllBytes().decodeToString()
         proc.waitFor(30, TimeUnit.SECONDS)
         return out
