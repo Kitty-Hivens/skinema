@@ -9,9 +9,10 @@ they fit and the rules that shaped them.
 skinema-core      FFM bindings + demux/decode + pacing + VideoPlayer
                   + MediaWriter (encode/mux); emits RGBA frames with pts,
                   takes them back in; zero UI dependency
-skinema-skiko     frame bytes -> org.jetbrains.skia.Image (one raster copy)
+skinema-skiko     frame bytes and subtitle patches -> org.jetbrains.skia.Image
+                  (one raster copy), under one borrow rule for both
 skinema-compose   VideoSurface, rememberPlayerState, VideoScale
-skinema-demo      the in-repo harness: demo, spike, seekbench, soak
+skinema-demo      the in-repo harness: run, harness, spike, seekbench, soak
 skinema-natives   trimmed FFmpeg + libass, one classifier jar per tier
                   and platform
 ```
@@ -90,9 +91,20 @@ arbitrary. The full reasoning is in `../ROADMAP.md` sections 2-10.
   memory and the RGBA contract is identical on every path. Zero-copy
   interop waits until a consumer actually needs it.
 - **One clock, never two.** Pacing depends only on the `MediaClock`
-  interface. Audio masters when present; video never re-anchors the
-  audio clock. The seam exists precisely so nothing inverts when sound
-  is bolted on.
+  interface, and audio masters when present. The seam exists precisely so
+  nothing inverts when sound is bolted on.
+
+  What the rule is NOT is "video never moves the clock". It does -- at a
+  lap and at the end of playback the decode thread places media time
+  whoever supplies it. The rule is about WHEN rather than WHO: the clock
+  is placed only where nothing is in flight on either side, and the decode
+  thread picks those points because it is the one that knows when a lap or
+  a landing is complete. The other arrangement was tried and could not
+  describe a file whose track is shorter than its picture -- the sound
+  wrapped the clock at its own end and the picture waited, so the timeline
+  sawed back to zero with seconds of video still to run. See
+  [threading-and-clocks.md](threading-and-clocks.md), which carries the
+  full list of the points where time is placed.
 
 ## The consumer that shapes scope
 
