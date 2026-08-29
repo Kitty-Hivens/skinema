@@ -265,6 +265,12 @@ object Libav {
     // which is GRAY10LE -- with every test that used it naming the same
     // constant on both sides and so proving nothing.
     private val hAvGetPixFmtName = fn(LibavLibrary.AVUTIL, "av_get_pix_fmt_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
+    /**
+     * The companion of [hAvGetPixFmtName], and there for the same reason: a
+     * transcribed sample-format number can only be checked against the library
+     * that defines it. Not used by the runtime.
+     */
+    private val hAvGetSampleFmtName = fn(LibavLibrary.AVUTIL, "av_get_sample_fmt_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecDescriptorGet =
         fn(LibavLibrary.AVCODEC, "avcodec_descriptor_get", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
@@ -561,6 +567,9 @@ object Libav {
 
     /** A static string owned by avutil, or NULL for a number no format has. */
     fun avGetPixFmtName(pixFmt: Int): MemorySegment = hAvGetPixFmtName.invoke(pixFmt) as MemorySegment
+
+    /** The same for sample formats; NULL for a number no format has. */
+    fun avGetSampleFmtName(sampleFmt: Int): MemorySegment = hAvGetSampleFmtName.invoke(sampleFmt) as MemorySegment
     /**
      * The AVFrameSideData of [type] on [frame], or NULL when it carries none.
      * The result belongs to the frame and dies with it -- read it before the
