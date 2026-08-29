@@ -457,6 +457,59 @@ object Fixtures {
     }.getOrDefault(false)
 
     /**
+     * A font file from this machine, or null when it ships none.
+     *
+     * Platform directories rather than `fc-match`, and all three platforms
+     * rather than Linux alone. Attachments are how anime releases carry their
+     * typesetting faces, so the extraction that hands them to libass is worth
+     * proving everywhere -- and gated on a Linux-only path list it was proven
+     * on Linux only: macOS and Windows skipped those tests forever, silently,
+     * with the skip ceiling absorbing both.
+     *
+     * Collections (.ttc) are left out deliberately. The fixtures attach the
+     * file under a plain ttf mimetype, and a collection carried under that
+     * label is a second thing to get right for nothing this suite asks.
+     */
+    /** Faces the three platforms ship, tried before whatever sorts first. */
+    private val PREFERRED_FONTS =
+        listOf("DejaVuSans", "LiberationSans", "NotoSans", "Arial", "Helvetica", "segoeui", "Verdana")
+
+    fun hostFont(): Path? {
+        val roots = when (Os.current()) {
+            Os.MAC -> listOf("/System/Library/Fonts/Supplemental", "/System/Library/Fonts", "/Library/Fonts")
+            Os.WINDOWS -> listOf(System.getenv("WINDIR")?.plus("\\Fonts") ?: "C:\\Windows\\Fonts")
+            Os.LINUX -> listOf("/usr/share/fonts", "/usr/local/share/fonts")
+        }
+        for (root in roots) {
+            val dir = Path.of(root)
+            if (!Files.isDirectory(dir)) continue
+            val found = runCatching {
+                Files.walk(dir).use { stream ->
+                    val fonts = stream.filter { Files.isRegularFile(it) && Files.isReadable(it) }
+                        .filter { f ->
+                            val n = f.fileName.toString().lowercase()
+                            n.endsWith(".ttf") || n.endsWith(".otf")
+                        }
+                        // Sorted, so a runner that fails names a font the next
+                        // run picks again rather than a different one.
+                        .sorted()
+                        .toList()
+                    // A face the platform is known to ship first, any face
+                    // second. Whatever sorts first in a distribution's font
+                    // directory can be a bitmap or a symbol set, and a fixture
+                    // that trips over one of those fails for a reason that has
+                    // nothing to do with what it tests.
+                    fonts.firstOrNull { f ->
+                        PREFERRED_FONTS.any { f.fileName.toString().startsWith(it, ignoreCase = true) }
+                    } ?: fonts.firstOrNull()
+                }
+            }.getOrNull()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /**
      * Runs `ffmpeg <args> <output>` and returns [output]. Fixture codecs
      * mirror the shipped decode whitelist (h264 via libx264, vp9 via
      * libvpx) -- tests must exercise what the trimmed builds carry, so CI
