@@ -136,9 +136,11 @@ jobs:
           # time: core skips 94 on macos-arm64 against under 90 on every
           # linux row, because the hardware suites gate differently where
           # there is no VAAPI. Read off a run rather than estimated, with one
-          # of slack, the way the decode row's was.
+          # of slack, the way the decode row's was -- 94 measured, one more
+          # for the canvas announcement test, which is gated on subtitles now
+          # rather than on decode and therefore skips on this tier.
           case "${{ matrix.tier }}" in
-            core)   caps="decode,webp";                                  skipped=95 ;;
+            core)   caps="decode,webp";                                  skipped=96 ;;
             decode) caps="decode,webp,subs,formats,encav1,encopus,cea608";      skipped=60 ;;
             full)   caps="decode,webp,subs,formats,encav1,encopus,cea608,encode"; skipped=50 ;;
           esac
