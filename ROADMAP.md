@@ -1306,6 +1306,36 @@ which makes the run intrusive on a desktop for no gain in what it measures.
   That closes the first two clauses of the adoption bar below: on Central with
   bundled natives for its platforms, and adopted as an artifact. The third --
   a milestone without breaking changes -- is the one still running.
+- TTML / SMPTE-TT / DFXP: **reachable, and deferred past 1.0 by scope rather
+  than by cost.** FFmpeg has a TTML encoder and muxer and no decoder, which
+  reads as "not possible without a subsystem" and is wrong. What is already
+  there: the stream demuxes (TTML in mp4 arrives as `stpp` / `codec_name=ttml`,
+  each packet a complete XML document), fixtures are GENERATABLE by the CLI
+  (`-c:s ttml`), so the rule that fixtures are built at test time is met with
+  no special machinery -- unlike the closed captions of M20, whose generator
+  had to write A53 bytes into a bitstream by hand. A standalone `.ttml` file is
+  refused as input, so external files would need their own reader; on the JVM
+  that is a text file.
+
+  What is missing is one thing: a TTML to ASS converter, which is how FFmpeg's
+  own text decoders work and what a `ttmldec` would be. It needs no dependency
+  here -- `javax.xml.stream` is in the standard library -- and would be pure
+  Kotlin, testable with no natives, which is the shape section 3 keeps the
+  Libav facade for.
+
+  The cost is the specification's breadth: time expressions (frames against
+  `ttp:frameRate`, ticks against `ttp:tickRate`, three `ttp:timeBase` values),
+  a referential and inheritable style cascade with regions layered over it, and
+  regions mapped onto ASS positioning, which is lossy in a way that has to be
+  decided rather than derived.
+
+  **The gate is scope.** "TTML in general" is a trap: a file using a feature
+  the converter does not map renders WRONG rather than not at all, which is the
+  shape refused everywhere else here -- the same reason M20 rejected supporting
+  only the closed captions that ride as a container track. A defensible version
+  picks one profile, IMSC1 text or EBU-TT-D, and refuses the rest by name.
+  Tracked in the subtitle coverage issue, open and marked for help.
+
 - HDR: PQ and HLG are tone-mapped to SDR in software on the RGBA path
   (ToneMap.kt) -- detected by color_trc, swscaled to 16-bit RGBA, then
   inverse-EOTF -> extended-Reinhard knee against BT.2408 diffuse white
