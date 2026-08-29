@@ -29,6 +29,19 @@ internal class AudioPipeline(
     private val sink: PcmSink,
     private val initialTrack: Int? = null,
     initialVolume: Float = 1f,
+    /**
+     * Open frozen, and stay frozen until a Resume arrives.
+     *
+     * The player's `startPaused` cannot be delivered as a command: this
+     * pipeline is constructed in a field initializer, so its thread opens the
+     * line -- which JavaSound STARTS on open -- and writes its first chunk
+     * while the decode thread is still inside the video open that the
+     * clockFuture it just completed released it to do. The pause always
+     * arrived after the sound. A player asked to open paused therefore has to
+     * tell this side at construction, the way the volume does and for exactly
+     * the same reason.
+     */
+    private val startPaused: Boolean = false,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
     private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
 ) {
@@ -381,7 +394,19 @@ internal class AudioPipeline(
         clockFuture.complete(theClock)
         startWatchdog()
         sampleRate = first.sampleRate
-        guardedWrite(first.pcm, first.byteCount)
+        if (startPaused) {
+            // Frozen before the first sample rather than after it. The chunk
+            // is kept rather than dropped, because it is the start of the
+            // file: written on the first Resume, from the pending slot that
+            // exists for exactly this -- a chunk that must not go into a
+            // stopped line, since a stopped line never drains and the start()
+            // that would revive it is on this same thread.
+            paused = true
+            freezeSink()
+            pendingPcm = first.pcm.copyOf(first.byteCount)
+        } else {
+            guardedWrite(first.pcm, first.byteCount)
+        }
 
         while (true) {
             if (deviceLost && !recover()) return
