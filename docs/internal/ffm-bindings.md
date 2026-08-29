@@ -8,10 +8,11 @@ Key files, all in `skinema-core/.../libav/`:
 
 | File              | Role                                                            |
 |-------------------|----------------------------------------------------------------|
-| `Libav.kt`        | the facade: loads each library, binds ~80 downcalls, wraps them |
+| `Libav.kt`        | the facade: loads each library, binds ~90 downcalls and the upcalls, wraps them |
 | `LibavLibrary.kt` | the soname enum -- one entry per pinned library + filename rule |
 | `LibavAbi.kt`     | struct field offsets and enum constants for the pinned major   |
 | `NativeBundle.kt` | unpacks the classifier jar into a fingerprint-keyed cache      |
+| `AvioSource.kt`   | a custom AVIO source: two upcalls over a consumer's byte source |
 
 The optional capability mirrors the same shape: `ass/Ass.kt` +
 `AssAbi.kt`. There used to be a second, `webp/Webp.kt` + `WebpAbi.kt`,
@@ -103,6 +104,44 @@ sized view before reading. A raw pointer read without `.reinterpret`
 yields a zero-length segment and throws on first access -- one of the
 known traps below.
 
+## Upcalls, and the barrier every one of them needs
+
+Four native callbacks point back into Kotlin, and they are the sharpest
+edge in this layer:
+
+| Upcall              | Where                        | What it does                          |
+|---------------------|------------------------------|---------------------------------------|
+| libass log          | `ass/Ass.kt`                 | a `MethodHandles.empty` stub, silences libass |
+| `get_format`        | `Libav.chooseHwFormat`       | picks the hw surface during hwaccel negotiation |
+| AVIO `read_packet`  | `AvioSource.kt`              | fills a native buffer from a consumer's source |
+| AVIO `seek`         | `AvioSource.kt`              | repositions that source               |
+
+**A Throwable unwinding out of an upcall with native frames below it takes
+the JVM down without a stack trace.** Not an exception the caller sees: the
+process. So every upcall carrying logic ends in a catch, and what it does
+there is the design:
+
+- `chooseHwFormat` answers `AV_PIX_FMT_NONE`, which avcodec reads as "no
+  format is acceptable" and fails the decode. That is deliberately NOT a
+  fallback to software -- one file fails closed instead of the process dying
+  without a word. It got its barrier last, because "it cannot throw" was
+  true rather than enforced.
+- The AVIO pair stashes the throwable in `pendingError` and stops the
+  demuxer. A consumer's byte source is exactly where an `IOException` is a
+  normal failure, so the decode thread calls `throwIfFailed` after a read
+  and resurfaces it as itself -- fail-closed, with the real cause.
+
+The libass stub is the exception that proves the rule: it is
+`MethodHandles.empty`, so there is no code to throw, and it never
+dereferences the `va_list` it is handed.
+
+One more thing `chooseHwFormat` records, because it cost a whole feature.
+The surface to aim for is read off the CONTEXT, not off the calling thread.
+A frame-threaded decoder negotiates on one of its own workers rather than on
+the thread that opened the file, so a thread-scoped target is simply absent
+when the upcall runs -- and absent means the software entry. Hardware decode
+was being negotiated away on every open while the device sat there ready.
+
 ## Memory discipline
 
 One confined `Arena` per decode session, owned by the decode thread,
@@ -123,6 +162,10 @@ Each was paid for once; do not rediscover them.
 3. FFM pointer dereferences need `.reinterpret(size)`. A raw read
    yields a zero-length segment and an `IndexOutOfBoundsException` on
    first access.
+4. A Throwable unwinding out of an upcall takes the **process** down,
+   without a stack trace -- not the caller's frame, the JVM. Every upcall
+   carrying logic ends in a catch; see the upcall section above for what
+   each of them answers instead.
 
 ## Soname pinning
 
@@ -204,7 +247,7 @@ by name or soname:
 `Ass.available` is `false` and text subtitles refuse selection while
 everything else plays on -- that flag is the documented way for a
 consumer to ask, too. This is
-also where skinema's only FFM upcall lives: libass logs to stderr
-unless a message callback is set, and NULL is a no-op, so a
-`MethodHandles.empty` stub silences it without ever dereferencing the
-`va_list` it is handed.
+also where the simplest of skinema's four FFM upcalls lives (the others
+are above): libass logs to stderr unless a message callback is set, and NULL
+is a no-op, so a `MethodHandles.empty` stub silences it without ever
+dereferencing the `va_list` it is handed.

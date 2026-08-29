@@ -8,9 +8,10 @@ workflows plus the `skinema-natives` module.
 
 A per-platform bundle carries a trimmed FFmpeg (shared libraries) plus
 libass and its dependencies, against ~70 MB for a full build. What goes
-in depends on the tier: `core` is the modern decode essentials, `decode`
-adds subtitles and the legacy/broadcast format set, and `full` adds the
-encoders (which is what makes it GPL). The FFmpeg `./configure` is
+in depends on the tier: `core` is the modern decode essentials; `decode`
+adds subtitles, the legacy/broadcast format set and every encoder that adds
+no GPL surface; `full` adds the software H.264/HEVC pair, which is the only
+thing that makes it GPL (M18). The FFmpeg `./configure` is
 disable-everything plus an explicit whitelist, assembled per feature;
 `tools/build-natives.sh` is authoritative and the only place the real
 list lives. Its shape, with the feature-gated groups collapsed:
@@ -29,15 +30,24 @@ list lives. Its shape, with the feature-gated groups collapsed:
 --enable-parser=h264,hevc,vp8,vp9,av1,mjpeg,png,webp,gif,aac,mpegaudio,
                 opus,vorbis,flac,ac3
 --enable-filter=atempo
-                                    [+ encode: --enable-gpl --enable-libx264 --enable-libx265
-                                               --enable-encoder=libx264,libx265,aac,flac,h264_vaapi,hevc_vaapi
-                                               --enable-muxer=mov,mp4,matroska,webm]
+                                    [+ enc-av1:   --enable-libsvtav1 ]  encoders: libsvtav1
+                                    [+ enc-opus:  --enable-libopus   ]            libopus
+                                    [+ enc-vaapi:                    ]            h264_vaapi,hevc_vaapi
+                                    [+ enc-h264/hevc: --enable-gpl --enable-libx264 --enable-libx265 ]
+                                                                                  libx264,libx265
+                                    [ any encoder pulls aac,flac and
+                                      --enable-muxer=mov,mp4,matroska,webm,opus,flac,wav ]
                                     [+ hwaccel: --enable-vaapi / --enable-videotoolbox / --enable-d3d11va]
 ```
 
 Animated WebP decodes through FFmpeg's own `webp_anim`; the libwebp,
 libwebpdemux and libsharpyuv that used to carry it are no longer built
 or shipped.
+
+The encode features are separate on purpose, one per licence consequence:
+`enc-av1` (SVT-AV1) and `enc-opus` (libopus) are BSD, `enc-vaapi`'s codec
+lives in the GPU driver, and only `enc-h264`/`enc-hevc` flip `--enable-gpl`.
+That is what lets `decode` write without becoming GPL.
 
 `--disable-network` is a load-bearing guarantee, not an optimization:
 the shipped library physically cannot do I/O beyond the file given to
@@ -156,7 +166,7 @@ them.
 
 ## The files that hold the invariants
 
-Three artefacts carry claims the build asserts rather than restates, and a
+These artefacts carry claims the build asserts rather than restates, and a
 change that contradicts one fails CI rather than shipping:
 
 - `tools/bundle-surface.txt` -- the host libraries each libc/tier bundle is
@@ -167,6 +177,14 @@ change that contradicts one fails CI rather than shipping:
   bundle's `manifest.txt`. Editing that table without editing the claims file
   fails the pull request, which is the point: the README advertised a subtitle
   decoder no bundle carried for the whole life of the project.
+- `docs/encode-claims.txt` -- the same join for the "What it writes" table,
+  through the same script, which takes the section heading and a claim floor
+  as arguments. An encoder can go missing exactly as quietly as that decoder
+  did. The check runs on the `full` tier alone, because that is the only
+  build carrying the GPL software pair and the VAAPI one at once -- gating it
+  on the platform instead was silently true until a second `linux-x64` row
+  existed, and then reported libx264 missing from a `decode` bundle that was
+  never supposed to have it.
 - `tools/check-windows-bundle.sh` -- import closure and preload order for the
   Windows bundles, read off the PE headers and off the loader's own preload
   lists in the Kotlin sources.
@@ -198,9 +216,13 @@ platforms, and a rebuild replaces just its own asset.
   first-class, because GitHub's free `ubuntu-24.04-arm` and `windows-11-arm`
   runners are real machines. The matrix is generated in a prepare job, so a
   dispatch can narrow to one platform or tier (`only_platform`/`only_tier`).
-- **build.yml** (push and PR) runs the test matrix on seven platforms,
-  downloads OUR release bundles (not BtbN or brew), points
-  `SKINEMA_LIBAV_DIR` at them, and runs `./gradlew build`. On Windows it
+- **build.yml** (push to main, pull request, or `workflow_dispatch` for a
+  branch that has no PR yet) runs the test matrix on eight rows: the seven
+  platforms on the `full` tier, plus a `linux-x64 / decode` row, because
+  `decode` is the tier the consumer ships and it had been seeing only its own
+  acceptance pass inside `natives.yml`. Each downloads OUR release bundles
+  (not BtbN or brew), points `SKINEMA_LIBAV_DIR` at them, and runs
+  `./gradlew build`. On Windows it
   strips mingw/msys from PATH first, so a green run proves the bundle is
   self-contained rather than leaning on the toolchain.
 
