@@ -62,6 +62,7 @@ read-ahead inventory lasts. This split is the core of the runtime; see
 |---------------------------------|-------------------------------------------------------|
 | Panama bindings, ABI, loader    | [ffm-bindings.md](ffm-bindings.md)                    |
 | Decoders, swscale, HDR, atempo  | [decoding.md](decoding.md)                            |
+| Encoders, muxing, transcode     | [encoding.md](encoding.md)                            |
 | Threads, queue, pacer, clocks   | [threading-and-clocks.md](threading-and-clocks.md)    |
 | Native build, bundle, CI ship   | [natives-build.md](natives-build.md)                  |
 | Tests, capability gates, doubles| [testing.md](testing.md)                              |
