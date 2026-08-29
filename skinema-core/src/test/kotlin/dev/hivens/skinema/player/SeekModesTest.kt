@@ -237,6 +237,46 @@ class SeekModesTest {
             assertEquals(2_000_000_000L, seen, "the relative base is the landed position")
         }
     }
+    /**
+     * A wrap performed under a pause has nobody to decode the lap it turned
+     * into: only the Playing arm of the decode loop fills the queue. The seek
+     * had already cleared the inventory, so the wrap moved the timeline to
+     * zero and left the picture on whatever the press jumped from, and the two
+     * disagreed until something resumed.
+     */
+    @Test
+    fun `a paused player seeked past the end of a looping file wraps with its picture`() {
+        val source = ScriptedFrameSource(frameCount = 10)
+        VideoPlayer(
+            Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f,
+        ) { source }.use { p ->
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "state=${p.state}")
+            // Far enough in that the wrap has somewhere to come back FROM: at
+            // frame zero it would read the same either way.
+            frames.set(48_000L * 500 / 1_000)
+            var shown = -1L
+            assertTrue(
+                awaitTrue { p.acquireFrame()?.let { shown = it.ptsNanos }; shown > 0L },
+                "the picture must get past its first frame, saw ${shown}ns",
+            )
+            p.pause()
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "state=${p.state}")
+            // Drain the mailbox, so the next frame out of it is the wrap's own
+            // doing rather than something the pause left standing.
+            val drainBy = System.currentTimeMillis() + 2_000
+            while (p.acquireFrame() != null && System.currentTimeMillis() < drainBy) Thread.sleep(5)
+
+            p.seek(100_000_000_000L)
+
+            var wrapped = -1L
+            assertTrue(
+                awaitTrue { p.acquireFrame()?.let { wrapped = it.ptsNanos }; wrapped >= 0L },
+                "the wrap must bring the new lap's first frame with it, state=${p.state}",
+            )
+            assertEquals(0L, wrapped, "the picture must be the start of the new lap")
+            assertIs<VideoPlayer.State.Paused>(p.state)
+        }
+    }
 }
 
 /**
@@ -385,4 +425,5 @@ class InexactSeekAudioTest {
             )
         }
     }
+
 }

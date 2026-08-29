@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.NoVideoStreamException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -99,6 +100,42 @@ class FramelessPlaybackTest {
                 "the lap must come round, stuck at ${player.positionNanos() / 1_000_000}ms",
             )
             assertIs<VideoPlayer.State.Playing>(player.state, "and keep playing")
+        }
+    }
+
+    /**
+     * A frameless lap that cannot be measured has to end rather than turn.
+     *
+     * Both marks go at once here: an audio side that never opened a stream
+     * sets its ended flag together with the flag saying it is gone, and with
+     * no track there is no duration to fall back on either. The lap then reads
+     * as finished on every pass, and looping on that answer wrapped to zero
+     * ten times a second for as long as the file stayed open -- the position
+     * pinned there, the state still reporting Playing, and nothing to tell a
+     * consumer anything was wrong.
+     *
+     * The pair is reached through the frame-source seam rather than a fixture.
+     * What has to exist is a container this build can neither show nor play,
+     * and the seam states that in one line where a file would have to lean on
+     * a codec no build is promised to lack.
+     */
+    @Test
+    fun `a looping frameless lap with nothing to measure ends instead of spinning`() {
+        Fixtures.assumeDecodeEnvironment()
+        // Video only, so the audio side finds no stream and never gets a
+        // duration; the seam then takes the picture away as well.
+        val noSound = Fixtures.generate(
+            dir.resolve("nosound.mp4"),
+            "-f", "lavfi", "-i", "color=c=black:s=32x32:r=5", "-t", "1",
+            "-c:v", "libx264", "-preset", "ultrafast",
+        )
+        VideoPlayer(
+            noSound, true, true, null, NoDevice(), 1, null, WhenUnwatched.Freeze, false, 1f,
+        ) { throw NoVideoStreamException("nothing this player can show") }.use { player ->
+            assertTrue(
+                awaitTrue(5_000) { player.state is VideoPlayer.State.Ended },
+                "a lap with nothing to measure must end rather than turn, state=${player.state}",
+            )
         }
     }
 }
