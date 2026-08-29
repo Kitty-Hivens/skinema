@@ -117,6 +117,7 @@ int main(void) {
     P(offsetof(AVCodecParameters, nb_coded_side_data));
     P(offsetof(AVCodecParameters, extradata));
     P(offsetof(AVCodecParameters, extradata_size));
+    P(offsetof(AVCodecParameters, format));
     P(offsetof(AVCodecParameters, width));
     P(offsetof(AVCodecParameters, height));
     P(sizeof(AVCodecParameters));
