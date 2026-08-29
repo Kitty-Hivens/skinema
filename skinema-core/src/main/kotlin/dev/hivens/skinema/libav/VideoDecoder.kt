@@ -211,6 +211,26 @@ class VideoDecoder private constructor(
     override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
 
     /**
+     * The frame's A53 payload, copied out because the frame owns it and the
+     * next receive frees it.
+     *
+     * Asked per frame while anything is looking for captions, which is one
+     * downcall answering NULL on files that have none -- against a decode,
+     * that is not a cost worth a flag. The copy only happens when a file
+     * actually carries captions, and then it is tens of bytes.
+     */
+    override fun captionBytes(): ByteArray? {
+        val sd = Libav.avFrameGetSideData(frame, LibavAbi.AV_FRAME_DATA_A53_CC)
+        if (sd == MemorySegment.NULL) return null
+        val view = sd.reinterpret(LibavAbi.FrameSideData.SIZEOF)
+        val size = view.get(JAVA_LONG, LibavAbi.FrameSideData.SIZE)
+        if (size <= 0) return null
+        val data = view.get(ADDRESS, LibavAbi.FrameSideData.DATA)
+        if (data == MemorySegment.NULL) return null
+        return data.reinterpret(size).toArray(JAVA_BYTE)
+    }
+
+    /**
      * Where the frame just received stops being shown. Read off the frame
      * rather than inferred from the gap to the next one, because the last
      * frame of a stream has no next one -- and on a format whose frames carry

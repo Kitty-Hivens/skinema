@@ -970,9 +970,18 @@ has webp && { DEMUX+=",image_webp_pipe,webp_anim"; DECODE+=",webp,webp_anim"; PA
 # the decoder starts 20 00 0f rather than 0f. Matroska stores the unit already
 # stripped and needs no parser, which is why a fixture in that container
 # cannot see the gap.
+#
+# ccaption (the cc_dec decoder, codec eia_608) is the odd one and needs no
+# demuxer at all, because CEA-608/708 captions are not a stream: they ride as
+# A53 SEI inside the H.264/HEVC bitstream and reach the library as side data
+# on decoded video frames. The h264/hevc decoders extract them unconditionally
+# -- that part is core, not a build option -- so what the whitelist has to
+# carry is only the decoder that turns those bytes into cues. It selects the
+# ASS infrastructure that is already here for the text tracks, and it emits
+# ASS, so nothing downstream is new either.
 has subs && {
     DEMUX+=",ass,srt,webvtt,sup"
-    DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub"
+    DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub,ccaption"
     PARSE+=",dvbsub"
 }
 # The broad legacy/extended decode set (the "formats" feature). All native

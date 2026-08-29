@@ -404,6 +404,32 @@ before code:
   pipeline is not deduplicated against the old one's value, which is what
   lets the player re-state the size it was told while none existed.
 
+### The caption mode, where the packets come from the video
+
+A closed-caption pipeline demuxes nothing. There is no stream: the decode
+thread lifts A53 payload off each frame and hands it over through
+`submitCaptions`, so the pipeline opens no format context, seeks no demuxer
+and has no read-ahead horizon -- the video paces it by construction. It is
+recognised by its track's codec name, and everything after the decoder is the
+text path unchanged, because cc_dec emits ASS like the converted codecs do.
+
+Three details carry it.
+
+The queue between the two threads is **bounded and dropping**. The producer is
+the thread that paces the picture, so a subtitle side that fell behind must
+never become back-pressure on it: a dropped payload costs a caption, a blocked
+decode thread costs the video.
+
+A reposition **flushes rather than seeks**. The video side has already moved;
+what has to go is the state from before the jump -- payloads still queued, the
+decoder's half-assembled row, and the ass track's cues, which a preroll will
+not replay because captions are not re-read from a container.
+
+The packets are **synthesised**: a scratch buffer this side owns, padded by
+`AV_INPUT_BUFFER_PADDING_SIZE` because a decoder may read past the end of a
+packet, with a microsecond time base chosen here rather than read off a
+stream, since the payloads arrive already stamped on the player's timeline.
+
 Bitmap tracks convert to premultiplied patches once at decode time and
 live in a window schedule (a window closes at its own end, the packet
 duration, or the next event; `num_rects == 0` is the PGS clear). The

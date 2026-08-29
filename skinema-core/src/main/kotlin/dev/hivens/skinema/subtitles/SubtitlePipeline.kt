@@ -60,6 +60,44 @@ internal class SubtitlePipeline(
 ) {
 
     /**
+     * Closed captions, which are not a stream and therefore not demuxed here.
+     *
+     * CEA-608/708 rides as A53 SEI inside the video bitstream: the decode
+     * thread lifts it off each frame and hands it over through
+     * [submitCaptions], so this pipeline opens no format context, seeks no
+     * demuxer, and has no horizon to read ahead to -- the video side paces it
+     * by construction. Everything after the decoder is shared with the text
+     * tracks, because cc_dec emits ASS like they do.
+     */
+    private val fromVideoFrames = track.codecName == CAPTION_CODEC_NAME
+
+    /**
+     * Caption payloads waiting to be decoded, newest last.
+     *
+     * BOUNDED and dropping, which is the whole point: the producer is the
+     * decode thread, and a subtitle side that fell behind must never become
+     * back-pressure on the picture. A dropped payload costs at most a caption
+     * that never appears; a blocked decode thread costs the video.
+     */
+    private val captionQueue = java.util.concurrent.ArrayBlockingQueue<CaptionPayload>(CAPTION_QUEUE_DEPTH)
+
+    private class CaptionPayload(val bytes: ByteArray, val ptsNanos: Long)
+
+    /**
+     * Hands over the A53 bytes decoded off one video frame, from the decode
+     * thread. Never blocks and never throws: a full queue drops the oldest
+     * rather than waiting, because the caller is the thread that paces the
+     * picture.
+     */
+    fun submitCaptions(bytes: ByteArray, ptsNanos: Long) {
+        if (isDead || !fromVideoFrames) return
+        val payload = CaptionPayload(bytes, ptsNanos)
+        while (!captionQueue.offer(payload)) {
+            if (captionQueue.poll() == null) return
+        }
+    }
+
+    /**
      * Seeks issued but not yet performed; tests handshake on it (the
      * audio pipeline's contract). Zeroed when the thread dies.
      */
@@ -97,6 +135,10 @@ internal class SubtitlePipeline(
     private var assTrack = MemorySegment.NULL
     private var canvasWidth = 0
     private var canvasHeight = 0
+
+    // Native home for a caption payload on its way into the decoder; grown on
+    // demand and reused, because one arrives per decoded frame.
+    private var captionScratch = MemorySegment.NULL
     private var eofReached = false
     private var timeBaseNum = 1
     private var timeBaseDen = 1
@@ -311,6 +353,10 @@ internal class SubtitlePipeline(
     }
 
     private fun open() {
+        if (fromVideoFrames) {
+            openCaptionDecoder()
+            return
+        }
         val ctxOut = arena.allocate(ADDRESS)
         Libav.checkAv(
             Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
@@ -339,35 +385,7 @@ internal class SubtitlePipeline(
         Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2(subs)")
 
         if (track.isText) {
-            check(Ass.available) { "text subtitles need libass" }
-            assLibrary = Ass.libraryInit()
-            if (assLibrary == MemorySegment.NULL) throw LibavException("ass_library_init returned NULL")
-            // Anime mkv ships its typesetting fonts as attachments; they
-            // must be in the library before the renderer's font provider
-            // initializes.
-            Ass.setExtractFonts(assLibrary, true)
-            addAttachedFonts()
-            assRenderer = Ass.rendererInit(assLibrary)
-            if (assRenderer == MemorySegment.NULL) throw LibavException("ass_renderer_init returned NULL")
-            canvasWidth = storageSize?.first ?: DEFAULT_CANVAS_WIDTH
-            canvasHeight = storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
-            Ass.setFrameSize(assRenderer, canvasWidth, canvasHeight)
-            storageSize?.let { Ass.setStorageSize(assRenderer, it.first, it.second) }
-            Ass.setFonts(assRenderer, arena.allocateFrom("sans-serif"))
-            assTrack = Ass.newTrack(assLibrary)
-            if (assTrack == MemorySegment.NULL) throw LibavException("ass_new_track returned NULL")
-            // The ASS header (styles included) comes from the OPENED
-            // decoder context: converted codecs (subrip, mov_text)
-            // synthesize a default header there while their codecpar
-            // extradata stays empty; native ASS copies its extradata in.
-            val sized = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
-            val headerSize = sized.get(JAVA_INT, LibavAbi.CodecContext.SUBTITLE_HEADER_SIZE)
-            if (headerSize > 0) {
-                val header = sized.get(ADDRESS, LibavAbi.CodecContext.SUBTITLE_HEADER)
-                if (header != MemorySegment.NULL) {
-                    Ass.processCodecPrivate(assTrack, header, headerSize)
-                }
-            }
+            openAssRenderer()
         } else {
             // Bitmap planes carry their own geometry; the overlay canvas
             // IS that plane and the consumer scales it onto the video.
@@ -375,6 +393,68 @@ internal class SubtitlePipeline(
             val planeHeight = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
             canvasWidth = if (planeWidth > 0) planeWidth else storageSize?.first ?: DEFAULT_CANVAS_WIDTH
             canvasHeight = if (planeHeight > 0) planeHeight else storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
+        }
+    }
+
+    /**
+     * The closed-caption session: a decoder and libass, and nothing else.
+     *
+     * There is no stream to find, no codec parameters to copy in and no
+     * container time base to read -- the payloads arrive already stamped on
+     * the player's own timeline, so the time base is set to microseconds and
+     * the start-time origin to zero, and [decodePacket]'s arithmetic then
+     * lands where it does for every other track.
+     *
+     * cc_dec produces ASS and fills subtitle_header like the converted text
+     * codecs do, so the renderer below is the text path unchanged.
+     */
+    private fun openCaptionDecoder() {
+        timeBaseNum = 1
+        timeBaseDen = CAPTION_TIME_BASE_DEN
+        startTimeNanos = 0
+
+        val decoder = Libav.avcodecFindDecoder(LibavAbi.AV_CODEC_ID_EIA_608)
+        if (decoder == MemorySegment.NULL) throw LibavException("this build has no closed-caption decoder")
+        codecCtx = Libav.avcodecAllocContext3(decoder)
+        if (codecCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3(cc) returned NULL")
+        Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2(cc)")
+        openAssRenderer()
+    }
+
+    /**
+     * libass, the renderer and the track, with the ASS header taken off the
+     * OPENED decoder context. Shared by the text tracks and the captions:
+     * both arrive as ASS events and differ only in where the bytes came from.
+     */
+    private fun openAssRenderer() {
+        check(Ass.available) { "text subtitles need libass" }
+        assLibrary = Ass.libraryInit()
+        if (assLibrary == MemorySegment.NULL) throw LibavException("ass_library_init returned NULL")
+        // Anime mkv ships its typesetting fonts as attachments; they
+        // must be in the library before the renderer's font provider
+        // initializes. A caption session has no container to walk.
+        Ass.setExtractFonts(assLibrary, true)
+        if (!fromVideoFrames) addAttachedFonts()
+        assRenderer = Ass.rendererInit(assLibrary)
+        if (assRenderer == MemorySegment.NULL) throw LibavException("ass_renderer_init returned NULL")
+        canvasWidth = storageSize?.first ?: DEFAULT_CANVAS_WIDTH
+        canvasHeight = storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
+        Ass.setFrameSize(assRenderer, canvasWidth, canvasHeight)
+        storageSize?.let { Ass.setStorageSize(assRenderer, it.first, it.second) }
+        Ass.setFonts(assRenderer, arena.allocateFrom("sans-serif"))
+        assTrack = Ass.newTrack(assLibrary)
+        if (assTrack == MemorySegment.NULL) throw LibavException("ass_new_track returned NULL")
+        // The ASS header (styles included) comes from the OPENED
+        // decoder context: converted codecs (subrip, mov_text, cc_dec)
+        // synthesize a default header there while their codecpar
+        // extradata stays empty; native ASS copies its extradata in.
+        val sized = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+        val headerSize = sized.get(JAVA_INT, LibavAbi.CodecContext.SUBTITLE_HEADER_SIZE)
+        if (headerSize > 0) {
+            val header = sized.get(ADDRESS, LibavAbi.CodecContext.SUBTITLE_HEADER)
+            if (header != MemorySegment.NULL) {
+                Ass.processCodecPrivate(assTrack, header, headerSize)
+            }
         }
     }
 
@@ -464,6 +544,10 @@ internal class SubtitlePipeline(
      * video/audio after each seek, deaf to commands the whole time.
      */
     private fun refill(packet: MemorySegment, subtitle: MemorySegment, got: MemorySegment, nowNanos: Long) {
+        if (fromVideoFrames) {
+            drainCaptions(packet, subtitle, got)
+            return
+        }
         if (eofReached) return
         val gate = demuxNowNanos(nowNanos)
         while (lastDemuxedPtsNanos < gate + HORIZON_NANOS) {
@@ -500,6 +584,56 @@ internal class SubtitlePipeline(
             // or close must not wait out the whole replay.
             if (commands.peek() != null) return
         }
+    }
+
+    /**
+     * Decodes whatever the decode thread has handed over since the last tick.
+     *
+     * There is no horizon here and no read-ahead to bound, because the
+     * producer IS the video: payloads arrive at the rate frames are decoded
+     * and stop when it stops. What bounds this side is the queue's own depth,
+     * and it drops rather than blocks -- see [submitCaptions].
+     *
+     * The whole queue is drained per tick rather than one payload: captions
+     * are a byte pair per field per frame, so a cue is spread across many
+     * payloads and stopping early would leave a half-written line on screen
+     * until the next tick.
+     */
+    private fun drainCaptions(packet: MemorySegment, subtitle: MemorySegment, got: MemorySegment) {
+        while (true) {
+            val payload = captionQueue.poll() ?: return
+            writeCaptionPacket(packet, payload)
+            decodePacket(packet, subtitle, got)
+            // Left clean for the next writer rather than unref'd: the data
+            // belongs to the scratch buffer below, not to a packet buffer, so
+            // there is no reference to drop and av_packet_unref would only
+            // zero what is about to be overwritten.
+            packet.set(ADDRESS, LibavAbi.Packet.DATA, MemorySegment.NULL)
+            packet.set(JAVA_INT, LibavAbi.Packet.SIZE, 0)
+        }
+    }
+
+    /**
+     * Points [packet] at a native copy of the payload.
+     *
+     * The copy is into a scratch buffer this pipeline owns, grown on demand
+     * and padded: a decoder is entitled to read a little past the end of a
+     * packet, which is what AV_INPUT_BUFFER_PADDING_SIZE is for, and a heap
+     * array handed straight over would have nothing there.
+     */
+    private fun writeCaptionPacket(packet: MemorySegment, payload: CaptionPayload) {
+        val needed = payload.bytes.size.toLong() + CAPTION_PACKET_PADDING
+        if (captionScratch == MemorySegment.NULL || captionScratch.byteSize() < needed) {
+            captionScratch = arena.allocate(needed)
+        }
+        MemorySegment.copy(payload.bytes, 0, captionScratch, JAVA_BYTE, 0, payload.bytes.size)
+        // The padding must be zero, not whatever the previous payload left.
+        captionScratch.asSlice(payload.bytes.size.toLong(), CAPTION_PACKET_PADDING).fill(0)
+        packet.set(ADDRESS, LibavAbi.Packet.DATA, captionScratch)
+        packet.set(JAVA_INT, LibavAbi.Packet.SIZE, payload.bytes.size)
+        packet.set(JAVA_LONG, LibavAbi.Packet.PTS, payload.ptsNanos / (1_000_000_000L / CAPTION_TIME_BASE_DEN))
+        packet.set(JAVA_LONG, LibavAbi.Packet.DTS, LibavAbi.AV_NOPTS_VALUE)
+        packet.set(JAVA_LONG, LibavAbi.Packet.DURATION, 0)
     }
 
     private fun demuxNowNanos(clockNanos: Long): Long {
@@ -715,6 +849,21 @@ internal class SubtitlePipeline(
      */
     private fun reposition(targetNanos: Long) {
         repositions++
+        if (fromVideoFrames) {
+            // Nothing to seek. The captions come from the video side, which
+            // has already repositioned itself -- what arrives next is
+            // whatever it decodes there. What has to go is the state built
+            // from BEFORE the jump: payloads still queued belong to the old
+            // position, the decoder holds a half-assembled row, and the ass
+            // track holds cues that will not be re-sent, since a caption is
+            // not replayed by a preroll the way a demuxed cue is.
+            captionQueue.clear()
+            Libav.avcodecFlushBuffers(codecCtx)
+            if (assTrack != MemorySegment.NULL) Ass.flushEvents(assTrack)
+            repositionTargetNanos = Long.MIN_VALUE
+            repositionAtWall = System.nanoTime()
+            return
+        }
         val preroll = (targetNanos - PREROLL_NANOS).coerceAtLeast(0)
         val moved = runCatching {
             Libav.checkAv(
@@ -988,5 +1137,40 @@ internal class SubtitlePipeline(
         const val DEFAULT_CANVAS_HEIGHT = 480
 
         const val ZERO_BYTE = 0.toByte()
+
+        /**
+         * The codec name a closed-caption track carries, and the flag this
+         * pipeline reads its whole shape from. It is FFmpeg's own name for
+         * the codec cc_dec decodes, so a reader who greps for it lands in the
+         * right place.
+         */
+        const val CAPTION_CODEC_NAME = "eia_608"
+
+        /**
+         * Caption payloads the decode thread may run ahead by.
+         *
+         * A payload is a byte pair per field per frame -- tens of bytes -- so
+         * this is kilobytes at worst, and it is a DROP bound rather than a
+         * wait bound: the producer paces the picture and must never be made
+         * to wait here. Two seconds of 60 fps content, which is far more than
+         * a subtitle thread ticking every 15 ms can fall behind by without
+         * something else being wrong.
+         */
+        const val CAPTION_QUEUE_DEPTH = 120
+
+        /**
+         * Microseconds. The payloads arrive stamped on the player's own
+         * timeline rather than on a container's grid, so the time base is
+         * chosen here rather than read -- and microseconds is what the rest
+         * of the cue arithmetic already reduces to.
+         */
+        const val CAPTION_TIME_BASE_DEN = 1_000_000
+
+        /**
+         * AV_INPUT_BUFFER_PADDING_SIZE. A decoder may read a little past the
+         * end of a packet, and what it reads there has to be zero and has to
+         * exist.
+         */
+        const val CAPTION_PACKET_PADDING = 64L
     }
 }

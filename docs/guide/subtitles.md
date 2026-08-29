@@ -31,6 +31,34 @@ class SubtitleTrack {
 Pass `track.id` to `selectSubtitleTrack`, and `null` to turn subtitles
 off again.
 
+## Closed captions (CEA-608/708)
+
+Captions are not a stream, and that is the whole of what makes them different
+here. They ride as ATSC A53 payload inside the H.264/HEVC bitstream, so the
+container cannot be asked whether a file has them -- only a decoded frame can
+answer.
+
+So the track appears **when the first captions are seen**, not at open:
+
+```kotlin
+val captions = player.subtitleTracks.firstOrNull { it.codecName == "eia_608" }
+```
+
+Poll for it rather than reading `subtitleTracks` once. A file that carries
+captions grows the track within a frame or two of playback starting; a file
+that does not never grows one, which is the point -- nothing is advertised
+that would render an empty screen. It is the same shape as `durationNanos` on
+an animated webp, which is also only knowable by decoding.
+
+Once it is there it selects and renders like any text track: `cc_dec` produces
+ASS, so libass draws it and the overlay reaches you through
+`acquireSubtitles` exactly as an SRT track would. It needs libass for the same
+reason, and the `cea608` capability names the decoder itself.
+
+What is not covered: TTML, SMPTE-TT and DFXP. FFmpeg has a TTML encoder and no
+TTML decoder, so reading one would mean a parser of our own rather than a
+whitelist entry.
+
 ## Text vs bitmap
 
 - **Text tracks** (ASS/SSA, SRT, mov_text, WebVTT, `isText == true`)
