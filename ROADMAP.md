@@ -1306,6 +1306,45 @@ which makes the run intrusive on a desktop for no gain in what it measures.
   That closes the first two clauses of the adoption bar below: on Central with
   bundled natives for its platforms, and adopted as an artifact. The third --
   a milestone without breaking changes -- is the one still running.
+- GPU zero-copy interop: **waits on a Vulkan backend rather than on demand**,
+  which is a change from "revisit when a consumer needs it". Hardware DECODE
+  shipped in M11; what is left is the round trip, since every hardware frame is
+  downloaded with `av_hwframe_transfer_data` and swscaled to RGBA, leaving the
+  GPU only to come back as a texture.
+
+  Checked against the pinned Skiko (0.144.6) rather than assumed.
+  `BackendTexture` exposes `makeGL` and nothing else -- no Metal, no D3D, no
+  Vulkan variant -- and `Image` exposes `adoptTextureFrom` with no YUV or YUVA
+  factory at all. `GraphicsApi` lists `VULKAN` and the jar carries zero Vulkan
+  implementation: a constant with no executor. `DirectContext` does expose
+  `resetGL`/`resetGLAll`, so handing GL state back to Skia is at least possible.
+
+  Two blockers follow, and the second is the expensive one. **One door, three
+  bridges**: `makeGL` needs a GL context, which exists on all three platforms
+  but is the default only on Linux, and the import into it is per-platform
+  regardless -- DMA-BUF through EGL, `WGL_NV_DX_interop2`, IOSurface through
+  `CGLTexImageIOSurface2D`. **Skia cannot take NV12**: with no YUV texture
+  entry, the two planes become two GL textures and the conversion is a shader
+  WE write, running on Skia's own context, where GL state and Skia's cache
+  corrupt each other quietly.
+
+  Vulkan removes both: `VK_KHR_external_memory_fd`/`_win32` make the import one
+  API instead of three vendor bridges, and `VK_KHR_sampler_ycbcr_conversion`
+  samples NV12 natively, so the dangerous shader belongs to the driver. Doing
+  the OpenGL version now means writing the riskiest part by hand, three times,
+  to arrive at an API where neither piece is needed.
+
+  Two costs that are not code and do not change with the backend: it cannot be
+  verified in CI, because no runner has a GPU (the subject of its own issue),
+  so it would be provable only on a maintainer's machine; and it is a second
+  parallel output from a module that deliberately has no UI dependency, since
+  `skinema-core` emits RGBA bytes and a texture handle is not bytes.
+
+  The measurement that would settle whether it is worth doing at all -- the
+  per-frame cost of the download plus the swscale pass against the frame budget
+  at 1080p and at 4K -- has not been taken. Tracked in the interop issue, open
+  and marked for help.
+
 - TTML / SMPTE-TT / DFXP: **reachable, and deferred past 1.0 by scope rather
   than by cost.** FFmpeg has a TTML encoder and muxer and no decoder, which
   reads as "not possible without a subsystem" and is wrong. What is already
