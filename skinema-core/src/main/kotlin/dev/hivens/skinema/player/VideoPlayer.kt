@@ -1585,7 +1585,29 @@ class VideoPlayer internal constructor(
                 // to play, settle it here instead.
                 if (state !is State.Playing && audioPipeline?.hasSoundLeft != true) {
                     eofPending = false
-                    if (loop) restartLap(decoder, resume = false) else enterEnded()
+                    if (loop) {
+                        restartLap(decoder, resume = false)
+                        // The lap turned and nothing is going to fill it: only
+                        // the Playing arm of the decode loop decodes, and this
+                        // player is paused. So the first frame of the new lap
+                        // is landed here, the way a paused start lands its
+                        // poster -- forced, so the pacer publishes it whatever
+                        // the state says. Without it the wrap moved the
+                        // timeline to zero and left the picture on whatever the
+                        // press had jumped from, and the two disagreed until
+                        // something resumed.
+                        val first = decoder.nextFrame(convert = false)
+                        if (first == null) {
+                            eofPending = true
+                        } else {
+                            noteCaptions(decoder, first.ptsNanos)
+                            enqueue(decoder, first, forced = true)
+                            landedPts = first.ptsNanos
+                            anchorPausedAt(first.ptsNanos)
+                        }
+                    } else {
+                        enterEnded()
+                    }
                 }
                 return true
             }
