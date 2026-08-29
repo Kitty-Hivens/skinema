@@ -2,11 +2,13 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.AudioPipeline
 import dev.hivens.skinema.audio.BoundedPcmSink
+import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.libav.Fixtures
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -140,5 +142,29 @@ class TeardownTest {
             "close() spent ${elapsed}ms; with a thirty-second stall bound only the announcement can free the write",
         )
         assertFalse(pipeline.alive, "the audio thread must be gone, not merely announced to")
+    }
+
+    /**
+     * The gain is the one path into the sink from a thread that is not the
+     * audio thread, and what close() promises covers it too: the sink is the
+     * caller's own again when close() returns, so a volume set afterwards must
+     * not reach into it. Every other path into that object stands down behind
+     * the same flag -- the writes, the recovery reopen -- and this one did not,
+     * so an ordinary volume slider left running past a close went on driving a
+     * device its owner had taken back.
+     */
+    @Test
+    fun `a volume set after close does not reach the sink`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val player = VideoPlayer(sounded("volume.mkv"), loop = false, audio = true, sink = sink)
+        assertTrue(awaitTrue { sink.totalBytes > 0 }, "the sound must be running to measure this, state=${player.state}")
+
+        player.close()
+        val afterClose = sink.volume
+        // Whichever gain it is standing at, ask for the other one.
+        player.setVolume(if (afterClose > 0.5f) 0.125f else 0.875f)
+
+        assertEquals(afterClose, sink.volume, "a closed player reached into a sink it had already handed back")
     }
 }

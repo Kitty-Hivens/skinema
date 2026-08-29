@@ -369,7 +369,7 @@ class VideoPlayer internal constructor(
      * track.
      */
     private val captionTrack = SubtitleTrack(
-        id = CAPTION_TRACK_ID,
+        id = SubtitleTrack.CLOSED_CAPTION_ID,
         streamIndex = -1,
         language = null,
         title = "Closed captions",
@@ -410,6 +410,12 @@ class VideoPlayer internal constructor(
                 // and there it means "keep what you had", which at the open is
                 // the full volume below.
                 initialVolume = if (volume.isNaN()) 1f else volume.coerceIn(0f, 1f),
+                // Told at construction rather than paused by command. This
+                // side starts before the decode thread and would otherwise
+                // have played the start of the file before the pause could be
+                // queued -- the decode thread is inside the video open at that
+                // moment, released by the very clock this pipeline published.
+                startPaused = startPaused,
             )
         } else {
             null
@@ -1058,6 +1064,23 @@ class VideoPlayer internal constructor(
         return clock.mediaNanos() >= end
     }
 
+    /**
+     * Whether a frameless lap has anything to turn into.
+     *
+     * [framelessLapDone] answers true the moment it cannot tell: a side that
+     * never opened a device sets its ended flag on the way out, and a
+     * container that declares no duration leaves nothing to measure against.
+     * Looping on that answer is a wrap ten times a second for as long as the
+     * file stays open, with the position pinned at zero and the state still
+     * reporting Playing -- reachable from something as ordinary as asking for
+     * sound on a file that has neither pictures nor a decodable track.
+     *
+     * The framed path already refuses to turn a lap that produced nothing
+     * ([lapProducedFrames]); this is that rule for a lap made of sound.
+     */
+    private fun framelessLapCanTurn(): Boolean =
+        audioPipeline?.alive == true || durationNanos != null
+
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
         if (startPaused) {
@@ -1075,7 +1098,7 @@ class VideoPlayer internal constructor(
             if (cmd != null && !handle(cmd, decoder = null)) return
             if (state is State.Playing && framelessLapDone()) {
                 val pipe = audioPipeline
-                if (loop) {
+                if (loop && framelessLapCanTurn()) {
                     // Audio-only, so there is no picture to end the lap: this
                     // side owns it. The landing handshake goes with the seek,
                     // without which the sink stays muted from here on -- and
@@ -1562,7 +1585,29 @@ class VideoPlayer internal constructor(
                 // to play, settle it here instead.
                 if (state !is State.Playing && audioPipeline?.hasSoundLeft != true) {
                     eofPending = false
-                    if (loop) restartLap(decoder, resume = false) else enterEnded()
+                    if (loop) {
+                        restartLap(decoder, resume = false)
+                        // The lap turned and nothing is going to fill it: only
+                        // the Playing arm of the decode loop decodes, and this
+                        // player is paused. So the first frame of the new lap
+                        // is landed here, the way a paused start lands its
+                        // poster -- forced, so the pacer publishes it whatever
+                        // the state says. Without it the wrap moved the
+                        // timeline to zero and left the picture on whatever the
+                        // press had jumped from, and the two disagreed until
+                        // something resumed.
+                        val first = decoder.nextFrame(convert = false)
+                        if (first == null) {
+                            eofPending = true
+                        } else {
+                            noteCaptions(decoder, first.ptsNanos)
+                            enqueue(decoder, first, forced = true)
+                            landedPts = first.ptsNanos
+                            anchorPausedAt(first.ptsNanos)
+                        }
+                    } else {
+                        enterEnded()
+                    }
                 }
                 return true
             }
@@ -1763,7 +1808,7 @@ class VideoPlayer internal constructor(
             captionsSeen = true
             synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + captionTrack }
         }
-        subtitlePipeline?.takeIf { it.track.id == CAPTION_TRACK_ID }?.submitCaptions(bytes, ptsNanos)
+        subtitlePipeline?.takeIf { it.track.id == SubtitleTrack.CLOSED_CAPTION_ID }?.submitCaptions(bytes, ptsNanos)
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */
@@ -2190,14 +2235,6 @@ class VideoPlayer internal constructor(
          * or a landing run, and a blink is not a consumer leaving.
          */
         const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 60
-
-        /**
-         * The id of the closed-caption track. Reserved rather than allocated:
-         * container tracks take their stream index and external files take
-         * ids counting down from -1, so the far end of the range is the one
-         * place neither can reach.
-         */
-        const val CAPTION_TRACK_ID = Int.MIN_VALUE
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }

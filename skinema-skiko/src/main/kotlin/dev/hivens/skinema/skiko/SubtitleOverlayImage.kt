@@ -81,7 +81,17 @@ class SubtitleOverlayImage : AutoCloseable {
      * is the drawing thread's borrow: that generation stays alive until this
      * is read again.
      */
-    val images: List<Placed> get() = synchronized(lock) { current.also { lastDrawn = it } }
+    val images: List<Placed> get() = synchronized(lock) {
+        current.also {
+            // Taking the next generation is what makes the previous one
+            // unreachable, so it is freed here rather than at the next
+            // publish. On a track whose cues are minutes apart that is the
+            // difference between holding one generation's pixels for a frame
+            // and holding them until something else happens.
+            lastDrawn = it
+            disposeUnreachable()
+        }
+    }
 
     /**
      * Replaces the overlay and returns what it published; an empty list is the
@@ -115,7 +125,11 @@ class SubtitleOverlayImage : AutoCloseable {
                     "a patch must have positive dimensions, got ${p.width}x${p.height}"
                 }
                 require(p.rgba.size >= p.width.toLong() * p.height * 4) {
-                    "a ${p.width}x${p.height} patch needs ${p.width * p.height * 4} bytes, got ${p.rgba.size}"
+                    // Long in the message too: computed in Int, a hostile
+                    // geometry overflows and the refusal reports a NEGATIVE
+                    // byte count, which is the one thing a diagnostic must
+                    // not do.
+                    "a ${p.width}x${p.height} patch needs ${p.width.toLong() * p.height * 4} bytes, got ${p.rgba.size}"
                 }
                 next += Placed(
                     Image.makeRaster(
