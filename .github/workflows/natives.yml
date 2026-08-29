@@ -130,8 +130,15 @@ jobs:
           # failed all eight platforms of a dispatch in fifteen seconds,
           # because this file still named the old set. Loud and cheap, but the
           # second declaration bought nothing to begin with.
+          #
+          # The ceiling is one number per TIER and therefore has to hold for
+          # the worst platform in it, which is not the same platform each
+          # time: core skips 94 on macos-arm64 against under 90 on every
+          # linux row, because the hardware suites gate differently where
+          # there is no VAAPI. Read off a run rather than estimated, with one
+          # of slack, the way the decode row's was.
           case "${{ matrix.tier }}" in
-            core)   caps="decode,webp";                                  skipped=90 ;;
+            core)   caps="decode,webp";                                  skipped=95 ;;
             decode) caps="decode,webp,subs,formats,encav1,encopus,cea608";      skipped=60 ;;
             full)   caps="decode,webp,subs,formats,encav1,encopus,cea608,encode"; skipped=50 ;;
           esac
