@@ -127,6 +127,15 @@ int main(void) {
     P(sizeof(AVPacketSideData));
     P(AV_PKT_DATA_DISPLAYMATRIX);
 
+    /* Frame side data: where closed captions arrive, since CEA-608 is not a
+       stream but ATSC A53 payload the video decoder hangs off each frame. */
+    P(offsetof(AVFrameSideData, data));
+    P(offsetof(AVFrameSideData, size));
+    P(offsetof(AVFrameSideData, type));
+    P(sizeof(AVFrameSideData));
+    P(AV_FRAME_DATA_A53_CC);
+    P(AV_CODEC_ID_EIA_608);
+
     P(offsetof(AVDictionaryEntry, key));
     P(offsetof(AVDictionaryEntry, value));
     P(sizeof(AVDictionaryEntry));

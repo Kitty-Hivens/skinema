@@ -120,6 +120,30 @@ object LibavAbi {
     }
 
     /**
+     * Where closed captions arrive. CEA-608/708 is not a stream: it is ATSC
+     * A53 payload the H.264/HEVC decoder lifts out of the bitstream's SEI and
+     * hangs off each decoded frame, so it is read here rather than demuxed.
+     *
+     * Reached through av_frame_get_side_data rather than by walking the
+     * frame's side_data array, per the rule that anything a function reaches
+     * goes through the function; only the returned struct is read by offset.
+     */
+    object FrameSideData {
+        const val TYPE = 0L
+        const val DATA = 8L
+
+        /** size_t. */
+        const val SIZE = 16L
+        const val SIZEOF = 40L
+    }
+
+    /** AVFrameSideDataType: ATSC A53 Part 4 closed captions. */
+    const val AV_FRAME_DATA_A53_CC = 1
+
+    /** AVCodecID for the cc_dec decoder that turns A53 bytes into cues. */
+    const val AV_CODEC_ID_EIA_608 = 94218
+
+    /**
      * Direct reads on AVCodecContext are otherwise avoided (functions
      * cover everything); subtitle_header has no accessor, and converted
      * text decoders synthesize the ASS style header THERE at open --
