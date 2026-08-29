@@ -78,4 +78,21 @@ interface FrameSource : AutoCloseable {
 
     /** True when frames are decoding on the GPU (hardware acceleration engaged). */
     fun hardwareActive(): Boolean = false
+
+    /**
+     * ATSC A53 closed-caption bytes carried by the frame [nextFrame] just
+     * returned, or null when it carries none -- which is nearly every frame of
+     * nearly every file.
+     *
+     * A frame question rather than a demux one, and that is the whole reason
+     * this method exists rather than a subtitle stream. CEA-608/708 rides as
+     * SEI inside the H.264/HEVC bitstream; the decoder lifts it out and hangs
+     * it off the decoded frame, so there is nothing to demux and nothing to
+     * select until a frame has been through.
+     *
+     * Valid until the next [nextFrame] only -- the bytes belong to the frame
+     * and die with it, like [convertLast]'s pixels. Read them or copy them
+     * before decoding on.
+     */
+    fun captionBytes(): ByteArray? = null
 }

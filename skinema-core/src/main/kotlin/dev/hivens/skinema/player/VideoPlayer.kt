@@ -354,6 +354,31 @@ class VideoPlayer internal constructor(
     @Volatile
     private var frameless = false
 
+    // Whether any frame has carried closed captions, which is the only way to
+    // find out that a file has them. Owned by the decode thread; the track it
+    // publishes is read from everywhere, under the tracks lock.
+    private var captionsSeen = false
+
+    /**
+     * The synthetic track closed captions are selected through.
+     *
+     * Synthetic because there is no stream behind it: the id is reserved
+     * rather than allocated, so it cannot collide with a container's stream
+     * index or with the negative ids external files take. Text, because
+     * cc_dec emits ASS and renders through libass like every other text
+     * track.
+     */
+    private val captionTrack = SubtitleTrack(
+        id = CAPTION_TRACK_ID,
+        streamIndex = -1,
+        language = null,
+        title = "Closed captions",
+        codecName = "eia_608",
+        isText = true,
+        isDefault = false,
+        isForced = false,
+    )
+
     @Volatile
     private var buffer: TripleBuffer<FrameSlot>? = null
     private val queue = FrameQueue(readAheadFrames.coerceIn(1, 8))
@@ -982,6 +1007,7 @@ class VideoPlayer internal constructor(
         clock.pause()
         publishState(State.Paused)
         val first = decoder.nextFrame(convert = false)
+        if (first != null) noteCaptions(decoder, first.ptsNanos)
         if (first == null) {
             eofPending = true
             return
@@ -1165,6 +1191,7 @@ class VideoPlayer internal constructor(
             }
 
             val frame = decoder.nextFrame(convert = false)
+            if (frame != null) noteCaptions(decoder, frame.ptsNanos)
             if (frame == null) {
                 // Some sources (animated webp) cannot report a duration
                 // until a full lap has been decoded; surface it once known.
@@ -1480,6 +1507,7 @@ class VideoPlayer internal constructor(
             // Bare decode while dropping: converting frames that are thrown
             // away costs several times the decode itself.
             val f = decoder.nextFrame(convert = false)
+            if (f != null) noteCaptions(decoder, f.ptsNanos)
             if (DEBUG_SEEK && f != null) {
                 if (landedFromKeyframe == Long.MIN_VALUE) landedFromKeyframe = f.ptsNanos
                 dropped++
@@ -1716,6 +1744,28 @@ class VideoPlayer internal constructor(
         if (announcedWidth > 0 && announcedHeight > 0) fresh.setCanvasSize(announcedWidth, announcedHeight)
     }
 
+    /**
+     * Takes the closed captions off the frame just decoded, if it carried any.
+     *
+     * Called at every site that decodes, playback and seek landings alike,
+     * because cc_dec assembles a row out of a byte pair per frame: a landing
+     * that dropped its captions would arrive with a half-built line and no way
+     * to finish it. A reposition flushes that state on the other side.
+     *
+     * The FIRST payload is also what makes the track exist. There is no way to
+     * know a file has captions without decoding one -- they are SEI, not a
+     * stream -- so nothing is advertised until the bytes are in hand, and then
+     * the track appears the way an animated webp's duration does.
+     */
+    private fun noteCaptions(decoder: FrameSource, ptsNanos: Long) {
+        val bytes = decoder.captionBytes() ?: return
+        if (!captionsSeen) {
+            captionsSeen = true
+            synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + captionTrack }
+        }
+        subtitlePipeline?.takeIf { it.track.id == CAPTION_TRACK_ID }?.submitCaptions(bytes, ptsNanos)
+    }
+
     /** Re-anchors time at a stepped frame while the player stays paused. */
     private fun anchorPausedAt(pts: Long) {
         intendedPositionNanos = pts
@@ -1737,6 +1787,7 @@ class VideoPlayer internal constructor(
             // Nothing in inventory: decode exactly one. EOF keeps the
             // last frame on screen.
             val f = decoder.nextFrame(convert = false) ?: return
+            noteCaptions(decoder, f.ptsNanos)
             enqueue(decoder, f, forced = true)
             anchorPausedAt(f.ptsNanos)
             return
@@ -2139,6 +2190,14 @@ class VideoPlayer internal constructor(
          * or a landing run, and a blink is not a consumer leaving.
          */
         const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 60
+
+        /**
+         * The id of the closed-caption track. Reserved rather than allocated:
+         * container tracks take their stream index and external files take
+         * ids counting down from -1, so the far end of the range is the one
+         * place neither can reach.
+         */
+        const val CAPTION_TRACK_ID = Int.MIN_VALUE
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }

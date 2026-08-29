@@ -111,10 +111,23 @@ class SubtitlePipelineTest {
     @Test
     fun `announcing the same canvas size twice queues one command`() {
         Fixtures.assumeDecodeEnvironment()
+        // Subtitles, not just decode. setCanvasSize returns early on a dead
+        // pipeline by contract, and a bundle with no subtitle decoder kills
+        // this one during open() -- so on the core tier the property under
+        // test is not merely absent, it is unobservable. Gated on decode
+        // alone the test raced that teardown: it passed on every linux row
+        // and lost on macos-arm64, reporting a working dedup as broken.
+        Fixtures.assumeSubtitleRendering()
         val path = fixture("canvas.mkv", writeSrt("canvas.srt"), "srt", 10)
         clock.start(0)
         val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
         try {
+            // Said out loud, so a pipeline that died for some other reason
+            // reports itself rather than arriving as a dedup failure. That is
+            // how the race above had to be read out of a CI log.
+            assertTrue(awaitTrue { pipeline.canvasSets > 0 || !pipeline.isDead }, "the pipeline died before it opened")
+            assertFalse(pipeline.isDead, "a dead pipeline answers no announcement, so this proves nothing")
+
             repeat(120) { pipeline.setCanvasSize(800, 600) }
             assertEquals(1, pipeline.canvasSets, "a steady window must post once, not once a frame")
 

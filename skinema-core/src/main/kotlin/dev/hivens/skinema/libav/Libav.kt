@@ -268,6 +268,11 @@ object Libav {
     private val hAvcodecDescriptorGet =
         fn(LibavLibrary.AVCODEC, "avcodec_descriptor_get", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetHwConfig = fn(LibavLibrary.AVCODEC, "avcodec_get_hw_config", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT))
+    private val hAvFrameGetSideData = fn(
+        LibavLibrary.AVUTIL, "av_frame_get_side_data",
+        FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT),
+    )
+
     private val hAvPacketSideDataGet = fn(
         LibavLibrary.AVCODEC, "av_packet_side_data_get",
         FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT),
@@ -556,6 +561,14 @@ object Libav {
 
     /** A static string owned by avutil, or NULL for a number no format has. */
     fun avGetPixFmtName(pixFmt: Int): MemorySegment = hAvGetPixFmtName.invoke(pixFmt) as MemorySegment
+    /**
+     * The AVFrameSideData of [type] on [frame], or NULL when it carries none.
+     * The result belongs to the frame and dies with it -- read it before the
+     * next receive_frame, or copy.
+     */
+    fun avFrameGetSideData(frame: MemorySegment, type: Int): MemorySegment =
+        hAvFrameGetSideData.invoke(frame, type) as MemorySegment
+
     fun avPacketSideDataGet(sideData: MemorySegment, count: Int, type: Int): MemorySegment =
         hAvPacketSideDataGet.invoke(sideData, count, type) as MemorySegment
     fun avcodecFindDecoderByName(name: MemorySegment): MemorySegment = hAvcodecFindDecoderByName.invoke(name) as MemorySegment
