@@ -25,4 +25,22 @@ class SubtitleTrack internal constructor(
     val isForced: Boolean,
     /** Null for embedded tracks; the source file for external ones. */
     val externalPath: Path? = null,
-)
+) {
+    internal companion object {
+        /**
+         * The id of the synthetic closed-caption track, reserved rather than
+         * allocated: container tracks take their stream index and external
+         * files count down from -1, so the far end of the range is the one
+         * place neither can reach.
+         *
+         * It lives here rather than in the player because it is what
+         * DISCRIMINATES a caption session, and keying that on the codec name
+         * was wrong: `eia_608` is a real codec a container can carry as a real
+         * stream, and FFmpeg marks it AV_CODEC_PROP_TEXT_SUB, so such a track
+         * enumerates like any other text track. Read by name it took the
+         * frame-fed path, was never demuxed and never fed, and rendered
+         * nothing while reporting itself live.
+         */
+        const val CLOSED_CAPTION_ID = Int.MIN_VALUE
+    }
+}
