@@ -1581,7 +1581,11 @@ class VideoPlayerTest {
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->
-            awaitTrue { player.state is VideoPlayer.State.Ended }
+            // Asserted, not merely awaited: this test is about leaving Ended,
+            // and with the result discarded a player that never got there still
+            // satisfied everything below -- the seek lands, a frame publishes,
+            // the state reads Playing. The half the name claims went unproven.
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "playback must end first")
             player.seek(200_000_000L)
             assertTrue(
                 awaitTrue { player.acquireFrame()?.ptsNanos == 200_000_000L },
