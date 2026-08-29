@@ -2,8 +2,10 @@ package dev.hivens.skinema.demo
 
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.player.VideoPlayer
+import dev.hivens.skinema.skiko.VideoFrameImage
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Headless soak: loops a video through the full decode/pace/mailbox pipeline
@@ -13,7 +15,7 @@ import java.nio.file.Path
  *
  *   ./gradlew :skinema-demo:soak -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N]
  *                                 [-PsoakAudio=true] [-Phardware=AUTO]
- *                                 [-Pheap=256m]
+ *                                 [-Pheap=256m] [-PsoakImages=true]
  *
  * ## Why it reports a floor and not just a reading
  *
@@ -35,6 +37,22 @@ import java.nio.file.Path
  *
  * `-Pheap` exists for the same reason: capping the heap makes collections
  * frequent, so the floor is sampled many times rather than once or twice.
+ *
+ * ## Why -PsoakImages exists
+ *
+ * Without it this measures the pipeline and stops at the mailbox: the only
+ * consumer-side call is [VideoPlayer.acquireFrame], so nothing here ever built
+ * a Skia image. That left the component whose entire job is holding native
+ * memory outside the run that exists to prove native memory does not grow --
+ * and a heap profiler cannot see what a Skia image holds, which is the whole
+ * reason [VideoFrameImage] is shaped the way it is.
+ *
+ * Turned on, the run carries a real [VideoFrameImage] in the shape a consumer
+ * uses it: this loop rasters, because it is the side holding the frames, and a
+ * second thread draws -- reclaiming and reading at a screen's cadence. That is
+ * the Compose surface's split with the roles named the other way round, and it
+ * is what puts the borrow across a thread boundary rather than leaving it a
+ * single-threaded exercise.
  */
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: soak <video> [minutes]" })
@@ -48,8 +66,15 @@ fun main(args: Array<String>) {
     val hardware = System.getProperty("skinema.demo.hardware")
         ?.let { HwAccel.valueOf(it.uppercase()) }
         ?: HwAccel.OFF
+    // Off by default so a run stays comparable with every earlier one; on, it
+    // adds the half the mailbox is not: eight megabytes of Skia raster per
+    // frame, held and freed by a class no heap profiler can account for.
+    val images = System.getProperty("skinema.demo.soakImages") == "true"
 
-    println("soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware")
+    println(
+        "soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware images=$images",
+    )
+    val frameImage = if (images) VideoFrameImage() else null
     VideoPlayer(video, loop = true, audio = audio, readAheadFrames = readAhead, hardware = hardware).use { player ->
         val started = System.nanoTime()
         val deadline = started + minutes * 60_000_000_000L
@@ -71,10 +96,30 @@ fun main(args: Array<String>) {
         // two against each other.
         val thirds = LongArray(3) { Long.MAX_VALUE }
 
+        // The drawing side, when images are on: reclaim and read at a screen's
+        // cadence, which is what makes the borrow cross a thread boundary. It
+        // reads the image and touches it, because a reference that survives
+        // while its pixels do not is the same defect one step later.
+        val stop = AtomicBoolean(false)
+        val drawer = frameImage?.let { holder ->
+            Thread({
+                var drawn = 0L
+                while (!stop.get()) {
+                    holder.reclaim()
+                    holder.image?.let { if (it.width > 0) drawn++ }
+                    Thread.sleep(16)
+                }
+                println("soak drawer: $drawn draws")
+            }, "soak-draw").apply { isDaemon = true; start() }
+        }
+
         while (System.nanoTime() < deadline) {
             val state = player.state
             if (state is VideoPlayer.State.Failed) error("player failed during soak: ${state.cause}")
-            if (player.acquireFrame() != null) frames++
+            player.acquireFrame()?.let { slot ->
+                frames++
+                frameImage?.update(slot.width, slot.height, slot.rgba)
+            }
 
             val now = System.nanoTime()
             if (now >= nextSample) {
@@ -104,9 +149,16 @@ fun main(args: Array<String>) {
             Thread.sleep(5)
         }
 
+        // Joined before the holder is closed, so the teardown cannot free a
+        // session out from under a draw in flight -- the rule the Compose
+        // surface keeps for the same pair of threads.
+        stop.set(true)
+        drawer?.join(2_000)
+        frameImage?.let { println("soak images: pending=${it.pending} at teardown"); it.close() }
+
         println(
             "soak done: $frames frames over $minutes min, audio=$audio hardware=$hardware" +
-                " hardwareActive=${player.hardwareActive} final rssMb=${rssMb() ?: "n/a"}",
+                " images=$images hardwareActive=${player.hardwareActive} final rssMb=${rssMb() ?: "n/a"}",
         )
         // The verdict, stated rather than left to whoever reads the series. A
         // rising floor is the leak; peaks are the collector's business.

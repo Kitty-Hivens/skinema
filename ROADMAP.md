@@ -233,9 +233,12 @@ UI side:        latest-frame mailbox; acquire the freshest; drop late
 - 1080p RGBA is ~8 MB/frame, ~250 MB/s at 30 fps -- trivial memcpy
   bandwidth, but **buffers must be reused** (double/triple buffering);
   allocating per frame churns the GC.
-- On the Skiko side every previous `Image` must be closed when replaced --
-  Skia objects hold native memory and waiting for the finalizer is a leak
-  in practice.
+- On the Skiko side every `Image` must be closed BY THE LIBRARY -- Skia
+  objects hold native memory and waiting for the finalizer is a leak in
+  practice -- and the only question is when. Not when it is replaced: the
+  drawing thread may still be painting with it, and freeing it there is a
+  native crash rather than a wrong picture. When nothing can name it any
+  more, which is one live borrow per side (M19).
 - Variable frame rate is normal, not an edge case: pacing is by pts, never
   by an assumed 1/fps step.
 
@@ -298,17 +301,20 @@ README once the library is usable.
 
 - skinema: Apache-2.0.
 - FFmpeg: licensed per tier (the modular FEATURES, section 4). `core` carries
-  no encoders; `decode` adds the VAAPI hardware H.264/HEVC encoders (M13),
-  which run in the GPU driver and are LGPL, so it stays LGPL -- the
-  licence-clean route to GPU output on Linux. `full` additionally adds the
-  x264/x265 SOFTWARE encoders, which are GPL, so `--enable-gpl` flips only that
-  tier's build (M10 records the encode pivot, M12 the software subsystem, M13
-  the LGPL GPU path, M16 the GPL tier). **Dynamically linked shared libraries
-  only**, license texts shipped (the GPL text on `full`, LGPL on the rest),
-  source of the exact build referenced (BtbN tag or our CI artifact). Static
-  linking is off the table. A consumer needing LGPL takes `core` or `decode`
-  (the latter now with GPU encode on Linux); only one shipping `full` takes on
-  GPL.
+  no encoders. `decode` carries every encoder that adds no GPL surface: the
+  VAAPI hardware H.264/HEVC pair (M13), whose codec runs in the GPU driver, and
+  since M18 the BSD SVT-AV1 and libopus plus FFmpeg's own AAC and FLAC -- so it
+  is the complete LGPL WRITER as well as the complete LGPL player. What `full`
+  adds is specifically the x264/x265 SOFTWARE encoders, which are GPL, so
+  `--enable-gpl` flips only that tier's build (M10 records the encode pivot,
+  M12 the software subsystem, M13 the LGPL GPU path, M16 the GPL tier, M18 the
+  line moving to where it belongs). **Dynamically linked shared libraries
+  only**, license texts shipped (the GPL text on `full`, LGPL on the rest), and
+  the source of the exact build referenced -- our own CI artifact, since every
+  dependency is built here from a pinned tarball with a recorded sha256 and no
+  third party's binary enters a bundle (section 13). Static linking is off the
+  table. A consumer needing LGPL takes `core` or `decode`; only one shipping
+  `full` takes on GPL.
 - Natives packaging: per-tier/OS/arch classifier jars `<tier>-<platform>`
   (the lwjgl/skiko pattern) carrying the trimmed runtime plus an `index.txt`;
   NativeBundle deploys them to a fingerprint-keyed per-user cache (atomic,
@@ -1016,6 +1022,100 @@ README once the library is usable.
   guard worked; the second declaration should not have existed, and the
   workflow now passes TIER and lets the script decide.
 
+- **M19 -- the borrow rule, and the things the library did without saying so
+  (2026-08-29).** One defect class and one audit, and they turned out to be the
+  same subject: a library that behaves correctly and does not say what it is
+  doing is a library a consumer builds the wrong thing against.
+
+  `VideoFrameImage` retired every superseded Skia image into a queue that only
+  `reclaim` drained. A caller who never called it got no error, no ceiling and
+  no signal beyond process size -- the queue holds a strong reference, so the
+  images were neither freed nor collectable and a heap profiler shows none of
+  it. Measured at 1080p: two hundred frames took resident memory from 250 MB to
+  1796 MB, and one `reclaim` returned it to 245. A warning was added first and
+  was not enough, which is what issue #65 said: it made the mistake visible
+  rather than impossible.
+
+  What could not be closed eagerly was real -- the drawing thread may still be
+  painting and only it knows when it is done -- but it can only be painting
+  with the one it took most recently. Reading `image` records that one, and a
+  publish frees every superseded image except it. **One live borrow per side**,
+  and native memory bounded whatever the caller does. `reclaim` stays and stops
+  being a correctness requirement.
+
+  Two things about the shape are worth keeping. The issue proposed keying this
+  on the getter alone, which is unsound in the direction the tests already
+  covered: `update` returns the image too, so a single-threaded caller holds one
+  the getter never issued. And recording the publish as well, the other way
+  round, is redundant rather than harmless -- the value `update` returns IS the
+  current image and the current image is never among the retired ones, so the
+  bound is ONE superseded frame, not two. That was found by re-deriving the
+  invariant rather than by testing, and it removed a field.
+
+  `SubtitleOverlayImage` closed on the spot, which quietly made its `update` the
+  drawing thread's alone -- while the compose guide tells you, correctly, to
+  raster FRAMES off that thread. A consumer generalising from one sibling to the
+  other frees overlay pixels under a draw: a native crash, not a wrong picture.
+  It answers the same way now. Its `close` deliberately does not follow: on the
+  frame holder that is a teardown, here it is also how subtitles are turned off,
+  so it frees what is held and leaves the object usable and a re-selection
+  publishes again. The Compose surface relies on exactly that.
+
+  The API gained the two openings a consumer could not build from outside,
+  because both live in the window between the constructor returning and the
+  player getting going. `startPaused` settles Paused directly, never through
+  Playing -- the pacer is running by then, so the transient would be observable
+  -- and commits the first frame FORCED, the way a landing is, because a paused
+  start that showed nothing is a black rectangle. `volume` is on the line before
+  the first sample: the audio thread opens the device and writes its first chunk
+  on its own schedule, so a `setVolume` after the constructor has already lost.
+
+  Its other half was a defect. A line starts at whatever gain the device gives
+  it and nothing put the volume back, so a muted player came back at FULL the
+  moment anything reopened one -- a track switch, or a device-loss recovery,
+  which is the worse of the two because nobody asked for it. The pipeline holds
+  the value now and applies it inside `openLine`. Kept there rather than in the
+  sink because the sink is a seam a consumer implements, and remembering a value
+  across a reopen it does not control is not a rule worth handing them.
+
+  `setSubtitleCanvasSize` was not idempotent, whatever its unchanged arguments
+  suggested: it queued unconditionally and the size was compared on the subtitle
+  thread, after that thread had been woken to read the command. A consumer
+  posting from its draw loop -- the natural place, since the displayed rect is
+  known there -- handed an unbounded queue sixty announcements a second, and a
+  pump that reads a non-empty queue as work pending refills a packet at a time
+  and never reaches its own render cadence. The guard moved to the caller's
+  side, where every caller gets it; the surface's private copy of the same rule
+  went with it, because a second place holding one rule is the place a consumer
+  cannot see.
+
+  Device-loss recovery gained the shutter the writes already keep. It reads the
+  close flag once per attempt and a decoder seek sits between that read and the
+  reopen, so on a slow source the window is milliseconds: long enough to open a
+  sink the caller had already been told it had back. Opening is not a write, but
+  it reaches into the same object and `open()` starts it by contract.
+
+  The audit found two documented claims that were FALSE, which is worse than
+  silence. "The pump does not stop for a consumer that stops polling" had been
+  true until the player learned to notice an unread mailbox, so the behaviour
+  contract promised a burned core behind a hidden window. And the overlay holder
+  claimed to follow the frame holder's discipline while following the opposite
+  one. The silences were ordinary and expensive: the `sink` parameter carried no
+  documentation at all despite being the seam a consumer's own audio stack
+  arrives through (and is ignored entirely with `audio = false`);
+  `WhenUnwatched.Freeze` stops the timeline with a real pause, so `state` reads
+  Paused without anyone having asked; `positionNanos()` is deliberately not
+  clamped to `durationNanos`, so a progress bar can read past its own end;
+  encode geometry must be EVEN and the argument checks raise
+  `IllegalArgumentException`, which the `catch (e: LibavException)` the guide
+  recommends does not see; and the threading note listed the wrong methods as
+  the ones that skip the decode thread.
+
+  The lesson worth carrying: every one of those was found by reading the code
+  against its own documentation rather than by a test failing. A test asserts
+  what someone thought to assert. A document that has drifted from the code
+  asserts nothing at all, and a consumer believes it.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
@@ -1044,6 +1144,43 @@ which it climbs gently again.
 That drop is the evidence, and it is stronger than a flat line would have
 been: a leak cannot return memory. What the series shows is a runtime taking
 and releasing, not a pipeline accumulating.
+
+The frame rate in that line says the run kept up on the machine it ran on. It
+is not a benchmark and must not be quoted as one: the same machine has since
+been found to degrade over its own uptime for reasons outside this project, so
+a throughput number from it means "did not fall behind" and nothing more. The
+FLOOR is the measurement, and a floor is what it is whether the run is fast or
+slow -- which is why that is the quantity the tool reports.
+
+### What that run did NOT cover, and the gate that follows
+
+`SoakMain`'s only consumer-side call was `acquireFrame`, so the run exercised
+decode, pacing and the mailbox and stopped there. It never built a Skia image.
+That left `VideoFrameImage` -- the one component whose whole job is holding
+native memory, and the memory a heap profiler cannot account for -- outside
+the run that exists to prove native memory does not grow. The run also predates
+the rewrite of that class and of its overlay sibling.
+
+So the soak now carries `-PsoakImages=true`, which puts frames through a real
+`VideoFrameImage` in the shape a consumer uses it: the loop rasters, because it
+holds the frames, and a second thread draws -- reclaiming and reading at a
+screen's cadence. That is the Compose surface's split with the roles named the
+other way round, and it is what puts the borrow across a thread boundary rather
+than leaving it a single-threaded exercise.
+
+**This is a pre-release gate, not a pre-merge one.** The unit tests and their
+mutation checks answer what closes and when; they run for milliseconds over
+four-by-four images and cannot answer whether a native allocator accumulates
+over hours of eight-megabyte rasters. Only a long run does, and only the floor
+in it. Two runs are owed before a release: images with sound off, comparable
+with the series above, and images with sound on, which is the consumer's own
+shape and the only thing that exercises the audio thread, its watchdog and a
+device handle held for hours.
+
+Run it with `-Phardware=OFF`. The question is whether the image holder
+accumulates, and that does not depend on where the frame came from -- while GPU
+decode puts the frame download on the same memory bus the compositor uses,
+which makes the run intrusive on a desktop for no gain in what it measures.
 
 ## 12. Version pins (2026-06)
 
