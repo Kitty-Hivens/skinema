@@ -1358,14 +1358,6 @@ class VideoPlayerTest {
         }
     }
 
-    /** A font from the host, or null when this machine ships none to attach. */
-    private fun hostFont(): Path? = runCatching {
-        val p = ProcessBuilder("fc-match", "-f", "%{file}", "sans").redirectErrorStream(true).start()
-        val out = p.inputStream.readAllBytes().decodeToString().trim()
-        p.waitFor()
-        Path.of(out).takeIf { out.endsWith(".ttf", true) || out.endsWith(".otf", true) }
-    }.getOrNull()?.takeIf { Files.isReadable(it) }
-
     @Test
     fun `a file whose fonts ride inside it still renders its subtitles`() {
         Fixtures.assumeDecodeEnvironment()
@@ -1375,7 +1367,7 @@ class VideoPlayerTest {
         // -- no fixture carried one. This proves the path runs and leaves the
         // render working; it does NOT prove the glyphs came from the attached
         // face, which would need a font this machine does not otherwise have.
-        val font = hostFont()
+        val font = Fixtures.hostFont()
         assumeTrue(font != null, "no host font to attach")
         val srt = dir.resolve("attached.srt")
         Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nTypeset\n")
@@ -1589,7 +1581,11 @@ class VideoPlayerTest {
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
         VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->
-            awaitTrue { player.state is VideoPlayer.State.Ended }
+            // Asserted, not merely awaited: this test is about leaving Ended,
+            // and with the result discarded a player that never got there still
+            // satisfied everything below -- the seek lands, a frame publishes,
+            // the state reads Playing. The half the name claims went unproven.
+            assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "playback must end first")
             player.seek(200_000_000L)
             assertTrue(
                 awaitTrue { player.acquireFrame()?.ptsNanos == 200_000_000L },
