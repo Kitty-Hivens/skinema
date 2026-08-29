@@ -224,13 +224,23 @@ class VideoSurfaceRenderTest {
             }.use { scene ->
                 var frame = 0L
                 var selected = false
+                var drawsWhileActive = 0
                 val deadline = System.currentTimeMillis() + 25_000
-                // Render only until the track is selected and the draw has run
-                // a few times -- the post lives in the draw and needs nothing
-                // from the overlay. Then STOP rendering: the surface polls the
-                // overlay mailbox on every frame it draws, and a mailbox with
-                // one slot has one winner per publish. Two pollers made this a
-                // coin flip that a slower machine lost.
+                // Render only until the track is ACTIVE and the draw has run a
+                // few times with it -- the post lives in the draw and needs
+                // nothing from the overlay. Then STOP rendering: the surface
+                // polls the overlay mailbox on every frame it draws, and a
+                // mailbox with one slot has one winner per publish. Two pollers
+                // made this a coin flip that a slower machine lost.
+                //
+                // Counting draws from the SELECT rather than from the track
+                // going active was the other half of that coin, and the worse
+                // half: selection is a command for the decode thread, which
+                // builds the pipeline, and the surface posts nothing until it
+                // exists. A slow build meant every counted draw saw no track,
+                // the size was never posted, and rendering then stopped for
+                // good -- so the wait below could not have succeeded however
+                // long it was given.
                 while (System.currentTimeMillis() < deadline) {
                     if (!selected) {
                         player.subtitleTracks.firstOrNull()?.let {
@@ -240,10 +250,15 @@ class VideoSurfaceRenderTest {
                     }
                     scene.render(frame)
                     frame += 16_000_000L
-                    if (selected && frame > 20 * 16_000_000L) break
+                    if (player.activeSubtitleTrack != null) drawsWhileActive++
+                    if (drawsWhileActive > 5) break
                     Thread.sleep(10)
                 }
                 assumeTrue(selected, "no subtitle track to select")
+                assertTrue(
+                    drawsWhileActive > 0,
+                    "the track never became active, so the surface never posted a size to wait for",
+                )
 
                 // Rendering has stopped, so nothing is taking frames any more
                 // and the player would otherwise notice: an unread mailbox is
