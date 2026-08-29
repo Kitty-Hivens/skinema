@@ -34,8 +34,11 @@ false green hid exactly that (Linux libass loaded but exported zero
 symbols; the subtitle suites had been skipping all along).
 
 The fix is `SKINEMA_REQUIRE_CAPS` -- a comma-separated list (from
-`decode`, `subs`, `webp`, `encode`, `formats`, `audio`) the bundle under
-test must load:
+`decode`, `subs`, `dvbsub`, `webp`, `encode`, `encav1`, `encopus`,
+`formats`, `audio`) the bundle under test must load. Each name asks the
+bundle a question it cannot answer by accident: `encav1` is
+`libavHasEncoder("libsvtav1")`, `dvbsub` is `libavHasDecoder("dvbsub")`,
+`audio` is whether an output line actually opens.
 
 ```kotlin
 // Fixtures.kt
@@ -62,11 +65,20 @@ and never exercising the library at all.
 
 Both `build.yml` and `natives.yml` set the caps per row, so a broken
 bundle fails *before it uploads*, in the workflow that built it.
-`natives.yml` requires what the tier is supposed to carry -- `core`
-`decode,webp`, `decode` adds `subs,formats`, `full` adds `encode` -- so a
-tier that quietly lost a capability cannot upload. `build.yml` dogfoods the
-`full` tier and holds all of `decode,subs,webp,encode,formats` mandatory on
-each of its seven rows.
+`natives.yml` requires what the tier is supposed to carry -- `core` takes
+`decode,webp`; `decode` adds `subs,formats,encav1,encopus`, the last two
+since it learned to write (M18); `full` adds `encode`, which is the GPL
+software pair and the only thing that tier buys. A tier that quietly lost a
+capability cannot upload.
+
+`build.yml` runs eight rows. Seven dogfood the `full` tier and hold
+`decode,subs,dvbsub,webp,encode,encav1,encopus,formats` mandatory. The eighth
+is a `linux-x64 / decode` row that takes the same list without `encode`,
+because `encode` probes libx264 and that is precisely what the tier does not
+carry. It exists because `decode` is the tier the consumer ships and it had
+been seeing only its own acceptance pass inside `natives.yml` -- one run, on
+the machine that built it. It earned the seat on its first run by catching a
+claims check gated on the platform rather than the tier.
 
 ## Test doubles
 
@@ -106,6 +118,12 @@ Tests assert against meaning and use deterministic, controllable
 clocks; wall-clock-rate thresholds cannot survive thrashed shared CI
 runners and were reworked out where they appeared.
 
+Every behavioural change is mutation-checked before it is believed: the
+implementation is broken deliberately, in each direction the test claims to
+cover, and the run must fail by name. A test that stays green against a
+broken implementation is not evidence, and a surviving mutation means the
+SCENARIO is weak rather than that the threshold needs loosening.
+
 ## Diagnostic commands
 
 `skinema-demo` is the in-repo harness. The commands double as
@@ -117,7 +135,7 @@ spike):
 | `:skinema-demo:run`              | play one file in a bare Compose window                         |
 | `:skinema-demo:spike`            | headless decode spike -- dump frames, measure decode cost      |
 | `:skinema-demo:seekbench`        | scripted seeks, seek-to-frame latency percentiles              |
-| `:skinema-demo:soak`             | long looped run, RSS/heap once per minute (memory proof)       |
+| `:skinema-demo:soak`             | long looped run, RSS/heap FLOOR per minute (memory proof)      |
 | `:skinema-demo:harness`          | multi-player grid with optional mount/unmount churn            |
 
 Useful flags and env:
@@ -127,6 +145,14 @@ Useful flags and env:
 - `-PreadAhead=N` -- read-ahead depth.
 - `-Pplayers=N`, `-Pchurn=<seconds>` -- harness fan-out and churn.
 - `-Pframes=N` -- limit the spike's frame count.
+- `-Pminutes=N`, `-PsoakAudio=true`, `-Phardware=AUTO`, `-Pheap=256m`,
+  `-PsoakImages=true` -- the soak's knobs. The last two are the ones with
+  reasoning behind them: capping the heap makes collections frequent, so the
+  floor is sampled many times rather than once, and `soakImages` puts frames
+  through a real `VideoFrameImage` on the two threads a consumer uses it
+  from. Without it the run stops at the mailbox and never builds a Skia
+  image, which is how a two-hour run once proved nothing about the one
+  component whose job is holding native memory.
 - `SKINEMA_DEBUG_SEEK=1` -- print sink position at flush/anchor/start
   and the `[pace]` starvation diagnostic; the way seek bugs get
   reproduced headlessly with data.

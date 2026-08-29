@@ -46,6 +46,9 @@ You change the library itself. Read
 - [internal/decoding.md](internal/decoding.md) -- the decoders:
   video pull-session and swscale, colorspace and HDR handling, audio
   resampling, and the playback-rate filter.
+- [internal/encoding.md](internal/encoding.md) -- the write side:
+  `MediaWriter`'s push session and format negotiation, the trailer that may
+  be attempted once, hardware encode, and `Transcoder`.
 - [internal/threading-and-clocks.md](internal/threading-and-clocks.md)
   -- the per-player threads, the frame queue and pacer, the clock
   hierarchy, and how seeks stay synchronized.
