@@ -48,7 +48,10 @@ object Fixtures {
 
     /** Known capability names; [CapabilitiesTest] rejects anything else. */
     internal val knownCaps =
-        setOf("decode", "subs", "webp", "dvbsub", "encode", "formats", "audio", "encav1", "encopus")
+        setOf(
+            "decode", "subs", "webp", "dvbsub", "cea608", "encode", "formats", "audio",
+            "encav1", "encopus",
+        )
 
     /** Pure load probe per capability -- no fixtures, no transcode. */
     internal fun capLoads(cap: String): Boolean = when (cap) {
@@ -67,6 +70,13 @@ object Fixtures {
         // would turn "older than this decoder" into a failed run on every row
         // that holds subtitles mandatory, which is all of them.
         "dvbsub" -> libavHasDecoder("dvbsub")
+        // Closed captions, and the name to probe is the DECODER's rather than
+        // the whitelist entry's: the build asks for 'ccaption' and the decoder
+        // it produces is called cc_dec. Its own capability for the same reason
+        // dvbsub has one -- a bundle built before it is a legal bundle, and
+        // folding it into the subtitle contract would fail every row that
+        // holds subtitles mandatory.
+        "cea608" -> libavHasDecoder("cc_dec")
         // The full tier always carries x264 (mac/win keep enc-h264 even
         // without x265, #22), so libx264 is the encode path's load probe.
         // It is the GPL tier's tell specifically, which is why the two BSD
@@ -181,6 +191,23 @@ object Fixtures {
             return
         }
         assumeTrue(capLoads("dvbsub"), "DVB subtitle decode absent in the bundle -- skipping")
+    }
+
+    /**
+     * Closed captions, on the same terms as DVB: optional until a bundle
+     * carrying the decoder has shipped, then named in the required list.
+     *
+     * Note what this does NOT gate. The fixture is built here rather than by
+     * the ffmpeg CLI -- there is no CEA-608 encoder anywhere in FFmpeg -- so
+     * generating one needs nothing of the bundle. What needs the bundle is
+     * reading it back, which is this decoder.
+     */
+    fun assumeClosedCaptions() {
+        if (requires("cea608")) {
+            check(capLoads("cea608")) { "SKINEMA_REQUIRE_CAPS lists 'cea608' but the bundle has no cc_dec" }
+            return
+        }
+        assumeTrue(capLoads("cea608"), "closed-caption decode absent in the bundle -- skipping")
     }
 
     /**

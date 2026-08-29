@@ -132,8 +132,8 @@ jobs:
           # second declaration bought nothing to begin with.
           case "${{ matrix.tier }}" in
             core)   caps="decode,webp";                                  skipped=90 ;;
-            decode) caps="decode,webp,subs,formats,encav1,encopus";      skipped=60 ;;
-            full)   caps="decode,webp,subs,formats,encav1,encopus,encode"; skipped=50 ;;
+            decode) caps="decode,webp,subs,formats,encav1,encopus,cea608";      skipped=60 ;;
+            full)   caps="decode,webp,subs,formats,encav1,encopus,cea608,encode"; skipped=50 ;;
           esac
           echo "caps=$caps" >> "$GITHUB_OUTPUT"
           echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
