@@ -71,7 +71,15 @@ class VideoFrameImage : AutoCloseable {
      * [close]. Reading it is the drawing thread's borrow: that image stays
      * alive until this is read again.
      */
-    val image: Image? get() = synchronized(lock) { current.also { lastDrawn = it } }
+    val image: Image? get() = synchronized(lock) {
+        current.also {
+            // Taking the next image is what makes the previous one
+            // unreachable, so it is freed here rather than waiting for a
+            // publish or a [reclaim] that a caller may never make.
+            lastDrawn = it
+            disposeUnreachable()
+        }
+    }
 
     /** Superseded images still spoken for -- one at most. */
     val pending: Int get() = synchronized(lock) { retired.size }
@@ -89,7 +97,10 @@ class VideoFrameImage : AutoCloseable {
         // module and the buffer can come from anywhere.
         require(width > 0 && height > 0) { "a frame must have positive dimensions, got ${width}x$height" }
         require(rgba.size >= width.toLong() * height * 4) {
-            "a ${width}x$height RGBA frame needs ${width * height * 4} bytes, got ${rgba.size}"
+            // Long in the message too: computed in Int, a hostile geometry
+            // overflows and the refusal reports a NEGATIVE byte count, which
+            // is the one thing a diagnostic must not do.
+            "a ${width}x$height RGBA frame needs ${width.toLong() * height * 4} bytes, got ${rgba.size}"
         }
         val info = ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL)
         // Rastered OUTSIDE the lock, which the drawing thread now takes on

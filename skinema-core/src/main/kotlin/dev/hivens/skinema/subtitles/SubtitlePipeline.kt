@@ -68,8 +68,15 @@ internal class SubtitlePipeline(
      * demuxer, and has no horizon to read ahead to -- the video side paces it
      * by construction. Everything after the decoder is shared with the text
      * tracks, because cc_dec emits ASS like they do.
+     *
+     * Recognised by the synthetic track's reserved ID, never by its codec
+     * name. `eia_608` is a real codec that a container can carry as a real
+     * stream -- mov `c608` -- and FFmpeg marks it as a text subtitle, so such
+     * a track enumerates like any other and would have taken this path: never
+     * demuxed, never fed, rendering nothing while reporting itself live. By
+     * the id it takes the ordinary demux path instead, which is what it is.
      */
-    private val fromVideoFrames = track.codecName == CAPTION_CODEC_NAME
+    private val fromVideoFrames = track.id == SubtitleTrack.CLOSED_CAPTION_ID
 
     /**
      * Caption payloads waiting to be decoded, newest last.
@@ -252,6 +259,15 @@ internal class SubtitlePipeline(
         // [dev.hivens.skinema.player.VideoPlayer.activeSubtitleTrack] is
         // concerned; it should be silent here too.
         if (isDead) return
+        // Captions are cleared HERE rather than where the seek is handled,
+        // and the difference is everything the landing produces. This runs on
+        // the decode thread, which is the only producer, and it runs BEFORE
+        // that thread decodes forward to the target -- so what is in the queue
+        // at this instant is stale by construction and what arrives after is
+        // the landing. Clearing on the subtitle thread instead threw the
+        // landing away too, because the announcement is only polled a tick
+        // later and the payloads had already been submitted.
+        if (fromVideoFrames) captionQueue.clear()
         pendingSeeks.incrementAndGet()
         commands.put(Command.Seek(ptsNanos))
     }
@@ -511,7 +527,7 @@ internal class SubtitlePipeline(
                     now < lastNow - REGRESSION_NANOS &&
                     repositionTargetNanos == Long.MIN_VALUE
                 ) {
-                    reposition(now)
+                    reposition(now, announced = false)
                 }
                 val moving = now != lastNow
                 lastNow = now
@@ -545,6 +561,12 @@ internal class SubtitlePipeline(
      */
     private fun refill(packet: MemorySegment, subtitle: MemorySegment, got: MemorySegment, nowNanos: Long) {
         if (fromVideoFrames) {
+            // For its side effect: it is what releases the reposition target
+            // on arrival (or after the landing patience runs out), and this
+            // mode has no other reader of it. Left unconsumed, the suppression
+            // it arms would silence the loop-wrap guard for the rest of the
+            // file.
+            demuxNowNanos(nowNanos)
             drainCaptions(packet, subtitle, got)
             return
         }
@@ -818,7 +840,7 @@ internal class SubtitlePipeline(
                 target = next.ptsNanos
                 consumed++
             }
-            reposition(target)
+            reposition(target, announced = true)
             pendingSeeks.addAndGet(-consumed)
             true
         }
@@ -847,20 +869,32 @@ internal class SubtitlePipeline(
      * a continued ReadOrder counter would stack them as duplicates);
      * native ASS never flushes, its embedded ReadOrders dedup.
      */
-    private fun reposition(targetNanos: Long) {
+    private fun reposition(targetNanos: Long, announced: Boolean) {
         repositions++
         if (fromVideoFrames) {
             // Nothing to seek. The captions come from the video side, which
             // has already repositioned itself -- what arrives next is
             // whatever it decodes there. What has to go is the state built
-            // from BEFORE the jump: payloads still queued belong to the old
-            // position, the decoder holds a half-assembled row, and the ass
-            // track holds cues that will not be re-sent, since a caption is
-            // not replayed by a preroll the way a demuxed cue is.
-            captionQueue.clear()
+            // from BEFORE the jump: the decoder holds a half-assembled row,
+            // and the ass track holds cues that will not be re-sent, since a
+            // caption is not replayed by a preroll the way a demuxed cue is.
+            //
+            // The queue is NOT cleared for an announced seek: [seek] already
+            // did it, on the producer's own thread and before that thread
+            // decoded the landing. Clearing again here would throw the landing
+            // away, which is the whole reason the clear moved. An unannounced
+            // jump has no such producer-side moment, so it clears here.
+            if (!announced) captionQueue.clear()
             Libav.avcodecFlushBuffers(codecCtx)
             if (assTrack != MemorySegment.NULL) Ass.flushEvents(assTrack)
-            repositionTargetNanos = Long.MIN_VALUE
+            // Armed exactly as the demux branch arms it, and for the same
+            // reason: the announcement reaches this side BEFORE the clock
+            // does, so without it the landing reads as an unannounced backward
+            // jump and repositions a second time -- flushing the decoder and
+            // the track again, on the state the landing had just built, with
+            // no preroll to replay it. [refill] consumes the target on
+            // arrival.
+            repositionTargetNanos = targetNanos
             repositionAtWall = System.nanoTime()
             return
         }
@@ -1137,14 +1171,6 @@ internal class SubtitlePipeline(
         const val DEFAULT_CANVAS_HEIGHT = 480
 
         const val ZERO_BYTE = 0.toByte()
-
-        /**
-         * The codec name a closed-caption track carries, and the flag this
-         * pipeline reads its whole shape from. It is FFmpeg's own name for
-         * the codec cc_dec decodes, so a reader who greps for it lands in the
-         * right place.
-         */
-        const val CAPTION_CODEC_NAME = "eia_608"
 
         /**
          * Caption payloads the decode thread may run ahead by.

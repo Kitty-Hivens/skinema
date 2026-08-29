@@ -143,17 +143,46 @@ class StartPausedTest {
             startPaused = true,
         ).use { p ->
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "state=${p.state}")
-            // The line takes its first chunk before anything can be paused --
-            // that write is what opens the device -- so what proves the hold
-            // is that it stops there rather than playing the file out.
-            Thread.sleep(300)
-            val held = sink.totalBytes
-            Thread.sleep(300)
-            assertEquals(held, sink.totalBytes, "a paused start must not go on feeding the line")
+            // NOTHING, not "stops after the first chunk". The audio side is
+            // constructed before the decode thread and opens a line JavaSound
+            // starts on open, so a pause delivered as a command always arrived
+            // after the first write -- the decode thread was still inside the
+            // video open at that moment, released by the very clock this
+            // pipeline had just published. It is told at construction instead,
+            // and this is the assertion that says so.
+            Thread.sleep(500)
+            assertEquals(0, sink.totalBytes, "a paused start must not put a single sample on the line")
             assertIs<VideoPlayer.State.Paused>(p.state)
 
             p.resume()
-            assertTrue(awaitTrue { sink.totalBytes > held }, "resume must let the sound run")
+            assertTrue(awaitTrue { sink.totalBytes > 0 }, "resume must let the sound run")
+        }
+    }
+
+    /**
+     * The combination that had no test and the widest window: sound AND
+     * picture. The pause reaches the audio side at construction, while the
+     * decode thread is still opening the video -- which is the whole gap the
+     * command could not cover, and it grows with how slow the source is.
+     */
+    @Test
+    fun `a paused start with picture and sound puts nothing on the line either`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        val av = Fixtures.generate(
+            dir.resolve("av.mkv"),
+            "-f", "lavfi", "-i", "color=c=navy:s=320x240:r=25", "-f", "lavfi",
+            "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "flac",
+        )
+        VideoPlayer(av, loop = false, audio = true, sink = sink, startPaused = true).use { p ->
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "state=${p.state}")
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "the poster frame must publish")
+            Thread.sleep(500)
+            assertEquals(0, sink.totalBytes, "a paused start must not put a single sample on the line")
+
+            p.resume()
+            assertTrue(awaitTrue { sink.totalBytes > 0 }, "resume must let the sound run")
         }
     }
 

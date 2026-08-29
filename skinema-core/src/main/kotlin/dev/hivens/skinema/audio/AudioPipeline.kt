@@ -29,6 +29,19 @@ internal class AudioPipeline(
     private val sink: PcmSink,
     private val initialTrack: Int? = null,
     initialVolume: Float = 1f,
+    /**
+     * Open frozen, and stay frozen until a Resume arrives.
+     *
+     * The player's `startPaused` cannot be delivered as a command: this
+     * pipeline is constructed in a field initializer, so its thread opens the
+     * line -- which JavaSound STARTS on open -- and writes its first chunk
+     * while the decode thread is still inside the video open that the
+     * clockFuture it just completed released it to do. The pause always
+     * arrived after the sound. A player asked to open paused therefore has to
+     * tell this side at construction, the way the volume does and for exactly
+     * the same reason.
+     */
+    private val startPaused: Boolean = false,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
     private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
 ) {
@@ -193,6 +206,29 @@ internal class AudioPipeline(
     val hasSoundLeft: Boolean
         get() = !isEnded && !deviceLost
 
+    /**
+     * The last volume asked for, and the reason it is remembered here.
+     *
+     * A line starts at whatever gain the device gives it, so every reopen --
+     * a track switch, a device-loss recovery -- put a muted player back at
+     * full volume. Kept on this side rather than left to the sink because the
+     * sink is a seam a consumer implements, and remembering a value across a
+     * reopen it does not control is not a rule worth handing them.
+     */
+    @Volatile
+    private var volume: Float = initialVolume
+
+    /**
+     * Guards [volume] and every [PcmSink.setVolume] this pipeline makes.
+     *
+     * Declared with it, and both ahead of the thread below, for the reason
+     * that comment gives: the audio thread reads the gain and takes this
+     * monitor inside [openLine], so a declaration after the start is a field
+     * the thread can reach before the constructor has written it -- a silent
+     * player at best and a null monitor at worst.
+     */
+    private val volumeLock = Any()
+
     // Started last, after every field the thread it starts can touch.
     // Initializers run in declaration order, so a thread started ahead of
     // one raced the constructor for it: a file with no audio stream reaches
@@ -264,21 +300,27 @@ internal class AudioPipeline(
     }
 
     /**
-     * The last volume asked for, and the reason it is remembered here.
+     * Serialized against [openLine], because the two are the only writers of
+     * the gain and they run on different threads. Unsynchronized, an open
+     * that had already read the old value could land its [PcmSink.setVolume]
+     * after a caller's newer one and leave the line loud while this field
+     * says quiet -- the very thing remembering the volume across a reopen
+     * exists to prevent, and it would survive until the next call.
      *
-     * A line starts at whatever gain the device gives it, so every reopen --
-     * a track switch, a device-loss recovery -- put a muted player back at
-     * full volume. Kept on this side rather than left to the sink because the
-     * sink is a seam a consumer implements, and remembering a value across a
-     * reopen it does not control is not a rule worth handing them.
+     * The lock is taken around the gain alone and never around a write, so
+     * it cannot violate the sink's rule that this call may not wait on a lock
+     * a write holds. And it carries the same shutter [guardedWrite] keeps:
+     * this is the one path to the sink from a foreign thread, so past an
+     * announced close it must not reach into an object already handed back.
      */
-    @Volatile
-    private var volume: Float = initialVolume
-
     fun setVolume(volume: Float) {
-        this.volume = volume
-        sink.setVolume(volume)
+        synchronized(volumeLock) {
+            if (closing) return
+            this.volume = volume
+            sink.setVolume(volume)
+        }
     }
+
 
     /**
      * Tells this side to go, without waiting for it.
@@ -293,7 +335,12 @@ internal class AudioPipeline(
      * names for exactly that, so a consumer's own sink sees no new one.
      */
     fun announceClose() {
-        closing = true
+        // Under the volume lock, which is what makes the shutter in
+        // [setVolume] a guarantee rather than a hope: a call that holds the
+        // lock has already reached the sink and returns before this sets the
+        // flag, and one that has not yet taken it reads the flag and stops.
+        // The sink is closed later still, on the audio thread's way out.
+        synchronized(volumeLock) { closing = true }
         commands.put(Command.Close)
         watchdog?.interrupt()
     }
@@ -381,7 +428,19 @@ internal class AudioPipeline(
         clockFuture.complete(theClock)
         startWatchdog()
         sampleRate = first.sampleRate
-        guardedWrite(first.pcm, first.byteCount)
+        if (startPaused) {
+            // Frozen before the first sample rather than after it. The chunk
+            // is kept rather than dropped, because it is the start of the
+            // file: written on the first Resume, from the pending slot that
+            // exists for exactly this -- a chunk that must not go into a
+            // stopped line, since a stopped line never drains and the start()
+            // that would revive it is on this same thread.
+            paused = true
+            freezeSink()
+            pendingPcm = first.pcm.copyOf(first.byteCount)
+        } else {
+            guardedWrite(first.pcm, first.byteCount)
+        }
 
         while (true) {
             if (deviceLost && !recover()) return
@@ -537,8 +596,10 @@ internal class AudioPipeline(
         // Before a single sample goes in, so a player asked to start quiet is
         // quiet from its first chunk rather than from whenever a setVolume
         // call gets through -- the first write follows this immediately, on
-        // this thread.
-        sink.setVolume(volume)
+        // this thread. Under the lock, and reading the field inside it, so a
+        // concurrent caller either set the gain before this and has it read
+        // here, or lands after this and wins outright.
+        synchronized(volumeLock) { sink.setVolume(volume) }
         // open() starts the device by contract, so the clock may fill the
         // gaps between its position refreshes again. Null on the very first
         // open, which happens before the clock exists.
