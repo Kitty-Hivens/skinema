@@ -410,6 +410,12 @@ class VideoPlayer internal constructor(
                 // and there it means "keep what you had", which at the open is
                 // the full volume below.
                 initialVolume = if (volume.isNaN()) 1f else volume.coerceIn(0f, 1f),
+                // Told at construction rather than paused by command. This
+                // side starts before the decode thread and would otherwise
+                // have played the start of the file before the pause could be
+                // queued -- the decode thread is inside the video open at that
+                // moment, released by the very clock this pipeline published.
+                startPaused = startPaused,
             )
         } else {
             null
