@@ -159,10 +159,16 @@ reverse). Audio-only files play frameless. Files with several audio
 tracks expose them (`audioTracks`, language and title included) and
 switch in place (`selectAudioTrack`) -- the picture keeps playing and
 the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with
-the pitch preserved (FFmpeg's atempo). HDR content (PQ/HLG over
-BT.2020) is tone-mapped to SDR on the decode path -- the transfer is
-inverted, highlights roll off against BT.2408 diffuse white, and the
-gamut maps to BT.709 -- so it no longer plays washed out. This is a
+the pitch preserved (FFmpeg's atempo). `volume` opens at a gain rather
+than at full, and is re-applied to every line the player opens -- a
+track switch, a device coming back after an outage -- so a quiet player
+stays quiet; `setVolume` changes it live. Opening at one is not the same
+as setting it straight after: the sink opens and takes its first chunk
+on the audio thread's own schedule, so a call racing that has already
+lost. HDR content (PQ/HLG over BT.2020) is tone-mapped to SDR on the
+decode path -- the transfer is inverted, highlights roll off against
+BT.2408 diffuse white, and the gamut maps to BT.709 -- so it no longer
+plays washed out. This is a
 fixed reasonable-look mapping, not a metadata-accurate one: the stream's
 HDR metadata (MaxCLL, mastering-display luminance, HDR10+, Dolby Vision)
 is not read, so the roll-off uses an assumed peak rather than the
@@ -232,6 +238,13 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
   and its watchdog, and a selected subtitle track a fifth. Players are
   independent and self-synced; play as many as your CPU affords (a
   desktop comfortably runs dozens of 1080p30 streams).
+- **A player can open paused.** `startPaused = true` settles
+  `State.Paused` instead of `Playing` and stays on the first frame --
+  which is on screen, because a poster frame with no picture is a black
+  rectangle. With sound, nothing reaches the line at all: the audio side
+  is told at construction rather than paused by a command, which would
+  arrive after the device had already started. `resume` is what starts
+  the file, and this is the one pause `WhenUnwatched` never lifts.
 - **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
   many decoded frames of inventory, so a decode stall does not stall
   the screen while inventory lasts. Each step of depth costs one full

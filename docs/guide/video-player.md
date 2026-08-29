@@ -63,7 +63,11 @@ VideoPlayer(
 - `startPaused` -- open onto the first frame and stay on it. `state`
   settles `Paused` rather than `Playing`, and `resume()` is what starts
   the file; the picture is up before that, because the first frame
-  publishes the way a seek landing does. It is a caller's pause, so
+  publishes the way a seek landing does. With sound, nothing reaches the
+  line at all: the audio side is told at construction rather than paused
+  by a command, which would arrive after the device had already started
+  -- the sink opens on the audio thread's own schedule, while the decode
+  thread is still inside the video open. It is a caller's pause, so
   `WhenUnwatched` never lifts it. Default `false`.
 - `volume` -- linear 0..1 from the first sample onward, rather than from
   whenever a `setVolume` call gets through: the sink opens and takes its
