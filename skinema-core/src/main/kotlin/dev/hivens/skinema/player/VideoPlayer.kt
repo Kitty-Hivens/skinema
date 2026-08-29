@@ -1064,6 +1064,23 @@ class VideoPlayer internal constructor(
         return clock.mediaNanos() >= end
     }
 
+    /**
+     * Whether a frameless lap has anything to turn into.
+     *
+     * [framelessLapDone] answers true the moment it cannot tell: a side that
+     * never opened a device sets its ended flag on the way out, and a
+     * container that declares no duration leaves nothing to measure against.
+     * Looping on that answer is a wrap ten times a second for as long as the
+     * file stays open, with the position pinned at zero and the state still
+     * reporting Playing -- reachable from something as ordinary as asking for
+     * sound on a file that has neither pictures nor a decodable track.
+     *
+     * The framed path already refuses to turn a lap that produced nothing
+     * ([lapProducedFrames]); this is that rule for a lap made of sound.
+     */
+    private fun framelessLapCanTurn(): Boolean =
+        audioPipeline?.alive == true || durationNanos != null
+
     /** Audio-only playback: commands and lifecycle, no frames. */
     private fun framelessLoop() {
         if (startPaused) {
@@ -1081,7 +1098,7 @@ class VideoPlayer internal constructor(
             if (cmd != null && !handle(cmd, decoder = null)) return
             if (state is State.Playing && framelessLapDone()) {
                 val pipe = audioPipeline
-                if (loop) {
+                if (loop && framelessLapCanTurn()) {
                     // Audio-only, so there is no picture to end the lap: this
                     // side owns it. The landing handshake goes with the seek,
                     // without which the sink stays muted from here on -- and
