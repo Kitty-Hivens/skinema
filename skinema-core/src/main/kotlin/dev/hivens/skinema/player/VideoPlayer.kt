@@ -369,7 +369,7 @@ class VideoPlayer internal constructor(
      * track.
      */
     private val captionTrack = SubtitleTrack(
-        id = CAPTION_TRACK_ID,
+        id = SubtitleTrack.CLOSED_CAPTION_ID,
         streamIndex = -1,
         language = null,
         title = "Closed captions",
@@ -1769,7 +1769,7 @@ class VideoPlayer internal constructor(
             captionsSeen = true
             synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + captionTrack }
         }
-        subtitlePipeline?.takeIf { it.track.id == CAPTION_TRACK_ID }?.submitCaptions(bytes, ptsNanos)
+        subtitlePipeline?.takeIf { it.track.id == SubtitleTrack.CLOSED_CAPTION_ID }?.submitCaptions(bytes, ptsNanos)
     }
 
     /** Re-anchors time at a stepped frame while the player stays paused. */
@@ -2196,14 +2196,6 @@ class VideoPlayer internal constructor(
          * or a landing run, and a blink is not a consumer leaving.
          */
         const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 60
-
-        /**
-         * The id of the closed-caption track. Reserved rather than allocated:
-         * container tracks take their stream index and external files take
-         * ids counting down from -1, so the far end of the range is the one
-         * place neither can reach.
-         */
-        const val CAPTION_TRACK_ID = Int.MIN_VALUE
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
