@@ -73,17 +73,17 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             tier: full
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             tier: full
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: windows-latest
             platform: windows-x64
             tier: full
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 33
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
@@ -93,7 +93,7 @@ jobs:
           - os: windows-11-arm
             platform: windows-arm64
             tier: full
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 33
           # Twenty-one, and every one of them named, re-counted from the run:
           # nine audio suites needing a real output line (as everywhere else)
@@ -126,7 +126,7 @@ jobs:
           - os: macos-14
             platform: macos-arm64
             tier: full
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             hwaccel: "1"
             maxSkipped: 23
           # The musl bundles are published like every other platform and were
@@ -139,13 +139,13 @@ jobs:
             platform: linux-musl-x64
             tier: full
             libc: musl
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             tier: full
             libc: musl
-            caps: decode,subs,dvbsub,webp,encode,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 27
           # The tier the consumer actually ships, run through the same suite.
           # Every other row here takes `full`, which nobody deploys: the
@@ -174,7 +174,7 @@ jobs:
           - os: ubuntu-latest
             platform: linux-x64
             tier: decode
-            caps: decode,subs,dvbsub,webp,encav1,encopus,formats
+            caps: decode,subs,dvbsub,cea608,webp,encav1,encopus,formats
             maxSkipped: 43
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It

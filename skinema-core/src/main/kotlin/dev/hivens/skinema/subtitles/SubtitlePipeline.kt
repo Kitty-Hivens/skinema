@@ -849,6 +849,21 @@ internal class SubtitlePipeline(
      */
     private fun reposition(targetNanos: Long) {
         repositions++
+        if (fromVideoFrames) {
+            // Nothing to seek. The captions come from the video side, which
+            // has already repositioned itself -- what arrives next is
+            // whatever it decodes there. What has to go is the state built
+            // from BEFORE the jump: payloads still queued belong to the old
+            // position, the decoder holds a half-assembled row, and the ass
+            // track holds cues that will not be re-sent, since a caption is
+            // not replayed by a preroll the way a demuxed cue is.
+            captionQueue.clear()
+            Libav.avcodecFlushBuffers(codecCtx)
+            if (assTrack != MemorySegment.NULL) Ass.flushEvents(assTrack)
+            repositionTargetNanos = Long.MIN_VALUE
+            repositionAtWall = System.nanoTime()
+            return
+        }
         val preroll = (targetNanos - PREROLL_NANOS).coerceAtLeast(0)
         val moved = runCatching {
             Libav.checkAv(
