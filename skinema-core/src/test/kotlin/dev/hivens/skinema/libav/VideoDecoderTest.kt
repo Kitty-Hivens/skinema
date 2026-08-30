@@ -36,22 +36,29 @@ class VideoDecoderTest {
         // Found by name off the library's own table, so the id is never
         // hard-coded here: the oracle carries the handful of ids the code
         // needs and these are not among them.
-        fun idOf(name: String): Int? =
+        // Asserted rather than skipped when a name does not resolve, and the
+        // difference is the whole guard. The descriptor table is compiled in
+        // whether or not a decoder is, so every name below resolves on any
+        // build -- a null means the scan window no longer covers the subtitle
+        // block, not that the codec is legitimately absent. Read as absence it
+        // dropped the case silently, and these cases ARE the regression this
+        // test exists for: sami, microdvd, ttml and plain text are the formats
+        // that used to arrive flagged as bitmaps.
+        fun idOf(name: String): Int = assertNotNull(
             (LibavAbi.AV_CODEC_ID_DVD_SUBTITLE until LibavAbi.AV_CODEC_ID_DVD_SUBTITLE + 64)
-                .firstOrNull { Libav.avcodecGetName(it).reinterpret(Long.MAX_VALUE).getString(0) == name }
+                .firstOrNull { Libav.avcodecGetName(it).reinterpret(Long.MAX_VALUE).getString(0) == name },
+            "the library names no '$name' in the 64 ids from AV_CODEC_ID_DVD_SUBTITLE -- widen the scan",
+        )
 
         for (name in listOf("sami", "microdvd", "text", "ttml", "jacosub", "realtext")) {
-            val id = idOf(name) ?: continue
-            assertTrue(isTextSubtitleCodec(id), "$name is a text subtitle codec")
+            assertTrue(isTextSubtitleCodec(idOf(name)), "$name is a text subtitle codec")
         }
         for (name in listOf("ass", "ssa", "subrip", "mov_text", "webvtt")) {
-            val id = assertNotNull(idOf(name), "the library must name $name")
-            assertTrue(isTextSubtitleCodec(id), "$name is a text subtitle codec")
+            assertTrue(isTextSubtitleCodec(idOf(name)), "$name is a text subtitle codec")
         }
         // The other half: a bitmap codec must not be dragged in with them.
         for (name in listOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub")) {
-            val id = idOf(name) ?: continue
-            assertFalse(isTextSubtitleCodec(id), "$name draws pixels, not text")
+            assertFalse(isTextSubtitleCodec(idOf(name)), "$name draws pixels, not text")
         }
     }
 
