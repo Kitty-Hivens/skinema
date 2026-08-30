@@ -393,15 +393,25 @@ class TranscoderTest {
     fun `a source that changes size at its second frame is refused by name`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeFormats()
-        Fixtures.assumeLibraryEncoder("libx264")
+        // Whichever encoder this bundle carries, because the subject is the
+        // transcoder's geometry guard and not any codec. Gated on libx264
+        // alone it would skip on the decode tier -- that tier has no libx264,
+        // which is exactly what keeps it LGPL -- and a test that skips on a
+        // shipped tier is one the tier never proves. SVT-AV1 rides that tier
+        // as a required capability, so between the two every tier that can
+        // write anything runs this.
+        val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        // Comfortably past SVT-AV1's minimum dimensions, which 64x64 sits
+        // exactly on; the writer opens at the FIRST frame's geometry.
         val one = Fixtures.generate(
             dir.resolve("one-frame.ts"),
-            "-f", "lavfi", "-i", "color=c=red:size=64x64:rate=10", "-frames:v", "1",
+            "-f", "lavfi", "-i", "color=c=red:size=128x128:rate=10", "-frames:v", "1",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
         )
         val rest = Fixtures.generate(
             dir.resolve("rest.ts"),
-            "-f", "lavfi", "-i", "color=c=lime:size=128x96:rate=10", "-t", "0.5",
+            "-f", "lavfi", "-i", "color=c=lime:size=192x144:rate=10", "-t", "0.5",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
         )
         val mixed = dir.resolve("switch-at-two.ts")
@@ -411,7 +421,7 @@ class TranscoderTest {
         }
 
         val thrown = assertFailsWith<LibavException> {
-            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = "libx264"))
+            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
                 .use { it.run() }
         }
         assertTrue(
