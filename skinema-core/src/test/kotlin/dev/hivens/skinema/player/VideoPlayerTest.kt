@@ -1478,6 +1478,79 @@ class VideoPlayerTest {
         }
     }
 
+    /**
+     * A rect with no area must not be REMEMBERED, which is a different rule
+     * from not acting on it.
+     *
+     * The subtitle side already refuses one: its command handler asks for a
+     * positive width and height before it touches the renderer, so an empty
+     * rect never reaches libass and never reaches an overlay. What it does
+     * reach is the field this class keeps for re-stating the size to the NEXT
+     * pipeline -- and that re-statement is itself guarded on the size being
+     * positive. So an empty announcement did not misrender anything; it erased
+     * the real size that came before it, and the next track switch built a
+     * pipeline with nothing to re-state and fell back to the video's storage
+     * size. That is the 64x48-against-800x600 defect, reached from the other
+     * end.
+     *
+     * A surface mid-layout, one collapsed to nothing, or a consumer computing
+     * its own geometry reports exactly such a rect, and the documentation asks
+     * consumers to post the size themselves.
+     */
+    @Test
+    fun `an empty canvas announcement does not erase the size a track switch re-states`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val a = dir.resolve("canvas-a.srt")
+        Files.writeString(a, "1\n00:00:00,200 --> 00:00:09,000\nAlpha\n")
+        val b = dir.resolve("canvas-b.srt")
+        Files.writeString(b, "1\n00:00:00,200 --> 00:00:09,000\nBravo\n")
+        val video = Fixtures.generate(
+            dir.resolve("canvas-switch.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10",
+            "-i", a.toString(), "-i", b.toString(),
+            "-map", "0:v", "-map", "1", "-map", "2", "-t", "10",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:s", "srt",
+        )
+        VideoPlayer(video, loop = true).use { player ->
+            assertTrue(awaitTrue { player.subtitleTracks.size == 2 }, "both tracks must surface")
+            val ids = player.subtitleTracks.map { it.id }
+            player.selectSubtitleTrack(ids[0])
+            player.setSubtitleCanvasSize(800, 600)
+            var canvas: Pair<Int, Int>? = null
+            assertTrue(
+                awaitTrue {
+                    player.acquireFrame()
+                    player.acquireSubtitles()?.let {
+                        if (it.patches.isNotEmpty()) canvas = it.canvasWidth to it.canvasHeight
+                    }
+                    canvas == 800 to 600
+                },
+                "the real size must land on the first track, got $canvas",
+            )
+
+            // What a surface with no area reports. The current pipeline
+            // rightly ignores it; the question is what the player remembers.
+            player.setSubtitleCanvasSize(0, 0)
+
+            player.selectSubtitleTrack(ids[1])
+            assertTrue(awaitTrue { player.activeSubtitleTrack == ids[1] }, "the switch must land")
+            var after: Pair<Int, Int>? = null
+            assertTrue(
+                awaitTrue(15_000) {
+                    player.acquireFrame()
+                    player.acquireSubtitles()?.let {
+                        if (it.patches.isNotEmpty()) after = it.canvasWidth to it.canvasHeight
+                    }
+                    after != null
+                },
+                "the new track must render something to judge",
+            )
+            assertEquals(800 to 600, after, "the empty rect erased the size the switch had to re-state")
+        }
+    }
+
     @Test
     fun `a subtitle selection queued before playback works`() {
         Fixtures.assumeDecodeEnvironment()

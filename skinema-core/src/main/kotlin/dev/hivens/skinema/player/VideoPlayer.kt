@@ -720,6 +720,18 @@ class VideoPlayer internal constructor(
      * packet at a time and never reached its own render cadence.
      */
     fun setSubtitleCanvasSize(width: Int, height: Int) {
+        // Refused here rather than trusted, because this is the public edge and
+        // the value does not stop at this library: it reaches libass as a frame
+        // size, and it is published to the consumer as the space the overlay's
+        // own coordinates are in -- which a caller maps by dividing by it.
+        //
+        // A rect with no area is what a surface reports while it is being laid
+        // out, collapsed, or drawn by a consumer computing its own geometry --
+        // the case the documentation tells them to handle. Zero is already this
+        // class's sentinel for "nothing announced", so keeping the last real
+        // size is both the safe answer and the consistent one; the next real
+        // rect replaces it.
+        if (width <= 0 || height <= 0) return
         announcedWidth = width
         announcedHeight = height
         subtitlePipeline?.setCanvasSize(width, height)
