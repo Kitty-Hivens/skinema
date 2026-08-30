@@ -158,7 +158,13 @@ class MediaWriter private constructor(
             }
             a.remainingSamples()?.let { samples ->
                 a.send(samples)
-                drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
+                // The short final frame's own length, not a full one. The
+                // fallback only stands in where libavcodec left the packet
+                // duration at zero -- which it does not do for audio, so this
+                // is latent rather than live -- but a full frame is knowably
+                // the wrong number here, and an overstated last packet is how
+                // a container comes to declare more sound than it carries.
+                drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, samples.toLong())
             }
             flushEncoder(a.codecCtx, "avcodec_send_frame(audio flush)")
             drain(a.codecCtx, a.streamIndex, a.sampleRate, a.streamTbNum, a.streamTbDen, a.frameSize.toLong())
