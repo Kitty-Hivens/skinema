@@ -2,6 +2,7 @@ package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -372,5 +373,50 @@ class TranscoderTest {
             assertEquals(afterCancel, t.framesWritten, "a refused run must not advance the counter")
             assertEquals(sizeAfterCancel, Files.size(out), "and must not touch the file it already wrote")
         }
+    }
+
+    /**
+     * The guard against a mid-stream geometry change stands beside the first
+     * two frames, and the second of them was handed the FIRST frame's
+     * dimensions -- so for that one frame it compared first against first and
+     * could not fail. A second frame of another size then went to a writer
+     * opened at the first's geometry, and what surfaced was the writer's own
+     * `require` -- an IllegalArgumentException -- where everything else in this
+     * class fails closed with a LibavException. With rotation applied it is
+     * worse than a wrong exception type: rotate() would read off the end of a
+     * buffer sized for the other geometry.
+     *
+     * MPEG-TS carries a resolution change by design, and a one-frame first
+     * half puts the change exactly where the guard was blind.
+     */
+    @Test
+    fun `a source that changes size at its second frame is refused by name`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeFormats()
+        Fixtures.assumeLibraryEncoder("libx264")
+        val one = Fixtures.generate(
+            dir.resolve("one-frame.ts"),
+            "-f", "lavfi", "-i", "color=c=red:size=64x64:rate=10", "-frames:v", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
+        )
+        val rest = Fixtures.generate(
+            dir.resolve("rest.ts"),
+            "-f", "lavfi", "-i", "color=c=lime:size=128x96:rate=10", "-t", "0.5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
+        )
+        val mixed = dir.resolve("switch-at-two.ts")
+        Files.newOutputStream(mixed).use { out ->
+            Files.newInputStream(one).use { it.copyTo(out) }
+            Files.newInputStream(rest).use { it.copyTo(out) }
+        }
+
+        val thrown = assertFailsWith<LibavException> {
+            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = "libx264"))
+                .use { it.run() }
+        }
+        assertTrue(
+            thrown.message?.contains("changed geometry") == true,
+            "the transcoder's own refusal must be what surfaces, got: ${thrown.message}",
+        )
     }
 }
