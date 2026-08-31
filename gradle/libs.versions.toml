@@ -1,6 +1,6 @@
 [versions]
 kotlin       = "2.4.10"
-compose      = "1.11.1"
+compose      = "1.12.0"
 skiko        = "0.144.6"
 # Maven Central publishing (signing + Central Portal upload) -- the
 # libtray-proven recipe.
