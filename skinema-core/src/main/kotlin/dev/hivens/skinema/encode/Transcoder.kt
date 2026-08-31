@@ -133,6 +133,15 @@ class Transcoder private constructor(
         val second = video.nextFrame()
         val secondPixels = second?.rgba?.copyOf()
         val secondPts = second?.ptsNanos
+        // Its OWN geometry, because that is what the guard in push() compares
+        // against the first frame's. Handed first's, the comparison was first
+        // against first -- tautologically true for the one frame the guard
+        // stands next to -- and a second frame of another size reached rotate()
+        // with the wrong extents and read off the end of its buffer. That
+        // arrives as an ArrayIndexOutOfBoundsException, where everything else
+        // in this class fails closed with a LibavException.
+        val secondWidth = second?.width ?: 0
+        val secondHeight = second?.height ?: 0
 
         val (outWidth, outHeight) = displayedSize(first.width, first.height, rotation)
         val fps = config.fps.takeIf { it > 0 } ?: measuredFps(firstPts, secondPts)
@@ -176,7 +185,7 @@ class Transcoder private constructor(
         }
 
         push(firstPixels, first.width, first.height, firstPts)
-        if (secondPixels != null && secondPts != null) push(secondPixels, first.width, first.height, secondPts)
+        if (secondPixels != null && secondPts != null) push(secondPixels, secondWidth, secondHeight, secondPts)
 
         // Audio leads the interleave: its chunk is pushed while its start is
         // at or before the video frame waiting to go, so neither side runs

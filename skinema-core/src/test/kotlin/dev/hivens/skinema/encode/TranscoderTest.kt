@@ -2,6 +2,7 @@ package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -372,5 +373,60 @@ class TranscoderTest {
             assertEquals(afterCancel, t.framesWritten, "a refused run must not advance the counter")
             assertEquals(sizeAfterCancel, Files.size(out), "and must not touch the file it already wrote")
         }
+    }
+
+    /**
+     * The guard against a mid-stream geometry change stands beside the first
+     * two frames, and the second of them was handed the FIRST frame's
+     * dimensions -- so for that one frame it compared first against first and
+     * could not fail. A second frame of another size then went to a writer
+     * opened at the first's geometry, and what surfaced was the writer's own
+     * `require` -- an IllegalArgumentException -- where everything else in this
+     * class fails closed with a LibavException. With rotation applied it is
+     * worse than a wrong exception type: rotate() would read off the end of a
+     * buffer sized for the other geometry.
+     *
+     * MPEG-TS carries a resolution change by design, and a one-frame first
+     * half puts the change exactly where the guard was blind.
+     */
+    @Test
+    fun `a source that changes size at its second frame is refused by name`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeFormats()
+        // Whichever encoder this bundle carries, because the subject is the
+        // transcoder's geometry guard and not any codec. Gated on libx264
+        // alone it would skip on the decode tier -- that tier has no libx264,
+        // which is exactly what keeps it LGPL -- and a test that skips on a
+        // shipped tier is one the tier never proves. SVT-AV1 rides that tier
+        // as a required capability, so between the two every tier that can
+        // write anything runs this.
+        val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        // Comfortably past SVT-AV1's minimum dimensions, which 64x64 sits
+        // exactly on; the writer opens at the FIRST frame's geometry.
+        val one = Fixtures.generate(
+            dir.resolve("one-frame.ts"),
+            "-f", "lavfi", "-i", "color=c=red:size=128x128:rate=10", "-frames:v", "1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
+        )
+        val rest = Fixtures.generate(
+            dir.resolve("rest.ts"),
+            "-f", "lavfi", "-i", "color=c=lime:size=192x144:rate=10", "-t", "0.5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-f", "mpegts",
+        )
+        val mixed = dir.resolve("switch-at-two.ts")
+        Files.newOutputStream(mixed).use { out ->
+            Files.newInputStream(one).use { it.copyTo(out) }
+            Files.newInputStream(rest).use { it.copyTo(out) }
+        }
+
+        val thrown = assertFailsWith<LibavException> {
+            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
+                .use { it.run() }
+        }
+        assertTrue(
+            thrown.message?.contains("changed geometry") == true,
+            "the transcoder's own refusal must be what surfaces, got: ${thrown.message}",
+        )
     }
 }
