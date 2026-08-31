@@ -1243,17 +1243,28 @@ accumulates, and that does not depend on where the frame came from -- while GPU
 decode puts the frame download on the same memory bus the compositor uses,
 which makes the run intrusive on a desktop for no gain in what it measures.
 
-## 12. Version pins (2026-06)
+## 12. Version pins (2026-09)
 
 | Component  | Version        | Note                                   |
 |------------|----------------|----------------------------------------|
 | JDK floor  | 22             | java.lang.foreign final                |
 | Toolchain  | 25 (LTS)       | foojay resolver fetches if absent      |
-| Kotlin     | 2.4.0          | matches the primary consumer           |
-| Compose    | 1.11.0         | matches the primary consumer           |
-| Skiko      | 0.144.6        | what Compose 1.11.0 ships; compileOnly |
-| Gradle     | 9.5.1 (wrapper)|                                        |
+| Kotlin     | 2.4.10         | matches the primary consumer           |
+| Compose    | 1.12.0         | matches the primary consumer           |
+| Skiko      | 0.150.1        | what Compose 1.12.0 ships; compileOnly |
+| Gradle     | 9.7.1 (wrapper)|                                        |
 | FFmpeg     | n9.0.x         | sonames in section 4                   |
+
+Compose and Skiko are ONE pin in two lines, and a bot that reads the catalog
+cannot know it. Skiko is `compileOnly` here on purpose (section 10's
+single-sourcing), so the copy that runs is the one the consumer's Compose
+brings; the catalog's number decides only what this repo compiles and tests
+against. Move Compose alone and the two disagree -- in this repo first, where
+`skinema-compose`'s tests resolve the Skia API transitively from Compose while
+naming the native runtime by the catalog's version, which is how one version's
+classes end up over another's natives. Because Skiko is the consumer's copy,
+compiling against 0.150.1 makes Compose 1.12 a FLOOR rather than a preference,
+and a release that moves it says so in its notes.
 
 ## 13. Open questions
 
@@ -1312,12 +1323,20 @@ which makes the run intrusive on a desktop for no gain in what it measures.
   downloaded with `av_hwframe_transfer_data` and swscaled to RGBA, leaving the
   GPU only to come back as a texture.
 
-  Checked against the pinned Skiko (0.144.6) rather than assumed.
-  `BackendTexture` exposes `makeGL` and nothing else -- no Metal, no D3D, no
-  Vulkan variant -- and `Image` exposes `adoptTextureFrom` with no YUV or YUVA
-  factory at all. `GraphicsApi` lists `VULKAN` and the jar carries zero Vulkan
-  implementation: a constant with no executor. `DirectContext` does expose
-  `resetGL`/`resetGLAll`, so handing GL state back to Skia is at least possible.
+  Checked against the pinned Skiko rather than assumed, and re-checked the same
+  way when the pin moved to 0.150.1: `BackendTexture` exposes `makeGL` and
+  nothing else -- no Metal, no D3D, no Vulkan variant -- and `Image` exposes
+  `adoptTextureFrom` with no YUV or YUVA factory at all. `GraphicsApi` lists
+  `VULKAN` and the jar carries zero Vulkan implementation: a constant with no
+  executor. `DirectContext` does expose `resetGL`/`resetGLAll`, so handing GL
+  state back to Skia is at least possible. Six Skia bumps (m144 to m150) moved
+  none of it.
+
+  Where it does move next is worth naming, since this entry gates on it: Skiko
+  0.151.0 adds a graphite module, Skia's second-generation backend. Compose
+  1.12.0 ships 0.150.1, so it is not here yet -- but the version that brings it
+  is the one to re-read this section against, rather than waiting for a Vulkan
+  entry to appear under the name this entry predicted.
 
   Two blockers follow, and the second is the expensive one. **One door, three
   bridges**: `makeGL` needs a GL context, which exists on all three platforms

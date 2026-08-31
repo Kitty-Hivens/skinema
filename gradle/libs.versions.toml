@@ -1,7 +1,11 @@
 [versions]
 kotlin       = "2.4.10"
 compose      = "1.12.0"
-skiko        = "0.144.6"
+# Moves with `compose`, never on its own: skiko is compileOnly here, so the
+# copy that runs is whatever the consumer's Compose brings, and 0.150.1 is
+# what 1.12.0 brings. Bumping one alone puts one version's API on the
+# classpath beside the other's native runtime.
+skiko        = "0.150.1"
 # Maven Central publishing (signing + Central Portal upload) -- the
 # libtray-proven recipe.
 mavenPublish = "0.37.0"
