@@ -1243,6 +1243,62 @@ accumulates, and that does not depend on where the frame came from -- while GPU
 decode puts the frame download on the same memory bus the compositor uses,
 which makes the run intrusive on a desktop for no gain in what it measures.
 
+### Both runs are in, and the answer came from a profiler rather than a third run
+
+Sound off, two hours, images through a real `VideoFrameImage`: the floor by
+third reads 58 (warm-up), 195, 184, a settled drift of **-11 MB**. The floor
+came back down, which a leak cannot do. `pending` was 0 at teardown after
+445k draws from the second thread, so the borrow rule of M19 holds across a
+thread boundary at that scale.
+
+Sound on, at zero gain, two hours: 61 (warm-up), 191, 231, a drift of
+**+40 MB**. That number is not usable as it stands, because the machine
+suspended for eleven hours inside the run, and pages that leave for swap and
+come back move a floor without anything having accumulated.
+
+Chasing that +40 is where the round was spent, and the method notes matter
+more than the number.
+
+**async-profiler in `nativemem` mode reports allocation VOLUME, not
+retention**, and `--live` does not change that for native memory (measured:
+279854 against 280119 for the same window with and without it). Two windows of
+equal length therefore compare allocation rates and say nothing about what is
+held, which is what an earlier reading of them wrongly claimed. Scaling the
+window length is what exposed it: a two minute and a ten minute window came out
+at exactly 5.00 to one, in three unrelated subsystems at once, which is the
+fingerprint of a rate times a duration.
+
+**heaptrack answered it in one run, and the control is the whole argument.**
+Leaked at exit, meaning never freed by the process: 37.90 MB over ten minutes,
+38.07 MB over one. Ten times the runtime, the same total, while the call count
+doubled. A JVM that only sleeps for a minute and does nothing else leaks 23.74
+MB of the same shape, all of it `os::malloc` inside libjvm. So roughly 24 MB of
+that figure exists before a line of this code runs, the remainder is a constant
+addition from threads, their GC structures and JIT arenas, and none of it grows
+with time. What heaptrack calls a leak is everything unfreed at exit, and a JVM
+frees none of its own structures there by design.
+
+**Nothing from libavcodec, libavformat, libavutil, libswresample, libskiko or
+libass appears in the leaked set at all.** The soak closes the player before
+exit, so pipelines are torn down and codec contexts closed, and what survives
+that is genuinely held. Nothing of ours does.
+
+The staircase shape of the floor is the allocator. glibc takes an arena per
+thread and returns freed memory to it rather than to the system, and capping it
+with `MALLOC_ARENA_MAX=2` cut a two minute climb from +28 MB to +10 MB with
+everything else identical. Inside libav the retained blocks come through
+`av_buffer_pool_get`, which is a pool by construction: a block returns to the
+pool on unref instead of being freed, and the pool grows to the high water mark
+of concurrent buffers and then stops. That is the shape, plateau and step, and
+not a ramp.
+
+**Why there is no third run.** Two identical 21 minute runs of the same
+configuration gave settled drifts of +3 MB and +31 MB. The spread between runs
+on this machine is the size of the signal, so no single run of any length
+decides a question of this magnitude, and the profiler evidence is what closes
+it instead. The machine's own instability is the reason, and it is recorded
+outside this file.
+
 ## 12. Version pins (2026-09)
 
 | Component  | Version        | Note                                   |
