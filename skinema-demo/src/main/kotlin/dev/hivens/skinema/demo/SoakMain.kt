@@ -76,6 +76,12 @@ fun main(args: Array<String>) {
     // Without it the sound run is two hours of audible looping next to whoever
     // started it, which is how a pre-release gate quietly stops being run.
     val volume = System.getProperty("skinema.demo.soakVolume")?.toFloat() ?: 1f
+    // A minute is the right cadence for a two-hour run and useless for a short
+    // one, where the whole point is watching the shape rather than reading a
+    // verdict: three lines cannot show a sawtooth. The floor a line reports is
+    // still the minimum over its own window, so a shorter window is a finer
+    // reading of the same quantity, not a noisier one.
+    val reportSeconds = System.getProperty("skinema.demo.soakReport")?.toLong() ?: 60L
 
     println(
         "soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware" +
@@ -97,6 +103,7 @@ fun main(args: Array<String>) {
         var frames = 0L
         var nextSample = started
         var nextReport = started
+        val reportNanos = reportSeconds * 1_000_000_000L
         // Floors: one per report window, plus the three the verdict uses.
         var windowRss = Long.MAX_VALUE
         var windowHeap = Long.MAX_VALUE
@@ -148,17 +155,22 @@ fun main(args: Array<String>) {
 
             if (now >= nextReport) {
                 println(
-                    "frames=%d rssMb=%s rssFloorMb=%s heapMb=%d heapFloorMb=%s".format(
+                    "frames=%d rssMb=%s rssFloorMb=%s heapMb=%d heapFloorMb=%s%s".format(
                         frames,
                         rssMb() ?: "n/a",
                         if (windowRss == Long.MAX_VALUE) "n/a" else windowRss,
                         heapMb(),
                         if (windowHeap == Long.MAX_VALUE) "n/a" else windowHeap,
+                        // Retired images not yet freed, per line rather than only
+                        // at teardown. It is the one number here that names a
+                        // cause instead of a symptom: RSS says memory is held,
+                        // this says whether the holder is the borrow queue.
+                        frameImage?.let { " pending=${it.pending}" } ?: "",
                     ),
                 )
                 windowRss = Long.MAX_VALUE
                 windowHeap = Long.MAX_VALUE
-                nextReport = now + REPORT_NANOS
+                nextReport = now + reportNanos
             }
             Thread.sleep(5)
         }
@@ -193,8 +205,6 @@ fun main(args: Array<String>) {
 
 /** Often enough that a collection cannot hide between two samples. */
 private const val SAMPLE_NANOS = 2_000_000_000L
-
-private const val REPORT_NANOS = 60_000_000_000L
 
 /** Resident set size from /proc on Linux; null elsewhere. */
 private fun rssMb(): Long? {

@@ -146,7 +146,14 @@ Useful flags and env:
 - `-Pplayers=N`, `-Pchurn=<seconds>` -- harness fan-out and churn.
 - `-Pframes=N` -- limit the spike's frame count.
 - `-Pminutes=N`, `-PsoakAudio=true`, `-Phardware=AUTO`, `-Pheap=256m`,
-  `-PsoakImages=true`, `-PsoakVolume=0` -- the soak's knobs. `soakVolume` is
+  `-PsoakImages=true`, `-PsoakVolume=0`, `-PsoakReport=10` -- the soak's
+  knobs. `soakReport` is the seconds between report lines: a minute suits the
+  two-hour gate and hides everything in a short diagnostic run, where the
+  shape of the sawtooth is the whole reading. Each line's floor is the
+  minimum over its own window either way, so a shorter window reads the same
+  quantity more finely rather than more noisily, and with images on the line
+  also carries `pending`, the retired-image count -- the one number in the
+  series that names a cause rather than a symptom. `soakVolume` is
   gain and not routing: at zero the sound run still holds a real device for
   its whole length and still runs the audio thread, the watchdog and the
   clock that masters pacing, and only the amplitude is gone. It exists
