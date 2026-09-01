@@ -146,7 +146,13 @@ Useful flags and env:
 - `-Pplayers=N`, `-Pchurn=<seconds>` -- harness fan-out and churn.
 - `-Pframes=N` -- limit the spike's frame count.
 - `-Pminutes=N`, `-PsoakAudio=true`, `-Phardware=AUTO`, `-Pheap=256m`,
-  `-PsoakImages=true` -- the soak's knobs. The last two are the ones with
+  `-PsoakImages=true`, `-PsoakVolume=0` -- the soak's knobs. `soakVolume` is
+  gain and not routing: at zero the sound run still holds a real device for
+  its whole length and still runs the audio thread, the watchdog and the
+  clock that masters pacing, and only the amplitude is gone. It exists
+  because the alternative is sitting next to two hours of looping audio,
+  which is how a pre-release gate stops being run at all. The next two are
+  the ones with
   reasoning behind them: capping the heap makes collections frequent, so the
   floor is sampled many times rather than once, and `soakImages` puts frames
   through a real `VideoFrameImage` on the two threads a consumer uses it

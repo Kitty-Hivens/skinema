@@ -70,12 +70,26 @@ fun main(args: Array<String>) {
     // adds the half the mailbox is not: eight megabytes of Skia raster per
     // frame, held and freed by a class no heap profiler can account for.
     val images = System.getProperty("skinema.demo.soakImages") == "true"
+    // Gain, not routing: at zero the audio path is entirely intact -- its
+    // thread, a real device handle held for the whole run, the watchdog and the
+    // clock that masters pacing -- and only the amplitude on the line is gone.
+    // Without it the sound run is two hours of audible looping next to whoever
+    // started it, which is how a pre-release gate quietly stops being run.
+    val volume = System.getProperty("skinema.demo.soakVolume")?.toFloat() ?: 1f
 
     println(
-        "soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware images=$images",
+        "soak: minutes=$minutes readAhead=$readAhead audio=$audio hardware=$hardware" +
+            " images=$images volume=$volume",
     )
     val frameImage = if (images) VideoFrameImage() else null
-    VideoPlayer(video, loop = true, audio = audio, readAheadFrames = readAhead, hardware = hardware).use { player ->
+    VideoPlayer(
+        video,
+        loop = true,
+        audio = audio,
+        readAheadFrames = readAhead,
+        hardware = hardware,
+        volume = volume,
+    ).use { player ->
         val started = System.nanoTime()
         val deadline = started + minutes * 60_000_000_000L
         val firstThird = started + minutes * 20_000_000_000L
