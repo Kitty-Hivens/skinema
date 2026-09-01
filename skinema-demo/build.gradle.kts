@@ -59,12 +59,16 @@ val demoSoakImages = providers.gradleProperty("soakImages")
 // Linear 0..1 gain for the soak's sound run. Zero keeps every part of the
 // audio path and removes only what comes out of the speakers.
 val demoSoakVolume = providers.gradleProperty("soakVolume")
+// Seconds between report lines. A minute suits a two-hour run; a short
+// diagnostic one needs the shape, which three lines cannot show.
+val demoSoakReport = providers.gradleProperty("soakReport")
 tasks.withType<JavaExec>().configureEach {
     demoReadAhead.orNull?.let { systemProperty("skinema.demo.readAhead", it) }
     demoSoakAudio.orNull?.let { systemProperty("skinema.demo.soakAudio", it) }
     demoSoakHardware.orNull?.let { systemProperty("skinema.demo.hardware", it) }
     demoSoakImages.orNull?.let { systemProperty("skinema.demo.soakImages", it) }
     demoSoakVolume.orNull?.let { systemProperty("skinema.demo.soakVolume", it) }
+    demoSoakReport.orNull?.let { systemProperty("skinema.demo.soakReport", it) }
 }
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
@@ -146,7 +150,7 @@ val soakMinutes = providers.gradleProperty("minutes")
 val soakHeap = providers.gradleProperty("heap")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m] [-PsoakImages=true] [-PsoakVolume=0]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m] [-PsoakImages=true] [-PsoakVolume=0] [-PsoakReport=10]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
