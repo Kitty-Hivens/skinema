@@ -130,6 +130,15 @@ tiers.forEach { tier ->
             group = "skinema"
             description = "Fetch the $tier $platform bundle from the $nativesTag release"
             outputs.file(archive)
+            // The expectation is an INPUT, or the check below is skippable by
+            // the thing it guards against. A task with an output and no inputs
+            // is up to date whenever its output is still there, so a warm
+            // build/bundles from an earlier revision was packed without the
+            // verification ever running -- and the tag is rolling, so "still
+            // there" says nothing about which bytes they are. Measured on a
+            // tree carrying 22 bundles from a previous rebuild: one bundle
+            // re-downloaded and was checked, the other 23 were packed unread.
+            inputs.property("expectedSha256", providers.provider { expectedChecksums["$tier-$platform"] ?: "" })
             doLast {
                 val url = "https://github.com/Kitty-Hivens/skinema/releases/download/$nativesTag/skinema-natives-$tier-$platform.tar.gz"
                 val target = archive.get().asFile
