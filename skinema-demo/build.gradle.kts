@@ -56,11 +56,15 @@ val demoSoakHardware = providers.gradleProperty("hardware")
 // which left the one component whose job IS native memory outside the run
 // that exists to prove native memory does not grow.
 val demoSoakImages = providers.gradleProperty("soakImages")
+// Linear 0..1 gain for the soak's sound run. Zero keeps every part of the
+// audio path and removes only what comes out of the speakers.
+val demoSoakVolume = providers.gradleProperty("soakVolume")
 tasks.withType<JavaExec>().configureEach {
     demoReadAhead.orNull?.let { systemProperty("skinema.demo.readAhead", it) }
     demoSoakAudio.orNull?.let { systemProperty("skinema.demo.soakAudio", it) }
     demoSoakHardware.orNull?.let { systemProperty("skinema.demo.hardware", it) }
     demoSoakImages.orNull?.let { systemProperty("skinema.demo.soakImages", it) }
+    demoSoakVolume.orNull?.let { systemProperty("skinema.demo.soakVolume", it) }
 }
 tasks.withType<JavaExec>().configureEach {
     if (name == "run") {
@@ -142,7 +146,7 @@ val soakMinutes = providers.gradleProperty("minutes")
 val soakHeap = providers.gradleProperty("heap")
 tasks.register<JavaExec>("soak") {
     group = "skinema"
-    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m] [-PsoakImages=true]"
+    description = "Long looping decode run with RSS reporting: -Pvideo=<file> [-Pminutes=N] [-PreadAhead=N] [-PsoakAudio=true] [-Phardware=AUTO] [-Pheap=256m] [-PsoakImages=true] [-PsoakVolume=0]"
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set("dev.hivens.skinema.demo.SoakMainKt")
     jvmArgs("--enable-native-access=ALL-UNNAMED")
