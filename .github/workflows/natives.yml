@@ -17,6 +17,10 @@ on:
       only_tier:
         description: "Build only this tier: core | decode | full (blank = all)"
         default: ""
+      dry_run:
+        description: "Build and accept without touching the rolling release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -30,8 +34,12 @@ env:
 # is green -- and the assets live on one rolling tag that every branch uploads
 # to, so keying this on the branch would leave exactly that door open. A
 # constant group is the whole namespace.
+#
+# A dry run writes nothing shared, so it takes a group of its own: it must not
+# queue behind a publish, and a publish must not queue behind it. An hour is a
+# long time to wait for a build whose only product is a number.
 concurrency:
-  group: natives-rolling-release
+  group: ${{ inputs.dry_run && format('natives-dry-{0}', github.run_id) || 'natives-rolling-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -339,7 +347,17 @@ jobs:
         shell: bash
         run: tar -czf "skinema-natives-${{ matrix.tier }}-${{ matrix.platform }}.tar.gz" -C "natives/${{ matrix.platform }}/bundle" .
 
+      # Everything above this point is the same work either way: the bundle is
+      # built, the import closure and the glibc floor are checked, and the
+      # acceptance suite runs against it. What a dry run skips is only the
+      # publish, because the rolling tag carries the bytes a release is cut
+      # from and their checksums are committed -- so a trial build with an
+      # experimental whitelist would replace a reviewed asset with an
+      # unreviewed one, and the next jarAll would refuse the whole set. The
+      # workflow artifact below is uploaded either way, which is where a
+      # measurement is read from.
       - name: Upload to the rolling natives release
+        if: ${{ !inputs.dry_run }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
