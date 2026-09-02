@@ -141,14 +141,21 @@ jobs:
           #
           # The ceiling is one number per TIER and therefore has to hold for
           # the worst platform in it, which is not the same platform each
-          # time: core skips 94 on macos-arm64 against under 90 on every
-          # linux row, because the hardware suites gate differently where
-          # there is no VAAPI. Read off a run rather than estimated, with one
-          # of slack, the way the decode row's was -- 94 measured, one more
-          # for the canvas announcement test, which is gated on subtitles now
-          # rather than on decode and therefore skips on this tier.
+          # time. Read off a run rather than estimated, with a little slack.
+          # The last full matrix measured core at 93 on every linux row, 95 on
+          # both windows rows and 101 on macos-arm64, so the macOS row is what
+          # this number has to clear; decode measured 43/46/52 and full 26/30/36
+          # against ceilings they are nowhere near.
+          #
+          # Two of core's six-test rise are ours, from tests gated on subtitles
+          # and on an encoder, which that tier has neither of. The rest is the
+          # macOS runner drifting: its Homebrew ffmpeg builds no webp or AV1
+          # fixture, so what the suite can stage there moves when the image
+          # updates, and it moves in the direction of skipping more. Hence two
+          # of slack rather than one, on the row that has historically been the
+          # one to fail.
           case "${{ matrix.tier }}" in
-            core)   caps="decode,webp";                                  skipped=96 ;;
+            core)   caps="decode,webp";                                  skipped=103 ;;
             decode) caps="decode,webp,subs,formats,encav1,encopus,cea608";      skipped=60 ;;
             full)   caps="decode,webp,subs,formats,encav1,encopus,cea608,encode"; skipped=50 ;;
           esac
