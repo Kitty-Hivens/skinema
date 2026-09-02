@@ -1,5 +1,6 @@
 package dev.hivens.skinema.encode
 
+import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
@@ -184,6 +185,26 @@ class Transcoder private constructor(
             positionNanos = ptsNanos
         }
 
+        // The rate the encoder was opened at, which is the container's
+        // declaration. What actually arrives is each decoded frame's own rate,
+        // and the decoder supports that changing mid-stream -- it rebuilds its
+        // resampler when it does. The writer is never told: it opens swresample
+        // at one rate and times audio by a running sample count, so samples at
+        // another rate are encoded into a stream that declares the first. A
+        // concatenation of 48 kHz and 44.1 kHz segments came out playing nine
+        // percent fast from the join onward, drifting away from the picture,
+        // with nothing raised -- while the same change on the video axis is
+        // refused by name two functions down.
+        val openedRate = audioRate
+        fun pushAudio(chunk: AudioDecoder.PcmChunk) {
+            if (openedRate != null && chunk.sampleRate != openedRate) {
+                throw LibavException(
+                    "the source changed audio sample rate mid-stream, $openedRate to ${chunk.sampleRate}",
+                )
+            }
+            w.writeAudio(chunk.pcm.copyOf(chunk.byteCount))
+        }
+
         push(firstPixels, first.width, first.height, firstPts)
         if (secondPixels != null && secondPts != null) push(secondPixels, secondWidth, secondHeight, secondPts)
 
@@ -199,7 +220,7 @@ class Transcoder private constructor(
                     padded = true
                     padLeadingSilence(w, pendingAudio.ptsNanos, pendingAudio.sampleRate)
                 }
-                w.writeAudio(pendingAudio.pcm.copyOf(pendingAudio.byteCount))
+                pushAudio(pendingAudio)
                 pendingAudio = audio?.nextChunk()
             }
             push(frame.rgba, frame.width, frame.height, frame.ptsNanos)
@@ -212,7 +233,7 @@ class Transcoder private constructor(
                 padded = true
                 padLeadingSilence(w, pendingAudio.ptsNanos, pendingAudio.sampleRate)
             }
-            w.writeAudio(pendingAudio.pcm.copyOf(pendingAudio.byteCount))
+            pushAudio(pendingAudio)
             pendingAudio = audio?.nextChunk()
         }
         w.finish()
@@ -240,9 +261,13 @@ class Transcoder private constructor(
     override fun close() {
         if (closed) return
         closed = true
-        runCatching { writer?.close() }
-        runCatching { video.close() }
-        runCatching { audio?.close() }
+        // Traced rather than swallowed, the way every other close in this
+        // codebase traces. A teardown from a thread that did not open the
+        // session throws on its confined arena, and silence there is a whole
+        // decode session and its file descriptor gone with no way to find out.
+        runCatching { writer?.close() }.onFailure { Debug.trace("transcoder writer close", it) }
+        runCatching { video.close() }.onFailure { Debug.trace("transcoder video close", it) }
+        runCatching { audio?.close() }.onFailure { Debug.trace("transcoder audio close", it) }
     }
 
     companion object {

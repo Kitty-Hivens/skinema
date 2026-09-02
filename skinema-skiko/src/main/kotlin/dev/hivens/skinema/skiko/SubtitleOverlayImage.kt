@@ -41,8 +41,14 @@ import org.jetbrains.skia.ImageInfo
  * pixels while the surface lives on, and a re-selection has to be able to
  * publish again. So [close] releases what is held and leaves the object
  * usable, where the frame holder's [close] is a teardown that refuses later
- * work. Stop the thread that calls [update] before tearing down, the way the
- * surface already joins its raster thread.
+ * work.
+ *
+ * It is still a teardown in the one way that matters here: it frees the
+ * drawing thread's borrow too, so nothing may be drawing while it runs. To
+ * drop the pixels while that thread carries on -- turning subtitles off is
+ * exactly that -- publish an empty [update] instead, which keeps the borrow
+ * rule. The Compose surface does that on a deselect and keeps [close] for its
+ * dispose, where it has already joined the thread that rasters.
  */
 class SubtitleOverlayImage : AutoCloseable {
 

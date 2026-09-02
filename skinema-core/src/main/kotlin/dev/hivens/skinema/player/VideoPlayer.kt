@@ -4,6 +4,7 @@ import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.audio.AudioPipeline
 import dev.hivens.skinema.audio.JavaSoundSink
 import dev.hivens.skinema.audio.PcmSink
+import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.core.TripleBuffer
@@ -509,11 +510,6 @@ class VideoPlayer internal constructor(
     // backstep finds its target here and skips straight to the landing
     // run, halving the gesture. Owned by the decode thread.
     private var stepBackRun: LongArray? = null
-
-    private val thread = Thread(::run, "skinema-decode").apply {
-        isDaemon = true
-        start()
-    }
 
     /**
      * The freshest published frame, or null when nothing new arrived since
@@ -1324,7 +1320,21 @@ class VideoPlayer internal constructor(
         is Command.SetRate -> {
             rate = cmd.rate
             if (ownsClock) {
-                (clock as? PlaybackClock)?.setRate(cmd.rate.toDouble())
+                // By what the clock IS, not by what put it there. Owning it
+                // does not mean it is a wall clock: an audio side that died
+                // mid-file hands its own AudioClock over, detached onto wall
+                // time, and [ownsClock] flips to true above it. Cast to
+                // PlaybackClock alone, that was a silent no-op -- the other
+                // arm would have refused too, since a dead pipeline drops
+                // every command -- while [rate] went on reporting the new
+                // value. The speed shown was one the file was not playing at,
+                // for good, and no later call could mend it.
+                when (val running = clock) {
+                    is PlaybackClock -> running.setRate(cmd.rate.toDouble())
+                    is AudioClock -> running.setTempo(cmd.rate.toDouble())
+                    // A consumer's own clock owns its time, as setRate says.
+                    else -> {}
+                }
             } else {
                 audioPipeline?.setTempo(cmd.rate.toDouble())
             }
@@ -1391,6 +1401,17 @@ class VideoPlayer internal constructor(
     // Where the last landing put the picture, -1 when it landed on nothing
     // (a seek past the end of the footage). Owned by the decode thread.
     private var landedPts = -1L
+
+    // Started last, after every field the thread it starts can reach. Kotlin
+    // runs initializers in declaration order, so a thread started higher up
+    // reads the JVM default of everything below it: [presenting] defaults to
+    // false where it means true, which stands the decode loop and the pacer
+    // down until the constructor's own write lands. Both pipelines were bitten
+    // by this and moved their threads last; the player kept its at the top.
+    private val thread = Thread(::run, "skinema-decode").apply {
+        isDaemon = true
+        start()
+    }
 
     private fun handleSeek(targetNanos: Long, exact: Boolean, decoder: FrameSource?, preview: Boolean = true): Boolean {
         // Reaching the end stops the clock; a seek is what revives the player

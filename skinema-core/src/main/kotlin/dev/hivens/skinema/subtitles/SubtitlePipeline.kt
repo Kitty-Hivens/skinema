@@ -504,6 +504,16 @@ internal class SubtitlePipeline(
             val subtitle = arena.allocate(LibavAbi.Subtitle.SIZEOF)
             val got = arena.allocate(JAVA_INT)
             val change = arena.allocate(JAVA_INT)
+            // The demuxer opens at byte zero and the clock is wherever
+            // playback already got to, so the first refill would walk the
+            // container from the start to the playhead plus a horizon -- and
+            // it walks it inside ONE call, because the gate only yields to a
+            // queued command and there is none. Selecting a track an hour into
+            // a file read that hour before a single cue could render, and a
+            // track switch has the same shape. A reposition costs one demuxer
+            // seek and the preroll it was going to replay anyway.
+            val openAt = clock.mediaNanos()
+            if (!fromVideoFrames && openAt > 0) reposition(openAt, announced = false)
             var lastNow = Long.MIN_VALUE
             while (true) {
                 val now = clock.mediaNanos()

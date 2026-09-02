@@ -195,7 +195,14 @@ fun VideoSurface(
             val nowSubtitled = player.activeSubtitleTrack != null
             if (nowSubtitled != subtitled) {
                 subtitled = nowSubtitled
-                if (!nowSubtitled) subtitles.close()
+                // Cleared rather than closed. Both drop the pixels, and only
+                // one of them keeps the holder's borrow rule: close() frees
+                // the generation the drawing thread read last as well, which
+                // is a teardown's privilege and not a deselect's. The two
+                // close() calls that remain are teardowns -- the dispose below
+                // joins the raster thread first, and the failure path stops
+                // drawing.
+                if (!nowSubtitled) subtitles.update(emptyList())
                 frameStamp++
             }
             val nowFailed = state is VideoPlayer.State.Failed

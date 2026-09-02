@@ -410,7 +410,7 @@ A closed-caption pipeline demuxes nothing. There is no stream: the decode
 thread lifts A53 payload off each frame and hands it over through
 `submitCaptions`, so the pipeline opens no format context, seeks no demuxer
 and has no read-ahead horizon -- the video paces it by construction. It is
-recognised by its track's codec name, and everything after the decoder is the
+recognised by its track's reserved id, and everything after the decoder is the
 text path unchanged, because cc_dec emits ASS like the converted codecs do.
 
 Three details carry it.

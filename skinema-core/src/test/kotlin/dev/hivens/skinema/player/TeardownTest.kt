@@ -167,4 +167,43 @@ class TeardownTest {
 
         assertEquals(afterClose, sink.volume, "a closed player reached into a sink it had already handed back")
     }
+
+    /**
+     * The other path into a handed-back sink, and the one with no flag on it.
+     *
+     * The mastered clock reads its position off the sink for every reading,
+     * and the teardown closed the device without ever telling it to stop --
+     * so a consumer that took its own sink back on Closed, which is what the
+     * teardown documentation invites, had framePosition called on it by the
+     * next positionNanos() from its own render loop. A progress bar is enough
+     * to do it. The clock is handed to the wall before the sink is closed now,
+     * so there is nothing left to ask.
+     */
+    @Test
+    fun `a position read after close does not reach the sink`() {
+        Fixtures.assumeDecodeEnvironment()
+        val sink = FakePcmSink()
+        // The line reports no progress, so the tail never plays out and the
+        // clock is still ON the device when the close arrives. Without this
+        // the track ends first, and the end of a track hands the clock to the
+        // wall for its own reasons -- which made the test pass whatever the
+        // teardown did, and a mutation of the teardown survived it.
+        sink.positionFrames.set(0)
+        val player = VideoPlayer(sounded("position.mkv"), loop = false, audio = true, sink = sink)
+        assertTrue(awaitTrue { sink.totalBytes > 0 }, "the sound must be running to measure this, state=${player.state}")
+
+        player.close()
+        assertTrue(
+            awaitTrue(5_000) { player.state is VideoPlayer.State.Closed },
+            "the teardown must have finished, or a straggler thread answers for the player, state=${player.state}",
+        )
+        val afterClose = sink.positionReads.get()
+        repeat(50) { player.positionNanos() }
+
+        assertEquals(
+            afterClose,
+            sink.positionReads.get(),
+            "a closed player read the playhead off a sink it had already handed back",
+        )
+    }
 }
