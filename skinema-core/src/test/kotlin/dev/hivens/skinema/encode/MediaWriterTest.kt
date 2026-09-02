@@ -594,6 +594,46 @@ class MediaWriterTest {
     }
 
     @Test
+    fun `the colourspace details the encode path sets are taken for an RGB destination too`() {
+        Fixtures.assumeDecodeEnvironment()
+        // The writer sets the matrix on every scaler it builds and treats a
+        // refusal as fatal, while the DECODE side deliberately tolerates one --
+        // and its comment says why: a source with no YUV matrix answers
+        // negative there. Read as symmetric, that looked like a defect on this
+        // side, because pickPixelFormat can choose an RGB destination and an
+        // RGB-to-RGB conversion has no matrix on either end. It is not: the
+        // call is accepted for those destinations, so the first frame of an
+        // RGB encoder does not throw.
+        //
+        // Pinned here rather than left as a belief because nothing else can
+        // reach it. The RGB encoders are libx264rgb, prores and qtrle, and no
+        // shipped tier carries any of them, so the round-trip test that would
+        // have covered this skips on every bundle the project builds. swscale
+        // is in all of them, which is what makes this question answerable
+        // wherever the suite runs.
+        for ((name, format) in listOf(
+            "yuv420p" to LibavAbi.AV_PIX_FMT_YUV420P,
+            "gbrp" to LibavAbi.AV_PIX_FMT_GBRP,
+            "rgb24" to LibavAbi.AV_PIX_FMT_RGB24,
+        )) {
+            val ctx = Libav.swsGetContext(
+                64, 64, LibavAbi.AV_PIX_FMT_RGBA,
+                64, 64, format, LibavAbi.SWS_BILINEAR,
+            )
+            assertTrue(ctx != MemorySegment.NULL, "swscale would not build an RGBA to $name context at all")
+            try {
+                val coefficients = Libav.swsGetCoefficients(LibavAbi.SWS_CS_ITU709)
+                assertTrue(
+                    Libav.swsSetColorspaceDetails(ctx, coefficients, 1, coefficients, 0, 0, 1 shl 16, 1 shl 16) >= 0,
+                    "swscale refused the colourspace details for a $name destination, which the writer treats as fatal",
+                )
+            } finally {
+                Libav.swsFreeContext(ctx)
+            }
+        }
+    }
+
+    @Test
     fun `an encoder that will not take yuv420p is given what it does take`() {
         // qtrle accepts rgb24, argb, rgb555be and gray -- no yuv420p at all.
         // Written as a constant, avcodec_open2 refused it with a bare errno,
