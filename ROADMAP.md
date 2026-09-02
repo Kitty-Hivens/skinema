@@ -156,14 +156,26 @@ software encoders and run everywhere. So the LGPL tier can WRITE -- AV1
 video, Opus/AAC/FLAC audio, and H.264/HEVC through the GPU on Linux -- and
 what the GPL tier buys is specifically SOFTWARE H.264 and HEVC.
 
-The `formats` feature is the broad legacy/extended decode set: the avi,
-MPEG-PS/TS, flv, asf, dv and RealMedia demuxers, and the older video (MPEG-1/2,
-MPEG-4 Part 2, VC-1/WMV, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo,
-Cinepak, Indeo, VP6, ...) and audio (DTS, TrueHD, WMA, MP1/2, AMR, WavPack,
-APE, TTA, ADPCM/G.72x, RealAudio, ATRAC, GSM, ...) decoders, plus H.266/VVC.
-All native FFmpeg components, so it adds no external library and stays LGPL;
-it rides decode/full and is left out of the lean core tier (the policy in #10
-generalized -- broad support is cheap once the lean consumer can opt out).
+The `formats` feature is every native decoder, demuxer, parser and bitstream
+filter the pinned FFmpeg builds, plus the two deinterlacers. Native means no
+external library, so it adds no dependency and stays LGPL. It rides decode and
+full and is left out of the lean core tier, which is the policy in #10
+generalized: broad support is cheap once the lean consumer can opt out.
+
+It is expressed by NOT disabling those classes rather than by naming their
+members, and the inversion is what makes it maintainable. A list of names goes
+stale at every pin bump, silently and in the direction that ships less, which
+is how three image demuxers were missing for a release line. What makes the
+inversion safe is `--disable-autodetect`, which the build already sets: a
+component needing an external library is not built unless that library was
+enabled, and the hardware wrappers are gated the same way, so what is left
+after the classes we do not want are turned off is exactly the native set.
+
+The measured reason to stop curating it: a full FFmpeg carries all 553 decoders
+and all 378 demuxers in 21 MiB of libavcodec and 3.2 MiB of libavformat, where
+the hand-written lists named 145 and 39. The write side stays deliberate, with
+the encoders and muxers still named one by one, so the bundle is broad on the
+way in and narrow on the way out.
 
 A bundle stays LGPL until `enc-h264` or `enc-hevc` pulls in GPL x264/x265, so
 `core` and `decode` are LGPL and only `full` is GPL -- the LGPL path is a

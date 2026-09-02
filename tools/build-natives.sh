@@ -69,10 +69,11 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 # BSD. Only enc-h264/enc-hevc -- x264 and x265 -- flip --enable-gpl. So the
 # LGPL tier can WRITE AV1 video and Opus audio, and what the GPL tier buys is
 # H.264 and HEVC output specifically.
-# "formats" is the broad legacy/extended decode set -- avi/mpegts/mpeg/flv/asf/
-# dv containers; mpeg2/vc1/wmv/mpeg4/h263/vvc/realvideo/prores/... video; dts/
-# truehd/wma/mp2/realaudio/adpcm/... audio. All native (no external library),
-# so it stays LGPL; it rides decode/full and is left out of the lean core tier.
+# "formats" is every native decoder, demuxer, parser and bitstream filter this
+# FFmpeg builds, plus the deinterlacers. Native means no external library, so it
+# stays LGPL, and it rides decode and full while the lean core tier is left
+# without it. Expressed by not disabling them rather than by a list of names,
+# for the reasons written where it is assembled.
 # hwaccel is out of core deliberately: vaapi is what puts libva, libva-drm and
 # libdrm on the consumer's machine, and core exists to be the tier that needs
 # nothing but libc and libm -- the one that loads in a container and on a
@@ -984,14 +985,48 @@ has subs && {
     DECODE+=",ass,ssa,srt,subrip,movtext,webvtt,pgssub,dvdsub,dvbsub,ccaption"
     PARSE+=",dvbsub"
 }
-# The broad legacy/extended decode set (the "formats" feature). All native
-# FFmpeg decoders/demuxers/parsers -- no external library, no --enable-gpl.
-has formats && {
-    DEMUX+=",avi,mpegps,mpegts,mpegtsraw,flv,live_flv,asf,asf_o,dv,m4v,mpegvideo,rm,rpl,aiff,au,w64,caf,swf,flic"
-    DECODE+=",vvc,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,wmv1,wmv2,wmv3,vc1,h263,h263i,h263p,flv,theora,vp3,vp5,vp6,vp6a,vp6f,prores,dnxhd,ffv1,huffyuv,ffvhuff,cinepak,msvideo1,msrle,qtrle,rpza,smc,svq1,svq3,rv10,rv20,rv30,rv40,indeo2,indeo3,indeo4,indeo5,dvvideo,cavs,mjpegb,jpegls,eightbps,targa,tiff,bmp,pcx,sgi,qoi,flic,truemotion1,truemotion2"
-    DECODE+=",dca,truehd,mlp,mp1,mp2,wmav1,wmav2,wmapro,wmavoice,amrnb,amrwb,tta,wavpack,ape,gsm,gsm_ms,adpcm_ima_qt,adpcm_ima_wav,adpcm_ms,adpcm_swf,adpcm_yamaha,adpcm_g722,adpcm_g726,adpcm_g726le,cook,sipr,ra_144,ra_288,ralf,nellymoser,qdm2,qdmc,atrac1,atrac3,atrac3p,atrac3pal,atrac9,dvaudio,mp3on4,aac_latm,tak,als,mpc7,mpc8,pcm_u8,pcm_s8,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f64le,pcm_mulaw,pcm_alaw"
-    PARSE+=",vvc,mpegvideo,mpeg4video,vc1,h263,dca,cavsvideo"
-}
+# The "formats" feature is every native decoder, demuxer, parser and bitstream
+# filter FFmpeg builds, and it is expressed by NOT disabling them rather than by
+# naming them.
+#
+# It used to be three enormous hand-written lists, and the shape had two costs.
+# It went stale by construction: every pin bump is a chance for a component to
+# be renamed, added or dropped, and the list only ever learned about that when
+# somebody noticed a file failing to open. And it was wrong in the quiet
+# direction, since what it left out cost nothing to carry. A full FFmpeg holds
+# all 553 decoders and all 378 demuxers in 21 MiB of libavcodec and 3 MiB of
+# libavformat, against the 145 and 39 those lists named.
+#
+# What makes the inversion safe is --disable-autodetect, which is already set
+# below: a decoder that needs an external library is not built unless that
+# library was explicitly enabled, and the hardware wrappers (cuvid, qsv,
+# mediacodec, videotoolbox, the AudioToolbox _at family) are gated the same way.
+# So "everything left" is exactly the native set, with no name matching and
+# nothing to re-derive at the next bump.
+#
+# The classes we do NOT want are disabled by class instead. Encoders, muxers,
+# filters, protocols and hwaccels are each turned off wholesale and then
+# re-enabled by name below, which is where the bundle's write surface and its
+# read surface part company: broad on the way in, deliberate on the way out.
+EVERYTHING=(--disable-everything)
+has formats && EVERYTHING=(
+    --disable-encoders --disable-muxers --disable-filters
+    --disable-protocols --disable-hwaccels
+)
+# Deinterlacers, alongside the playback-rate chain. Both are LGPL, so neither
+# flips --enable-gpl (configure refuses outright rather than quietly widening
+# the licence, which is what makes that safe to state here).
+#
+# They are shipped before anything uses them, deliberately. The video filter
+# plumbing does not exist yet, since libavfilter is bound for the audio tempo
+# chain and nothing else, but the expensive half of adding a component is the
+# bundle rather than the code: a filter left out now costs a full natives
+# re-roll to add later, and the code that will drive it costs a merge. Combed
+# interlaced footage is the one gap in this list a consumer meets by accident,
+# on any DV, HDV or broadcast MPEG-2 recording.
+FILTERS="atempo"
+has formats && FILTERS="$FILTERS,bwdif,yadif"
+
 # Software H.264/HEVC encoders (x264/x265) -- GPL, so they flip --enable-gpl.
 has enc-h264 && { LIBS+=(--enable-libx264); ENC+=(libx264); GPL=(--enable-gpl); }
 has enc-hevc && { LIBS+=(--enable-libx265); ENC+=(libx265); GPL=(--enable-gpl); }
@@ -1075,7 +1110,7 @@ fi
     --prefix="$PREFIX" \
     --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-debug \
-    --disable-everything --disable-network \
+    ${EVERYTHING[@]+"${EVERYTHING[@]}"} --disable-network \
     --disable-avdevice \
     --pkg-config-flags=--static \
     ${GPL[@]+"${GPL[@]}"} \
@@ -1086,7 +1121,7 @@ fi
     --enable-parser="$PARSE" \
     ${ENCFLAG[@]+"${ENCFLAG[@]}"} \
     ${MUXFLAG[@]+"${MUXFLAG[@]}"} \
-    --enable-filter=atempo \
+    --enable-filter="$FILTERS" \
     ${HWACCEL[@]+"${HWACCEL[@]}"} \
     ${VAENC[@]+"${VAENC[@]}"} \
     ${FFLD[@]+"${FFLD[@]}"} \
@@ -1120,7 +1155,7 @@ if [ -f config_components.h ]; then
     # naming them enabled nothing and was dropped in silence. Measured off
     # config_components.h, then confirmed against the built library, which
     # still resolves all three by name.
-    verify_enabled filter atempo
+    verify_enabled filter "$FILTERS"
     # A hwaccel that quietly failed to configure costs no error and no missing
     # symbol -- decoding just falls back to software, on every machine, for
     # good. That is the failure this whole check exists to catch, and it was
