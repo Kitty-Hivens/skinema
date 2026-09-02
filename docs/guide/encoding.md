@@ -80,10 +80,18 @@ size and a PCM buffer that is not a whole number of stereo samples.
 it does not see the `WrongThreadException` above.
 
 Nothing is assumed about what an encoder takes. The pixel format and the
-sample format are both negotiated -- the writer asks the encoder what it
-accepts and converts into that -- so `libx264rgb`, `prores`, `qtrle`,
-`flac` and `libopus` work without being special-cased. A sample rate the
-encoder does not support is refused by name rather than as a bare errno.
+sample format are both negotiated: the writer asks the encoder what it
+accepts and converts into that, so `libsvtav1`, `flac` and `libopus` work
+without being special-cased, and so do encoders no bundle carries. A sample
+rate the encoder does not support is refused by name rather than as a bare
+errno.
+
+The RGB encoders are worth naming separately, because they are the ones the
+negotiation was written for and none of them ships here: `libx264rgb`,
+`prores` and `qtrle` take RGB pixel formats and no yuv420p at all, and they
+reach the writer only through a fuller FFmpeg pointed at with
+`SKINEMA_LIBAV_DIR`. What the bundles carry is the table in the README, and
+that table is what a shipped tier can be held to.
 
 ## One thread owns the writer
 
