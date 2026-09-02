@@ -35,20 +35,21 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
-Those are the coordinates Maven Central carries today. The next release
-moves the FFmpeg pin to 9.0.1 and adds the two `linux-musl-*` bundles, so
-some of what this file describes -- the musl platforms and the formats
-FFmpeg 9 brought -- is not in the versions above. Take the pair the release
-notes name.
+0.8.0 compiles against Skiko 0.150.1, which is what Compose Multiplatform
+1.12.0 ships. Skiko is `compileOnly` here, so the copy that runs is the one
+your Compose brings: that makes Compose 1.12 a floor rather than a
+preference. On an older Compose, take 0.7.0.
 
 The two versions are independent, and that is deliberate. `skinema-natives`
 is versioned as the FFmpeg build it carries plus a repack revision
@@ -71,7 +72,7 @@ license:
 | Tier     | Carries                                                            | License |
 |----------|-------------------------------------------------------------------|---------|
 | `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
-| `decode` | core + GPU decode + subtitles + the broad legacy/extended format set; and writing -- AV1 video, Opus/AAC/FLAC audio, the mp4/mkv/webm containers and the audio-only .opus/.flac/.wav ones, plus GPU H.264/HEVC encode on Linux | LGPL |
+| `decode` | core + GPU decode + subtitles + every format FFmpeg decodes natively; and writing -- AV1 video, Opus/AAC/FLAC audio, the mp4/mkv/webm containers and the audio-only .opus/.flac/.wav ones, plus GPU H.264/HEVC encode on Linux | LGPL |
 | `full`   | decode + H.264 and HEVC **software** encode (x264/x265)             | GPL     |
 
 `core` is the lean tier -- the modern codecs only, no subtitles, no GPU
@@ -149,7 +150,9 @@ driver on the machine is versioned against it rather than against ours.
 | Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass |
 | Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
 
-The legacy and broadcast formats (avi/MPEG-TS/flv/asf/dv/RealMedia and the older codecs) ride the `decode` and `full` tiers; the lean `core` tier carries only the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio). H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
+The table names what is worth naming, not everything that is there. The `decode` and `full` tiers carry every decoder, demuxer and parser FFmpeg builds without an external library -- some five hundred of them -- so the legacy, broadcast and archival formats are in whether or not a row above mentions them. The lean `core` tier is the one with a list: the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio), and nothing else. H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
+
+What is *not* there is short and stays short: anything needing a library the bundle does not carry -- JPEG XL, SVG, tracker music, DVD and Blu-ray navigation, teletext -- and TTML, which FFmpeg has no decoder for at all.
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
@@ -257,7 +260,7 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
 |-------------------|---------------------------------------------------------|----------------------------------|
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
-| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop 1.12             |
 | `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 
 ROADMAP.md is the project's working memory: every architectural
