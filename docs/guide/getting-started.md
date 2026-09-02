@@ -7,23 +7,27 @@ integration module (it brings `-core` and `-skiko` transitively) plus
 the native runtime for every platform you ship:
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.7.0")   // brings -core and -skiko
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-linux-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-x64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-windows-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
-runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
+implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-x64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-windows-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
+runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
-Those are the coordinates Maven Central carries today, and they are an
-FFmpeg 8 bundle. The next release moves the pin to 9.0.1, which changes the
-sonames the loader asks for, so the pair above cannot be mixed with a newer
-library: take the two versions the release notes name together.
-
+The two versions move independently, so take the pair the release notes name.
 `skinema-natives` carries its own version, the FFmpeg build in the bundles
 plus a repack revision, because the bundles change far less often than the
-library does. It is not expected to match the library version.
+library does. It is not expected to match the library version, and the
+soname the loader asks for is what ties a library release to a bundle: 0.8.0
+is the n9.0 line, and an FFmpeg 8 bundle will not resolve against it.
+
+0.8.0 compiles against Skiko 0.150.1, the copy Compose Multiplatform 1.12.0
+ships. Skiko is `compileOnly`, so what runs is your Compose's own copy, which
+makes 1.12 a floor rather than a preference. On an older Compose, take 0.7.0.
 
 The natives classifier is `<tier>-<platform>`: pick one tier per platform.
 `decode` (used here) is the complete LGPL build -- the whole player, and every
@@ -39,7 +43,7 @@ and decoders) and optionally `skinema-skiko` (frames as
 |-------------------|---------------------------------------------------------|----------------------------------|
 | `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
-| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop                  |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop 1.12             |
 | `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
 
 The library is compiled to JVM 22 bytecode, because `java.lang.foreign`
@@ -49,8 +53,8 @@ The library is compiled to JVM 22 bytecode, because `java.lang.foreign`
 
 The `skinema-natives` classifier jars each carry a trimmed FFmpeg build
 (shared libraries) for one tier and platform: `core` is the lean modern
-decode set (LGPL); `decode` adds the libass subtitle stack, the broad
-legacy/extended format set, and the encoders that carry no GPL surface --
+decode set (LGPL); `decode` adds the libass subtitle stack, every format
+FFmpeg decodes natively, and the encoders that carry no GPL surface --
 AV1, Opus, AAC, FLAC and the VAAPI pair (LGPL); `full` adds libx264 and
 libx265 and is GPL for them alone. On first use the matching jar unpacks
 into a per-user cache keyed by a content fingerprint -- atomic and safe
