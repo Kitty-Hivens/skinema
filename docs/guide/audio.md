@@ -148,12 +148,20 @@ If the audio device vanishes mid-playback (an unplug, a server
 restart), a watchdog detaches the clock to wall time so the picture
 keeps moving instead of freezing on a dead write.
 
-Sound is not given up on. The audio thread then retries the device on a
-fixed cadence (`SKINEMA_AUDIO_RECOVERY_MS`, 400 ms by default) for as
-long as the outage lasts, and on its return resyncs to where the video
-advanced on the wall clock and rebases the clock onto the fresh line, so
-sound rejoins in step rather than lagging by the length of the outage.
-The audio that played during it is dropped, not queued.
+An outage is waited out. The audio thread retries the device on a fixed
+cadence (`SKINEMA_AUDIO_RECOVERY_MS`, 400 ms by default) for as long as
+the outage lasts, and on its return resyncs to where the video advanced
+on the wall clock and rebases the clock onto the fresh line, so sound
+rejoins in step rather than lagging by the length of the outage. The
+audio that played during it is dropped, not queued.
+
+A device that will not take sound is a different case, and it is not
+retried forever. A line that reopens cleanly and then refuses the write
+after it is not an outage, and retrying one costs a clock rebased onto a
+line that plays nothing every round. After three such rounds the audio
+side gives up: the clock stays on the wall, the picture plays on, and
+sound does not come back even if the device later does. Closing the
+player and opening another is what recovers from that.
 
 This is a safety net, not a routing system -- skinema does not follow a
 default-device change; it keeps the video alive and takes the device

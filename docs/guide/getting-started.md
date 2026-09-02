@@ -16,10 +16,14 @@ runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-arm64")
 runtimeOnly("dev.hivens:skinema-natives:8.1.1-1:decode-macos-x64")
 ```
 
-`skinema-natives` carries its own version -- the FFmpeg build in the bundles
-plus a repack revision -- because the bundles change far less often than the
-library does. It is not expected to match the library version; the release
-notes name the pair.
+Those are the coordinates Maven Central carries today, and they are an
+FFmpeg 8 bundle. The next release moves the pin to 9.0.1, which changes the
+sonames the loader asks for, so the pair above cannot be mixed with a newer
+library: take the two versions the release notes name together.
+
+`skinema-natives` carries its own version, the FFmpeg build in the bundles
+plus a repack revision, because the bundles change far less often than the
+library does. It is not expected to match the library version.
 
 The natives classifier is `<tier>-<platform>`: pick one tier per platform.
 `decode` (used here) is the complete LGPL build -- the whole player, and every

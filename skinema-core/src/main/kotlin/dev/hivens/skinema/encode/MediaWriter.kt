@@ -456,7 +456,19 @@ class MediaWriter private constructor(
             Libav.checkAv(Libav.avFrameMakeWritable(frame), "av_frame_make_writable(audio)")
             val bytes = samples * BYTES_PER_AUDIO_FRAME
             MemorySegment.copy(pcm, 0, inNative, JAVA_BYTE, 0, bytes)
-            val converted = Libav.swrConvert(swr, frame.asSlice(LibavAbi.Frame.DATA), samples, inPlanes, samples)
+            // extended_data, not data, for the reason LibavAbi states next to
+            // the offset: the two are the same pointer for eight planes or
+            // fewer and only extended_data is complete beyond that, so a
+            // planar layout with more channels writes plane eight onward
+            // through data[8], which is linesize[0]. The decode side already
+            // reads it this way; this side was the odd one out.
+            // Read, not sliced: data is an inline array of plane pointers and
+            // extended_data is a POINTER to one, so the offset has to be
+            // dereferenced the way the decode side dereferences it. Sliced, the
+            // resampler is handed the address of the field itself and writes a
+            // level of indirection too high -- which is not a subtle wrongness,
+            // it aborts the process.
+            val converted = Libav.swrConvert(swr, frame.get(ADDRESS, LibavAbi.Frame.EXTENDED_DATA), samples, inPlanes, samples)
             Libav.checkAv(converted, "swr_convert(audio encode)")
             frame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, samples)
             frame.set(JAVA_LONG, LibavAbi.Frame.PTS, samplesEncoded)

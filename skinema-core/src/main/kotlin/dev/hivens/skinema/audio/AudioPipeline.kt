@@ -396,6 +396,13 @@ internal class AudioPipeline(
             pendingSeeks.set(0)
             runCatching { tempoFilter?.close() }
             runCatching { decoder.close() }
+            // Off the device before the device goes. The clock samples the
+            // sink for every reading, and nothing here used to tell it to
+            // stop: a consumer that took its own sink back on Closed -- which
+            // the teardown documentation invites -- then had framePosition
+            // called on it by the next positionNanos(), from its own render
+            // loop. Detached, the clock asks nothing and runs on the wall.
+            runCatching { clock?.detachToWallTime() }
             runCatching { sink.close() }
             finish()
         }
@@ -539,11 +546,22 @@ internal class AudioPipeline(
      * landing) and nothing is being waited on.
      */
     private fun guardedWrite(data: ByteArray, length: Int) {
+        // Intent is published BEFORE the shutter is read, and that order is
+        // the whole guarantee. The watchdog breaks a write out of the sink the
+        // moment a close is announced, but it can only act on a write it can
+        // see -- and read the other way round, a close landing between the
+        // check and this store found a zero, took it for "nothing
+        // outstanding", and went back to sleep for a poll period while the
+        // write it had been woken for was already inside a sink the caller had
+        // been told it could take back.
+        writeInFlightSince = System.nanoTime()
         // The shutter. Once a close has been announced the sink belongs to
         // whoever lent it, and a write started here would be reaching into it
         // after close() had already returned.
-        if (closing) return
-        writeInFlightSince = System.nanoTime()
+        if (closing) {
+            writeInFlightSince = 0L
+            return
+        }
         try {
             sink.write(data, 0, length)
             queuedFrames += length / BYTES_PER_FRAME

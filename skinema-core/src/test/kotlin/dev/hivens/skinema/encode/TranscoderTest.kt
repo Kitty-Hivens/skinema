@@ -429,4 +429,61 @@ class TranscoderTest {
             "the transcoder's own refusal must be what surfaces, got: ${thrown.message}",
         )
     }
+
+    /**
+     * The audio axis of the same change, which was not refused at all.
+     *
+     * The encoder is opened at the rate the container declares, while what
+     * arrives is each decoded frame's own -- and the decoder supports that
+     * changing mid-stream, it rebuilds its resampler when it does. The writer
+     * is never told: it resamples at one rate and times audio by a running
+     * sample count, so samples at another rate go into a stream that declares
+     * the first. Nothing raises, and the tail simply plays fast and drifts
+     * away from the picture, which is the failure mode this project refuses on
+     * the video side by name.
+     *
+     * MPEG-TS carries the change by design, and concatenating two segments is
+     * how a recording ends up with one.
+     */
+    @Test
+    fun `a source that changes sample rate mid-stream is refused by name`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeFormats()
+        val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        val audioEncoder = listOf("aac", "libopus").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        org.junit.jupiter.api.Assumptions.assumeTrue(audioEncoder != null, "this bundle carries no audio encoder")
+
+        val head = Fixtures.generate(
+            dir.resolve("rate-head.ts"),
+            "-f", "lavfi", "-i", "color=c=red:size=128x128:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-map", "0:v", "-map", "1:a", "-t", "0.5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-f", "mpegts",
+        )
+        val tail = Fixtures.generate(
+            dir.resolve("rate-tail.ts"),
+            "-f", "lavfi", "-i", "color=c=red:size=128x128:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-map", "0:v", "-map", "1:a", "-t", "0.5",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-f", "mpegts",
+        )
+        val mixed = dir.resolve("rate-switch.ts")
+        Files.newOutputStream(mixed).use { out ->
+            Files.newInputStream(head).use { it.copyTo(out) }
+            Files.newInputStream(tail).use { it.copyTo(out) }
+        }
+
+        val thrown = assertFailsWith<LibavException> {
+            Transcoder.open(
+                mixed,
+                dir.resolve("rate-switch.mp4"),
+                TranscodeConfig(videoCodec = encoder!!, audioCodec = audioEncoder!!),
+            ).use { it.run() }
+        }
+        assertTrue(
+            thrown.message?.contains("changed audio sample rate") == true,
+            "the transcoder's own refusal must be what surfaces, got: ${thrown.message}",
+        )
+    }
 }

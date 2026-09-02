@@ -125,7 +125,16 @@ class FakePcmSink : PcmSink {
         }
     }
 
+    /**
+     * framePosition() calls. The clock samples the device for every reading,
+     * from several threads, so a test that wants to know whether the player
+     * still reaches into a sink it has handed back counts these rather than
+     * guessing from behaviour.
+     */
+    val positionReads = java.util.concurrent.atomic.AtomicInteger(0)
+
     override fun framePosition(): Long {
+        positionReads.incrementAndGet()
         val manual = positionFrames.get()
         return if (manual >= 0) manual else (totalBytes / 4).toLong() - openedAtFrames
     }

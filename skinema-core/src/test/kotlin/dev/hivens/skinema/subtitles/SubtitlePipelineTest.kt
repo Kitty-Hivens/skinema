@@ -143,6 +143,48 @@ class SubtitlePipelineTest {
         }
     }
 
+    /**
+     * A pipeline built while playback is already under way starts at the
+     * playhead, not at byte zero.
+     *
+     * The demuxer opens at the start of the container and the refill gate asks
+     * only whether it has read far enough ahead of the clock, so the first
+     * refill walked everything in between -- inside one call, since the gate
+     * yields only to a queued command and a fresh pipeline has none. On a
+     * two-hour file that is an hour of demuxing before a single cue can
+     * render, and every track SWITCH at a nonzero playhead pays it again.
+     *
+     * The cost needs a long file to see, so what is pinned here is the
+     * reposition itself plus where it landed: the cue covering the playhead
+     * has to be on screen, which is what tells a seek to the right place from
+     * a seek to any place. Break it by dropping the reposition from pump() and
+     * the count goes to zero.
+     */
+    @Test
+    fun `a pipeline opened mid-playback starts at the playhead`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val path = fixture("midplay.mkv", writeSrt("midplay.srt"), "srt", 10)
+        // The clock is already at the second cue before the pipeline exists,
+        // which is the shape of every selection made during playback.
+        clock.start(0)
+        frames.set(framesFor(6_000))
+        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        try {
+            assertTrue(
+                awaitTrue { pipeline.repositions > 0 },
+                "the open must seek to the playhead rather than read up to it, dead=${pipeline.isDead}",
+            )
+            val latest = Latest()
+            assertTrue(
+                awaitTrue { latest.poll(pipeline)?.patches?.isNotEmpty() == true },
+                "the cue covering the playhead must render, so the seek landed where it said",
+            )
+        } finally {
+            pipeline.close()
+        }
+    }
+
     @Test
     fun `a cue appears inside its window and clears after it`() {
         Fixtures.assumeDecodeEnvironment()
@@ -609,8 +651,14 @@ class SubtitlePipelineTest {
         clock.start(0)
         val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
         try {
+            // Running before the clock is moved, and that order is what makes
+            // the count below mean anything: the pipeline reads the clock once
+            // when it opens, so a test that moves the clock first is racing
+            // its own precondition. Opened at zero there is nowhere to seek
+            // to, which is the baseline the seek is then counted against.
+            assertTrue(awaitTrue { pipeline.lastDemuxedPtsNanos > 0 }, "playback must run")
+            assertEquals(0, pipeline.repositions, "a pipeline opened at the start of the file seeks nowhere")
             frames.set(framesFor(60_000))
-            assertTrue(awaitTrue { pipeline.repositions == 0 && pipeline.lastDemuxedPtsNanos > 0 }, "playback must run")
 
             // The announcement, with the clock still standing where the
             // landing has not moved it from.

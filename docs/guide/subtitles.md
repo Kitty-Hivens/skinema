@@ -161,11 +161,18 @@ else plays on** -- video, audio and bitmap subtitles are unaffected.
 Ask before you select:
 
 ```kotlin
-dev.hivens.skinema.ass.Ass.available   // synchronous, no side effects
+dev.hivens.skinema.ass.Ass.available   // synchronous
 ```
+
+Asking is what loads it. The first read of that property runs the
+object's initializer, which opens libass by soname, preloads fribidi
+(and freetype and harfbuzz on Windows), resolves its entry points and
+installs a process-lifetime log callback. So the first call is the
+expensive one and it is not free of side effects: ask it once, off the
+thread you draw on, and keep the answer.
 
 Selection is asynchronous -- `selectSubtitleTrack` queues a command for
 the decode thread -- so watching `activeSubtitleTrack` for an answer is
-a poll with no defined settling point. `Ass.available` answers straight
-away. Bitmap subtitles never depend on libass, so preferring a bitmap
+a poll with no defined settling point. `Ass.available` answers without
+waiting on the player. Bitmap subtitles never depend on libass, so preferring a bitmap
 track where both exist is the other way out.
