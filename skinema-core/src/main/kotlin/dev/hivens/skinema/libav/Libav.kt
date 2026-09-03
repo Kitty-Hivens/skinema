@@ -43,6 +43,31 @@ class NoVideoStreamException(message: String) : LibavException(message)
  * calls per frame against a millisecond-scale decode makes the adaptation
  * cost irrelevant; M1 may tighten hot paths to invokeExact.
  */
+/**
+ * The message a failed load carries, so both branches can be read and tested
+ * without a broken machine.
+ *
+ * TOP LEVEL, not a member of [Libav], and that is the whole point of the
+ * sentence above. Touching the object at all runs its initializer, which is
+ * what loads the native libraries: on a machine that has none, reading this
+ * pure function off it threw ExceptionInInitializerError the first time and a
+ * bare NoClassDefFoundError every time after, the message gone with the class.
+ * So the test written to prove the message names the escape could not reach
+ * the message, and it failed rather than skipped, which is how it took the
+ * release publish down.
+ */
+internal fun loadFailureMessage(lib: LibavLibrary, path: String, dir: String?): String {
+    val where = if (dir != null) {
+        "the natives directory $dir does not carry it, or it will not open from there"
+    } else {
+        "the system library path holds no ${lib.baseName} of the pinned major ${lib.sonameMajor} " +
+            "-- install one, or, where libraries live outside the loader's search path (NixOS, " +
+            "Guix), point skinema.libav.dir or SKINEMA_LIBAV_DIR at a directory holding the whole " +
+            "av* set, or name that directory in LD_LIBRARY_PATH"
+    }
+    return "cannot load $path: $where"
+}
+
 object Libav {
 
     private val linker = Linker.nativeLinker()
@@ -167,19 +192,6 @@ object Libav {
         } catch (t: IllegalArgumentException) {
             throw UnsatisfiedLinkError(loadFailureMessage(lib, path, libavDir)).apply { initCause(t) }
         }
-    }
-
-    /** Pulled out of [load] so both branches can be read -- and tested -- without a broken machine. */
-    internal fun loadFailureMessage(lib: LibavLibrary, path: String, dir: String?): String {
-        val where = if (dir != null) {
-            "the natives directory $dir does not carry it, or it will not open from there"
-        } else {
-            "the system library path holds no ${lib.baseName} of the pinned major ${lib.sonameMajor} " +
-                "-- install one, or, where libraries live outside the loader's search path (NixOS, " +
-                "Guix), point skinema.libav.dir or SKINEMA_LIBAV_DIR at a directory holding the whole " +
-                "av* set, or name that directory in LD_LIBRARY_PATH"
-        }
-        return "cannot load $path: $where"
     }
 
     private fun fn(lib: LibavLibrary, name: String, descriptor: FunctionDescriptor): MethodHandle {

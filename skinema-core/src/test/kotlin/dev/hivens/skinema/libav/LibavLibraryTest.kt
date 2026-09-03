@@ -122,7 +122,7 @@ class LibavLibraryTest {
         // directory the loader searches, so "cannot load libavcodec.so.63"
         // reads as absent when it is present (#23). The message has to carry
         // the way out, because nothing about the failure suggests one.
-        val system = Libav.loadFailureMessage(LibavLibrary.AVCODEC, "libavcodec.so.63", null)
+        val system = loadFailureMessage(LibavLibrary.AVCODEC, "libavcodec.so.63", null)
         assertTrue("SKINEMA_LIBAV_DIR" in system, "the directory override must be named: $system")
         assertTrue("LD_LIBRARY_PATH" in system, "the loader path must be named: $system")
         assertTrue("NixOS" in system, "the distributions this bites must be named: $system")
@@ -130,7 +130,7 @@ class LibavLibraryTest {
 
         // Off a bundle the same escape is noise: the directory was named
         // deliberately and the file is either missing from it or broken.
-        val bundled = Libav.loadFailureMessage(LibavLibrary.AVCODEC, "/opt/n/libavcodec.so.63", "/opt/n")
+        val bundled = loadFailureMessage(LibavLibrary.AVCODEC, "/opt/n/libavcodec.so.63", "/opt/n")
         assertTrue("/opt/n" in bundled, "the directory under test must be named: $bundled")
         assertFalse("LD_LIBRARY_PATH" in bundled, "a named directory needs no loader-path advice: $bundled")
     }

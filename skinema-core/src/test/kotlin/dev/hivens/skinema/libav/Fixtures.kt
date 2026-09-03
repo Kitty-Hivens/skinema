@@ -53,8 +53,19 @@ object Fixtures {
             "encav1", "encopus",
         )
 
-    /** Pure load probe per capability -- no fixtures, no transcode. */
-    internal fun capLoads(cap: String): Boolean = when (cap) {
+    /**
+     * Pure load probe per capability -- no fixtures, no transcode.
+     *
+     * Every arm below reaches into [Libav], whose initializer loads the native
+     * libraries, so on a machine carrying none the question "is this capability
+     * available" answered with a thrown ExceptionInInitializerError instead of
+     * with false -- and with a bare NoClassDefFoundError for every caller after
+     * the first, since a class that failed to initialize stays failed. Tests
+     * gated on an optional capability then FAILED where they were written to
+     * skip. Asked first, this makes the whole set answer false together, which
+     * is what "no libav here" means.
+     */
+    internal fun capLoads(cap: String): Boolean = if (!libavLoadable) false else when (cap) {
         "decode" -> ffmpegOnPath && libavLoadable
         // libass renders, but the bundle must also DECODE subtitles -- and
         // the loader falls back to a system libass (apt's ffmpeg drags one
