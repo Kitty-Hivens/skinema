@@ -48,7 +48,33 @@ jobs:
       # publication is signed and auto-released -- to a coordinate that can
       # never be reissued. Run the suite here rather than trusting that someone
       # looked, and run it before the signing key enters the job.
+      #
+      # With a bundle, because without one this proved almost nothing: a bare
+      # runner has no libav, so 313 of 487 tests skipped and what ran was the
+      # pure-Kotlin subset. The gate then failed on its own skip ceiling rather
+      # than on anything about the code, which is how it took a release down
+      # while looking like a test failure. Given the natives the release pairs
+      # with, the suite here is the same suite the Build matrix runs.
+      - name: Install the ffmpeg CLI the fixtures shell out to
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libass9 libva2 libfontconfig1
+
+      - name: Take the natives this release pairs with
+        shell: bash
+        run: |
+          nv=$(sed -n 's/^nativesVersion=//p' gradle.properties)
+          tag="natives-${nv%%-*}"
+          mkdir -p libav-bundle
+          curl -fsSL -o bundle.tar.gz \
+            "https://github.com/${{ github.repository }}/releases/download/$tag/skinema-natives-decode-linux-x64.tar.gz"
+          tar -xzf bundle.tar.gz -C libav-bundle
+          echo "SKINEMA_LIBAV_DIR=$PWD/libav-bundle" >> "$GITHUB_ENV"
+
       - name: Build and test before publishing anything
+        env:
+          # What the decode tier must load, and the ceiling its linux row
+          # measures -- the same pair the Build matrix holds that row to.
+          SKINEMA_REQUIRE_CAPS: "decode,webp,subs,formats,encav1,encopus,cea608"
+          SKINEMA_MAX_SKIPPED: "60"
         run: ./gradlew build
 
       - name: Resolve the version
