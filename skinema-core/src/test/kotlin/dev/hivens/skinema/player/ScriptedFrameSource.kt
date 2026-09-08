@@ -23,7 +23,16 @@ class ScriptedFrameSource(
     private val height: Int = 4,
     /** Keyframe spacing in frames; seeks land on these (at-or-before). */
     private val keyframeEvery: Int = 1,
+    /**
+     * What a container would declare a lap to be worth. Null (the default) is
+     * a source that cannot say, which is also what makes the lap wait a no-op:
+     * the player has nothing to measure the tail against and turns at once. A
+     * test that needs the wait itself has to declare one.
+     */
+    private val declaredDurationNanos: Long? = null,
 ) : FrameSource {
+
+    override fun durationNanos(): Long? = declaredDurationNanos
 
     private var index = 0
     private var lastIndex = 0

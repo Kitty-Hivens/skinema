@@ -26,7 +26,8 @@ VideoPlayer(
 
 - `path` -- the file to play.
 - `loop` -- restart at EOF instead of ending. Default `true` (skinema's
-  first job is looping backgrounds).
+  first job is looping backgrounds). The starting value of a property you
+  can set later; see [Looping](#looping) below.
 
   Turn it off for a still image. A single PNG or JPEG is a legal input and
   decodes like anything else, but it declares no duration, so the player
@@ -247,6 +248,37 @@ Plays at 0.5x to 4x with the pitch preserved (FFmpeg's atempo). The
 rate survives seeks, pauses and track switches. See [audio.md](audio.md)
 for how it interacts with the audio clock.
 
+## Looping
+
+```kotlin
+var loop: Boolean               // @Volatile, settable from any thread
+```
+
+Whether the end of the file turns the lap or ends playback. The
+constructor argument sets the starting value; this is that same flag,
+live.
+
+It is read on the decode thread when a lap runs out, so a write lands at
+the next end of stream and never inside a lap. Turning it off while the
+last frames play out still ends the file, turning it on part way through
+a lap still wraps at the end of that lap, and a lap already turned stays
+turned. The wait for a lap's own time to run out can be seconds long on
+an ordinary file, and a press landing inside that window is answered
+rather than paid for with one more turn.
+
+It does not revive a player that has already ended: `Ended` is a stopped
+clock parked on the duration, and a property write is not a playback
+command. `seek(0)` is what starts such a player again, as it always was.
+
+What this replaces is building a second player to change your mind, and
+the cost of that was the position -- a new player starts the file from
+zero, and the playhead the old one stood at goes with it. Emulating the
+wrap from outside (`loop = false` plus a `seek(0)` out of `Ended`) is not
+the same wrap either: that path stops the clock on the duration and
+rejoins through a landing, where the lap boundary inside the player turns
+the decoder, the sound and the subtitles together with the clock never
+stopping.
+
 ## Volume
 
 ```kotlin
@@ -298,11 +330,12 @@ Those surfaces have their own pages:
 ## Threading note
 
 Every field above is `@Volatile` and safe to read from any thread, and
-every method is safe to call from any thread. You do not synchronize
-around the player.
+every method is safe to call from any thread. `loop` is the one field you
+write as well as read, and writing it is safe from anywhere too. You do
+not synchronize around the player.
 
 Most methods work by queueing a command for the decode thread, which is
-why order is preserved among them and nothing races. Four do not. All are
+why order is preserved among them and nothing races. Five do not. All are
 safe; the distinction only matters when you reason about when an effect
 lands, or about what an effect is ordered against.
 
@@ -318,6 +351,9 @@ lands, or about what an effect is ordered against.
   decode thread's. It is therefore ordered against other audio work and
   not against a `seek` you issued a moment earlier, which reaches the
   audio side only when the decode thread gets to it.
+- `loop` queues nothing at all. The decode thread reads the field when a
+  lap runs out, so the write is ordered against the next end of stream
+  rather than against your other calls.
 
 The one rule is the ownership window: the `FrameSlot` from
 `acquireFrame` is yours only until the next `acquireFrame`, and the same

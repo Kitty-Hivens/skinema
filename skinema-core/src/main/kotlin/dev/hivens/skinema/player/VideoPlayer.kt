@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class VideoPlayer internal constructor(
     private val path: Path,
-    private val loop: Boolean,
+    loop: Boolean,
     audio: Boolean,
     private val explicitClock: MediaClock?,
     sink: PcmSink?,
@@ -654,6 +654,36 @@ class VideoPlayer internal constructor(
     }
 
     /**
+     * Whether the end of the file turns the lap or ends playback.
+     *
+     * Settable while the player runs, because the only other way to change it
+     * was to build a second player: the file then starts over from zero, and
+     * the playhead the first one stood at goes with it. Nothing asked for that
+     * jump and nothing can undo it, so a consumer offering a repeat button had
+     * to choose between the button and the position.
+     *
+     * Doing the wrap from outside instead is not the same wrap. A consumer
+     * holding `loop = false` and seeking to zero out of [State.Ended] goes
+     * through a full stop: [enterEnded] parks the clock on the duration, the
+     * seek revives it, and picture and sound rejoin through a landing. The
+     * lap boundary here turns the decoder, the sound and the subtitles
+     * together, with the clock never stopping.
+     *
+     * Read on the decode thread when a lap runs out, so a write lands at the
+     * next end of stream and never inside a lap. Turning it off while the last
+     * frames play out still ends the file, turning it on part way through a lap
+     * still wraps at the end of that lap, and a lap already turned stays
+     * turned.
+     *
+     * It does not revive a player that has already ended. [State.Ended] is a
+     * stopped clock parked on the duration, and a property write is not a
+     * playback command: `seek(0)` is what starts such a player again, as it
+     * always was.
+     */
+    @Volatile
+    var loop: Boolean = loop
+
+    /**
      * Switches the sound to another of [audioTracks], in place: the
      * picture keeps playing, the sound re-anchors at the playhead. A
      * track that cannot open or that ends before the playhead is
@@ -1175,7 +1205,11 @@ class VideoPlayer internal constructor(
                     continue
                 }
                 eofPending = false
-                if (loop && !lapProducedFrames) {
+                if (!loop) {
+                    enterEnded()
+                    continue
+                }
+                if (!lapProducedFrames) {
                     // Nothing came of this lap, so the next one has nothing to
                     // come of either -- and turning it costs a demuxer restart
                     // for a source that cannot seek. Spinning on that is what
@@ -1183,34 +1217,39 @@ class VideoPlayer internal constructor(
                     enterEnded()
                     continue
                 }
-                if (loop) {
-                    when (awaitLapPlayedOut(decoder)) {
-                        LapWait.CLOSE -> return
-                        LapWait.LEFT_PLAYING -> {
-                            // A pause stopped the lap where it stood; the
-                            // decoder is still at the end of the stream, so
-                            // the EOF stands and whatever resumes play finds
-                            // it here.
-                            eofPending = true
-                            continue
-                        }
-                        LapWait.SUPERSEDED -> {
-                            // A seek landed while we waited: it repositioned
-                            // the decoder and voided the EOF on its way past.
-                            // Restoring the EOF here put it back on a decoder
-                            // that now sat wherever the user had asked, so the
-                            // picture stood on the landing frame until the
-                            // clock walked the rest of the lap out and wrapped
-                            // -- the seek honoured by the clock and by the
-                            // sound, and thrown away by the picture.
-                            continue
-                        }
-                        LapWait.PLAYED_OUT -> {}
+                when (awaitLapPlayedOut(decoder)) {
+                    LapWait.CLOSE -> return
+                    LapWait.LEFT_PLAYING -> {
+                        // A pause stopped the lap where it stood; the
+                        // decoder is still at the end of the stream, so
+                        // the EOF stands and whatever resumes play finds
+                        // it here.
+                        eofPending = true
+                        continue
                     }
-                    restartLap(decoder, resume = true)
-                } else {
-                    enterEnded()
+                    LapWait.SUPERSEDED -> {
+                        // A seek landed while we waited: it repositioned
+                        // the decoder and voided the EOF on its way past.
+                        // Restoring the EOF here put it back on a decoder
+                        // that now sat wherever the user had asked, so the
+                        // picture stood on the landing frame until the
+                        // clock walked the rest of the lap out and wrapped
+                        // -- the seek honoured by the clock and by the
+                        // sound, and thrown away by the picture.
+                        continue
+                    }
+                    LapWait.PLAYED_OUT -> {}
                 }
+                // The wait above spans the whole tail of the lap, seconds of it
+                // on an ordinary file, and [loop] is written from the consumer's
+                // thread. Asked again rather than once at the top, so a repeat
+                // button pressed off during those seconds gets the end it asked
+                // for instead of one more turn.
+                if (!loop) {
+                    enterEnded()
+                    continue
+                }
+                restartLap(decoder, resume = true)
                 continue
             }
 

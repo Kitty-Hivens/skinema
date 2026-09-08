@@ -73,6 +73,7 @@ fun main(args: Array<String>) {
             }
 
             var paused by remember { mutableStateOf(false) }
+            var looping by remember { mutableStateOf(true) }
             var volume by remember { mutableFloatStateOf(1f) }
             var positionMs by remember { mutableLongStateOf(0L) }
             var durationMs by remember { mutableLongStateOf(0L) }
@@ -197,6 +198,14 @@ fun main(args: Array<String>) {
                                 }
                             }
                         }
+                    }
+                    // A live flag, so the button changes the mode without
+                    // building a second player and losing the position.
+                    Button(onClick = {
+                        looping = !looping
+                        player.loop = looping
+                    }) {
+                        Text(if (looping) "loop on" else "loop off")
                     }
                     val total = if (durationMs > 0) {
                         " / %d:%02d".format(durationMs / 60_000, durationMs / 1_000 % 60)
