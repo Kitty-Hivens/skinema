@@ -7,7 +7,7 @@ integration module (it brings `-core` and `-skiko` transitively) plus
 the native runtime for every platform you ship:
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+implementation("dev.hivens:skinema-compose:0.9.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
@@ -22,10 +22,10 @@ The two versions move independently, so take the pair the release notes name.
 `skinema-natives` carries its own version, the FFmpeg build in the bundles
 plus a repack revision, because the bundles change far less often than the
 library does. It is not expected to match the library version, and the
-soname the loader asks for is what ties a library release to a bundle: 0.8.0
+soname the loader asks for is what ties a library release to a bundle: 0.9.0
 is the n9.0 line, and an FFmpeg 8 bundle will not resolve against it.
 
-0.8.0 compiles against Skiko 0.150.1, the copy Compose Multiplatform 1.12.0
+0.9.0 compiles against Skiko 0.150.1, the copy Compose Multiplatform 1.12.0
 ships. Skiko is `compileOnly`, so what runs is your Compose's own copy, which
 makes 1.12 a floor rather than a preference. On an older Compose, take 0.7.0.
 
@@ -158,3 +158,6 @@ player guarantees.
 - Subtitles: [subtitles.md](subtitles.md) -- off by default, enabled
   per track.
 - Seeking, rate, stepping, metadata: [video-player.md](video-player.md).
+- A playlist: [video-player.md](video-player.md) -- `setSource` puts the
+  next file on the player you already have, so the queue and its order
+  stay yours.

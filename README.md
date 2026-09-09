@@ -35,7 +35,7 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+implementation("dev.hivens:skinema-compose:0.9.0")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
@@ -46,7 +46,7 @@ runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
-0.8.0 compiles against Skiko 0.150.1, which is what Compose Multiplatform
+0.9.0 compiles against Skiko 0.150.1, which is what Compose Multiplatform
 1.12.0 ships. Skiko is `compileOnly` here, so the copy that runs is the one
 your Compose brings: that makes Compose 1.12 a floor rather than a
 preference. On an older Compose, take 0.7.0.

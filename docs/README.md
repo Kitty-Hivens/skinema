@@ -16,7 +16,8 @@ You depend on `dev.hivens:skinema-*` and embed a player in your app.
   native bundles, the `--enable-native-access` flag, your first player.
 - [guide/video-player.md](guide/video-player.md) -- the `VideoPlayer`
   API in full: lifecycle and state, frame acquisition, seeking, rate,
-  frame stepping, metadata.
+  frame stepping, looping, changing the file under a running player,
+  metadata.
 - [guide/compose.md](guide/compose.md) -- `VideoSurface`,
   `rememberPlayerState`, scaling and rotation, and how to draw frames
   yourself without Compose.
