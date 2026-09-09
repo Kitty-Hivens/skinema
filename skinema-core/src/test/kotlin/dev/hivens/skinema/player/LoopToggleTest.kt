@@ -86,12 +86,22 @@ class LoopToggleTest {
         val source = ScriptedFrameSource(frameCount = 4, declaredDurationNanos = 1_000_000_000L)
         player(source, loop = true).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            frames.set(framesFor(300))
+            // Stepped rather than jumped, and the step IS the scenario. Three
+            // frames coming due at once are published in a burst, and the lap's
+            // own end is measured from the playhead the pacer writes after it
+            // takes each frame off the queue. Landing the clock on the last
+            // frame's pts while that write is still in flight lets the wait
+            // finish against the frame before it, and the lap turns before this
+            // test has seen the tail it is here to hold. Measured on macOS,
+            // which is fast enough to lose that race.
             var seen = -1L
-            assertTrue(
-                awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == 300_000_000L },
-                "the last frame of the lap must present, saw ${seen}ns",
-            )
+            for (ms in longArrayOf(100, 200, 300)) {
+                frames.set(framesFor(ms))
+                assertTrue(
+                    awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == ms * 1_000_000L },
+                    "the frame at ${ms}ms must present, saw ${seen}ns",
+                )
+            }
             // The lap's own time runs to 400 ms, the last pts plus the frame
             // period, and the clock stands at 300.
             Thread.sleep(200)

@@ -156,12 +156,18 @@ class SourceSwitchTest {
         val two = ScriptedFrameSource(frameCount = 60)
         player(mapOf(first to one, second to two), loop = true).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-            frames.set(framesFor(300))
+            // Stepped for the reason LoopToggleTest gives at the same point: a
+            // clock that lands on the last frame's pts while the pacer is still
+            // writing that playhead lets the lap turn early, and the wait this
+            // test needs to be inside never happens.
             var seen = -1L
-            assertTrue(
-                awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == 300_000_000L },
-                "the last frame of the lap must present, saw ${seen}ns",
-            )
+            for (ms in longArrayOf(100, 200, 300)) {
+                frames.set(framesFor(ms))
+                assertTrue(
+                    awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == ms * 1_000_000L },
+                    "the frame at ${ms}ms must present, saw ${seen}ns",
+                )
+            }
             Thread.sleep(200)
             assertEquals(0, one.seekCount.get(), "the wrap must still be waiting the tail out")
 
