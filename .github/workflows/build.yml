@@ -74,17 +74,17 @@ jobs:
             platform: linux-x64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 27
+            maxSkipped: 0
           - os: ubuntu-24.04-arm
             platform: linux-arm64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 27
+            maxSkipped: 0
           - os: windows-latest
             platform: windows-x64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 33
+            maxSkipped: 0
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -94,7 +94,7 @@ jobs:
             platform: windows-arm64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 33
+            maxSkipped: 0
           # Twenty-one, and every one of them named, re-counted from the run:
           # nine audio suites needing a real output line (as everywhere else)
           # and the mastered clock's pacing test; six hardware (four VAAPI-only
@@ -128,7 +128,7 @@ jobs:
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             hwaccel: "1"
-            maxSkipped: 23
+            maxSkipped: 0
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -140,13 +140,13 @@ jobs:
             tier: full
             libc: musl
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 27
+            maxSkipped: 0
           - os: ubuntu-24.04-arm
             platform: linux-musl-arm64
             tier: full
             libc: musl
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 27
+            maxSkipped: 0
           # The tier the consumer actually ships, run through the same suite.
           # Every other row here takes `full`, which nobody deploys: the
           # launcher takes `decode`, and until this row existed that tier saw
@@ -175,7 +175,7 @@ jobs:
             platform: linux-x64
             tier: decode
             caps: decode,subs,dvbsub,cea608,webp,encav1,encopus,formats
-            maxSkipped: 43
+            maxSkipped: 0
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as
