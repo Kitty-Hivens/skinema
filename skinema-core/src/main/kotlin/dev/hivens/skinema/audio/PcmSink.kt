@@ -1,9 +1,30 @@
 package dev.hivens.skinema.audio
 
 /**
- * Where PCM goes: S16LE interleaved stereo throughout. [JavaSoundSink] in
- * production; tests inject a fake -- CI runners have no audio device, and
- * none of the pacing or clock logic may depend on one.
+ * Where PCM goes. [JavaSoundSink] in production; tests inject a fake -- CI
+ * runners have no audio device, and none of the pacing or clock logic may
+ * depend on one.
+ *
+ * ## The shape is negotiated, not dictated
+ *
+ * [open] takes a [PcmFormat] and may refuse it by throwing. The player asks
+ * for the shape the file actually has and walks down to something this sink
+ * accepts, ending at [PcmFormat.floor], which every implementation must take.
+ * That is the whole negotiation: there is no capability list to keep in step
+ * with the code, and a sink says what it can do by doing it.
+ *
+ * Two things follow for an implementation. A refusal must leave nothing
+ * playing, since the next call is another [open] on this same sink. And a
+ * refusal must be a throw rather than a quiet substitution: a sink that
+ * accepts 5.1 and plays the front two channels is indistinguishable from one
+ * that works, and the player would never learn to fold the rest itself.
+ *
+ * ## Nobody resamples
+ *
+ * The rate in the format is the media's own. The player does not convert it
+ * and neither should a sink: the audio server is better placed than either,
+ * and a sink that resamples turns one conversion into two. What a sink may not
+ * do is accept a rate it will not honour.
  *
  * It is also the seam for a consumer's own audio: pass an implementation as
  * the player's `sink` and the sound leaves through it instead of the
@@ -40,8 +61,17 @@ package dev.hivens.skinema.audio
  */
 interface PcmSink : AutoCloseable {
 
-    /** Opens the device for [sampleRate] Hz S16LE stereo and starts it. */
-    fun open(sampleRate: Int)
+    /**
+     * Opens the device for [format] and starts it. Reopening replaces the
+     * stream: the previous buffered tail is dropped and [framePosition]
+     * restarts at zero, which is what a re-anchoring clock depends on.
+     *
+     * Throws when this sink cannot honour [format] exactly. The player answers
+     * a refusal by asking again with a narrower one, so a throw here is an
+     * ordinary part of opening a file rather than a failure of it. Only a
+     * refusal of [PcmFormat.floor] ends playback.
+     */
+    fun open(format: PcmFormat)
 
     /** Blocking write: returns once the device accepted all [length] bytes. */
     fun write(data: ByteArray, offset: Int, length: Int)

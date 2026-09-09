@@ -56,16 +56,19 @@ class JavaSoundSink : PcmSink {
      */
     private val positionLock = Any()
 
-    override fun open(sampleRate: Int) {
-        // A reopen (track switch) drops the old line first; without this
-        // the previous line keeps the device and its buffered tail.
+    override fun open(format: PcmFormat) {
+        // Built before the old line is dropped, so a format this backend cannot
+        // express refuses without taking the sound that is already playing with
+        // it. The player answers the throw by asking for something narrower.
+        val lineFormat = javaSoundFormat(format)
+        // A reopen (track switch, a narrower retry) drops the old line first;
+        // without this the previous line keeps the device and its buffered tail.
         line?.let {
             it.stop()
             it.flush()
             it.close()
         }
-        val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
-        val fresh = AudioSystem.getSourceDataLine(format).apply {
+        val fresh = AudioSystem.getSourceDataLine(lineFormat).apply {
             // A deliberately small buffer. The default can run to half a
             // second, and everything queued in it is past the point of no
             // return: it keeps sounding after stop() on some backends
@@ -80,7 +83,7 @@ class JavaSoundSink : PcmSink {
             // with the build daemon running, and an underrun freezes the
             // clock (and video) exactly like the stall it was meant to cut.
             // A deterministic 200 ms hold beats a load-dependent freeze.
-            open(format, (sampleRate / 5) * BYTES_PER_FRAME)
+            open(lineFormat, (format.sampleRate / 5) * format.bytesPerFrame)
             start()
         }
         // Published together, or a reader pairs the fresh line's counter --
@@ -194,7 +197,39 @@ class JavaSoundSink : PcmSink {
     }
 
     private companion object {
-        /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
-        const val BYTES_PER_FRAME = 4
+        /**
+         * The line format for a [PcmFormat], or a throw when this backend has
+         * no way to express it.
+         *
+         * JavaSound names encodings rather than carrying arbitrary ones, and
+         * the one it has no name for is 64-bit float: `PCM_FLOAT` is defined
+         * for 32 bits and no mixer advertises a double-width line. Refusing it
+         * here is how the player learns to ask for something narrower, which is
+         * the whole of the negotiation.
+         *
+         * The channel count goes through untouched. A mixer that has no line
+         * for six channels answers the [AudioSystem.getSourceDataLine] call
+         * with its own refusal, which is the same signal by another route.
+         */
+        fun javaSoundFormat(format: PcmFormat): AudioFormat {
+            val encoding = when (format.encoding) {
+                PcmEncoding.U8 -> AudioFormat.Encoding.PCM_UNSIGNED
+                PcmEncoding.S16LE, PcmEncoding.S32LE -> AudioFormat.Encoding.PCM_SIGNED
+                PcmEncoding.F32LE -> AudioFormat.Encoding.PCM_FLOAT
+                PcmEncoding.F64LE -> throw IllegalArgumentException(
+                    "JavaSound has no 64-bit float line; ask for a narrower encoding",
+                )
+            }
+            val bits = format.encoding.bytesPerSample * 8
+            return AudioFormat(
+                encoding,
+                format.sampleRate.toFloat(),
+                bits,
+                format.channels,
+                format.bytesPerFrame,
+                format.sampleRate.toFloat(),
+                false,
+            )
+        }
     }
 }

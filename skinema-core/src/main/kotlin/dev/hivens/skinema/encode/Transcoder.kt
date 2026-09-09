@@ -1,6 +1,7 @@
 package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.Debug
+import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
@@ -211,7 +212,16 @@ class Transcoder private constructor(
         // Audio leads the interleave: its chunk is pushed while its start is
         // at or before the video frame waiting to go, so neither side runs
         // ahead of the muxer's window.
-        var pendingAudio = audio?.nextChunk()
+        // The writer takes S16LE stereo, so this side asks for it rather than
+        // taking whatever the file happens to be: the decoder narrows nothing
+        // on its own any more, and a 5.1 float source handed over as it is
+        // would reach an encoder built for two channels of sixteen bits.
+        // Widening what the writer accepts is a separate piece of work, and the
+        // limitation is here rather than hidden in the decoder's defaults.
+        var pendingAudio = audio?.nextChunk()?.let {
+            val wanted = PcmFormat.floor(it.sampleRate)
+            if (it.format == wanted) it else checkNotNull(audio).convertLastAs(wanted)
+        }
         var padded = false
         while (!cancelled) {
             val frame = video.nextFrame() ?: break

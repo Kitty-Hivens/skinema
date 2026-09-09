@@ -60,7 +60,11 @@ class AudioPipelineTest {
         try {
             val clock = assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "a tone has audio")
             assertTrue(awaitTrue { pipeline.isEnded }, "non-looping playback must end")
-            assertEquals(44_100 * 4, sink.totalBytes, "every sample reaches the sink")
+            assertEquals(
+                44_100 * checkNotNull(sink.format).bytesPerFrame,
+                sink.totalBytes,
+                "every sample reaches the sink",
+            )
             assertEquals(44_100, sink.sampleRate)
             // FakePcmSink reports everything written as played, so media time
             // has reached the tone's end. Not equal to it, though: the sink is
@@ -168,7 +172,7 @@ class AudioPipelineTest {
             )
             // 0.25s into 1s of 44.1kHz: the post-flush write is the cropped
             // remainder, sample-exact.
-            assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
+            assertEquals((44_100 - 11_025) * checkNotNull(sink.format).bytesPerFrame, sink.bytesSinceLastFlush)
             assertEquals(0, sink.writesWhileStopped, "a stopped line must never be written to")
         } finally {
             pipeline.close()
@@ -227,7 +231,10 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(tone("tail.flac"), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
-            assertTrue(awaitTrue { sink.totalBytes == 44_100 * 4 }, "the file must be fully written")
+            assertTrue(
+                awaitTrue { sink.totalBytes == 44_100 * checkNotNull(sink.format).bytesPerFrame },
+                "the file must be fully written",
+            )
             assertFalse(pipeline.isEnded, "the tail has not played; ended must wait for the device")
 
             // The old sink.drain() deafened the thread here; a seek must be
@@ -268,7 +275,7 @@ class AudioPipelineTest {
         val pipeline = AudioPipeline(media, sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS))
-            val whole = 44_100 * 2 * 4
+            val whole = 44_100 * 2 * checkNotNull(sink.format).bytesPerFrame
             assertTrue(
                 awaitTrue { sink.totalBytes == whole },
                 "the file must be fully written, got ${sink.totalBytes} of $whole",
@@ -703,7 +710,7 @@ class AudioPipelineTest {
                 awaitTrue { pipeline.pendingSeeks.get() == 0 && pipeline.isEnded },
                 "non-looping playback must end",
             )
-            val full = 44_100 * 4
+            val full = 44_100 * checkNotNull(sink.format).bytesPerFrame
             assertTrue(
                 sink.bytesSinceLastFlush in (full * 40 / 100)..(full * 60 / 100),
                 "1s at tempo 2 should reach the device roughly halved, got ${sink.bytesSinceLastFlush} of $full",
@@ -840,7 +847,7 @@ class AudioPipelineTest {
                 awaitTrue { pipeline.pendingSeeks.get() == 0 && pipeline.isEnded },
                 "playback must finish after the seek",
             )
-            assertEquals((44_100 - 11_025) * 4, sink.bytesSinceLastFlush)
+            assertEquals((44_100 - 11_025) * checkNotNull(sink.format).bytesPerFrame, sink.bytesSinceLastFlush)
         } finally {
             pipeline.close()
         }

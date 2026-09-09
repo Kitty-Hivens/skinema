@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.audio.PcmFormat
 import java.lang.foreign.Arena
 import java.nio.file.Files
 import java.nio.file.Path
@@ -35,8 +36,11 @@ class AudioDecoderTest {
             while (true) {
                 val chunk = it.nextChunk() ?: break
                 assertEquals(44_100, chunk.sampleRate)
-                assertTrue(chunk.byteCount % 4 == 0, "S16 stereo frames are 4 bytes")
-                samples += chunk.byteCount / 4
+                assertTrue(
+                    chunk.byteCount % chunk.format.bytesPerFrame == 0,
+                    "a chunk carries whole frames of ${chunk.format}",
+                )
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
                 chunks++
             }
             assertEquals(44_100L, samples, "1s of lossless 44.1kHz must decode to exactly 44100 frames")
@@ -56,7 +60,7 @@ class AudioDecoderTest {
                     chunk.ptsNanos,
                     "chunk pts must equal the samples already played",
                 )
-                cumulative += chunk.byteCount / 4
+                cumulative += chunk.byteCount / chunk.format.bytesPerFrame
             }
         }
     }
@@ -69,14 +73,20 @@ class AudioDecoderTest {
             var samples = 0L
             while (true) {
                 val chunk = it.nextChunk() ?: break
-                samples += chunk.byteCount / 4
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
             assertTrue(samples in 42_000..48_000, "aac adds priming/padding, got $samples frames")
         }
     }
 
+    /**
+     * The decoder narrows nothing on its own any more, and this is the file
+     * that proves it: six channels in, six channels out, with the order named
+     * rather than counted. It asserted the opposite until the output layout
+     * stopped being a constant, and every file became stereo on the way past.
+     */
     @Test
-    fun `ac3 decodes and a 5_1 layout downmixes to stereo`() {
+    fun `a 5_1 stream arrives as 5_1, in the order the container names`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("ac3")
         val decoder = assertNotNull(
@@ -85,13 +95,49 @@ class AudioDecoderTest {
         )
         decoder.use {
             var samples = 0L
+            var shape: PcmFormat? = null
             while (true) {
                 val chunk = it.nextChunk() ?: break
                 assertEquals(44_100, chunk.sampleRate)
-                assertTrue(chunk.byteCount % 4 == 0, "the 5.1 source must arrive as S16 stereo")
-                samples += chunk.byteCount / 4
+                shape = chunk.format
+                assertTrue(
+                    chunk.byteCount % chunk.format.bytesPerFrame == 0,
+                    "a chunk carries whole frames of ${chunk.format}",
+                )
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
+            val format = assertNotNull(shape, "the stream must produce at least one chunk")
+            assertEquals(6, format.channels, "the six channels must survive the decode")
+            assertTrue(format.layout.startsWith("5.1"), "and the order must be named, got ${format.layout}")
             assertTrue(samples in 42_000..48_000, "ac3 pads to 1536-sample frames, got $samples")
+        }
+    }
+
+    /** The fold is a request now, and this is what asking for it does. */
+    @Test
+    fun `a 5_1 stream folds to stereo when that is what was asked for`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("ac3")
+        val decoder = assertNotNull(
+            AudioDecoder.openOrNull(tone("fold.ac3", "-ac", "6", "-c:a", "ac3")),
+            "a raw ac3 stream must open",
+        )
+        decoder.use {
+            val native = assertNotNull(it.nextChunk(), "the stream must produce a chunk")
+            assertEquals(6, native.format.channels, "and it arrives as the file has it")
+            val samplesBefore = native.byteCount / native.format.bytesPerFrame
+
+            val folded = it.convertLastAs(PcmFormat.floor(native.sampleRate))
+            assertEquals(2, folded.format.channels, "the fold must take effect on the frame in hand")
+            assertEquals("stereo", folded.format.layout)
+            assertEquals(
+                samplesBefore,
+                folded.byteCount / folded.format.bytesPerFrame,
+                "and it must be the same samples in fewer channels",
+            )
+
+            val after = assertNotNull(it.nextChunk(), "the fold must hold for the chunks after it")
+            assertEquals(2, after.format.channels)
         }
     }
 
@@ -103,7 +149,7 @@ class AudioDecoderTest {
             var samples = 0L
             while (true) {
                 val chunk = decoder.nextChunk() ?: break
-                samples += chunk.byteCount / 4
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
             assertTrue(samples in 42_000..48_000, "eac3 pads to 1536-sample frames, got $samples")
         }
@@ -117,7 +163,7 @@ class AudioDecoderTest {
             var samples = 0L
             while (true) {
                 val chunk = decoder.nextChunk() ?: break
-                samples += chunk.byteCount / 4
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
             assertEquals(44_100L, samples, "alac is lossless; the exact count must survive")
         }
@@ -130,7 +176,7 @@ class AudioDecoderTest {
             var samples = 0L
             while (true) {
                 val chunk = decoder.nextChunk() ?: break
-                samples += chunk.byteCount / 4
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
             assertEquals(44_100L, samples, "pcm has no framing; the count is exact")
         }
@@ -143,7 +189,7 @@ class AudioDecoderTest {
             var samples = 0L
             while (true) {
                 val chunk = decoder.nextChunk() ?: break
-                samples += chunk.byteCount / 4
+                samples += chunk.byteCount / chunk.format.bytesPerFrame
             }
             assertEquals(44_100L, samples, "pcm has no framing; the count is exact")
         }

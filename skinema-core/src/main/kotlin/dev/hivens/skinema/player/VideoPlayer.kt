@@ -2,7 +2,9 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.audio.AudioPipeline
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.JavaSoundSink
+import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.core.MediaClock
@@ -55,6 +57,7 @@ class VideoPlayer internal constructor(
     private val unwatched: WhenUnwatched,
     private val startPaused: Boolean,
     volume: Float,
+    audioChannels: ChannelPreference,
     // The test seam: a Path is the only public way in, so deterministic
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
@@ -154,9 +157,26 @@ class VideoPlayer internal constructor(
          * one. Nothing at all without `audio = true`.
          */
         volume: Float = 1f,
+        /**
+         * How many channels to ask the output device for.
+         *
+         * [ChannelPreference.Source] (the default) hands over what the file
+         * carries and lets the device refuse, on the same argument the sample
+         * rate is left alone under: the audio server knows the speaker layout
+         * and this library does not, so folding here would be a second guess on
+         * top of the one it makes anyway.
+         *
+         * [ChannelPreference.Stereo] folds to two before the device is asked.
+         * A device accepting six channels is not evidence that six speakers
+         * exist, and a consumer that knows the fold is wanted says so here.
+         *
+         * Either way the fold is swresample's, and either way what the device
+         * actually took is [activeAudioFormat] rather than this.
+         */
+        audioChannels: ChannelPreference = ChannelPreference.Source,
     ) : this(
         path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
-        startPaused, volume,
+        startPaused, volume, audioChannels,
         { FrameSources.open(it, hardware) },
     )
 
@@ -302,6 +322,18 @@ class VideoPlayer internal constructor(
     val activeAudioTrack: Int?
         get() = if (audioTracks.isEmpty()) null else audioPipeline?.activeAudioTrack
 
+    /**
+     * The shape the sound is actually leaving in, or null when nothing is
+     * playing through a device.
+     *
+     * This is what the device agreed to, not what was asked for. The player
+     * offers the file's own shape and walks down until the sink takes one, so a
+     * 5.1 float file on a stereo device reports stereo, and reporting the
+     * request instead would make that fold invisible.
+     */
+    val activeAudioFormat: PcmFormat?
+        get() = if (audioDeviceOpened) audioPipeline?.activeFormat else null
+
     /** Format-level tags (title, artist, ...); empty when none or Opening. */
     @Volatile
     var tags: Map<String, String> = emptyMap()
@@ -428,6 +460,7 @@ class VideoPlayer internal constructor(
                 // queued -- the decode thread is inside the video open at that
                 // moment, released by the very clock this pipeline published.
                 startPaused = startPaused,
+                channelPreference = audioChannels,
             )
         } else {
             null

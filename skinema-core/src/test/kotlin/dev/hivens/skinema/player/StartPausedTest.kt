@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
@@ -48,7 +49,7 @@ class StartPausedTest {
     }
 
     private fun player(source: ScriptedFrameSource, startPaused: Boolean) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, startPaused, 1f,
+        Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, startPaused, 1f, ChannelPreference.Source,
     ) { source }
 
     /** Media time forward by [millis], the way a device consuming would. */

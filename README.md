@@ -156,9 +156,15 @@ What is *not* there is short and stays short: anything needing a library the bun
 
 Audio: pass `audio = true` to `VideoPlayer` -- aac, ac3/eac3, alac,
 opus, vorbis, mp3, flac and WAV pcm (16/24/32-bit and float) decode
-through the same bindings, multichannel downmixes to stereo, and the
-audio device becomes the player's clock (video follows sound, never the
-reverse). Audio-only files play frameless. Files with several audio
+through the same bindings, and the audio device becomes the player's
+clock (video follows sound, never the reverse). The sound reaches the
+device in the shape the file has it: six channels stay six, twenty-four
+bits stay twenty-four, and the rate is never converted. A device that
+cannot take that shape refuses, the player walks down to one it can, and
+`activeAudioFormat` reports what was actually taken rather than what was
+asked for. `audioChannels = ChannelPreference.Stereo` folds first for a
+consumer that knows the fold is wanted, since a device accepting six
+channels is not evidence that six speakers exist. Audio-only files play frameless. Files with several audio
 tracks expose them (`audioTracks`, language and title included) and
 switch in place (`selectAudioTrack`) -- the picture keeps playing and
 the sound re-anchors at the playhead. `setRate` plays at 0.5x-4x with

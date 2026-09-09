@@ -127,17 +127,22 @@ class TranscoderTest {
         }
         val audio = assertNotNull(AudioDecoder.openOrNull(out), "the output carries no audio")
         audio.use { a ->
-            var bytes = 0L
+            var frames = 0L
             while (true) {
                 val c = a.nextChunk() ?: break
-                bytes += c.byteCount
+                frames += c.byteCount / c.format.bytesPerFrame
             }
-            // Two seconds of 44.1 kHz stereo S16, within an encoder frame of
-            // padding either way -- aac pads its last frame.
-            val whole = 44_100L * 2 * 4
+            // Two seconds of 44.1 kHz, within an encoder frame of padding
+            // either way -- aac pads its last frame.
+            //
+            // Counted in frames rather than bytes, because bytes measure the
+            // carrier and not the sound: aac decodes to float, so the same two
+            // seconds are twice the bytes they were when everything arrived as
+            // S16. The duration is what this test is about.
+            val whole = 44_100L * 2
             assertTrue(
-                bytes in (whole - whole / 10)..(whole + whole / 10),
-                "expected about ${whole} bytes of sound, got $bytes",
+                frames in (whole - whole / 10)..(whole + whole / 10),
+                "expected about $whole frames of sound, got $frames",
             )
         }
     }

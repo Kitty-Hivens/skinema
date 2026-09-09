@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
@@ -34,7 +35,7 @@ class SeekModesTest {
     }
 
     private fun player(source: ScriptedFrameSource, readAheadFrames: Int = 1) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze, false, 1f,
+        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     /**
@@ -248,7 +249,7 @@ class SeekModesTest {
     fun `a paused player seeked past the end of a looping file wraps with its picture`() {
         val source = ScriptedFrameSource(frameCount = 10)
         VideoPlayer(
-            Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f,
+            Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { source }.use { p ->
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "state=${p.state}")
             // Far enough in that the wrap has somewhere to come back FROM: at
@@ -317,7 +318,7 @@ class PhantomChaseTest {
         )
         val sink = BoundedPcmSink(capacityFrames = 11_025)
         val source = ScriptedFrameSource(frameCount = 300)
-        val player = VideoPlayer(tone, false, true, null, sink, 1, null, WhenUnwatched.Freeze, false, 1f) { source }
+        val player = VideoPlayer(tone, false, true, null, sink, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
         player.use { p ->
             try {
                 assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")

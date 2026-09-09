@@ -1,5 +1,7 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.PcmFormat
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.NoVideoStreamException
@@ -33,7 +35,7 @@ class FramelessPlaybackTest {
 
     /** A machine with no sound card: the line refuses to open. */
     private class NoDevice : PcmSink {
-        override fun open(sampleRate: Int): Unit = throw IllegalStateException("no audio device")
+        override fun open(format: PcmFormat): Unit = throw IllegalStateException("no audio device")
         override fun write(data: ByteArray, offset: Int, length: Int) = Unit
         override fun stop() = Unit
         override fun start() = Unit
@@ -153,7 +155,7 @@ class FramelessPlaybackTest {
             "-c:v", "libx264", "-preset", "ultrafast",
         )
         VideoPlayer(
-            noSound, true, true, null, NoDevice(), 1, null, WhenUnwatched.Freeze, false, 1f,
+            noSound, true, true, null, NoDevice(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { throw NoVideoStreamException("nothing this player can show") }.use { player ->
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Ended },

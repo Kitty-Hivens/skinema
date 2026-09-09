@@ -88,7 +88,7 @@ class AudioFormatMatrixTest {
                         val sample = ((hi shl 8) or lo).toShort().toDouble()
                         energy += sample * sample
                     }
-                    frames += chunk.byteCount / 4
+                    frames += chunk.byteCount / chunk.format.bytesPerFrame
                 }
                 assertEquals(rate, seenRate, "came back at the wrong sample rate")
                 // A second, give or take the codec's own priming and padding:

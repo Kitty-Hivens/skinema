@@ -14,6 +14,21 @@ class FakePcmSink : PcmSink {
 
     var sampleRate = 0
         private set
+
+    /** The format the last [open] took, or null before one succeeded. */
+    @Volatile
+    var format: PcmFormat? = null
+        private set
+
+    /**
+     * Which shapes this device will take. The default takes everything, which
+     * is what a test that is not about the negotiation wants; a test that IS
+     * about it narrows this and reads back what the player settled on.
+     */
+    var accepts: (PcmFormat) -> Boolean = { true }
+
+    /** Every format [open] was offered, refusals included, in order. */
+    val offered = mutableListOf<PcmFormat>()
     var stopped = false
         private set
 
@@ -68,12 +83,16 @@ class FakePcmSink : PcmSink {
      */
     var failNextOpen = false
 
-    override fun open(sampleRate: Int) {
+    override fun open(format: PcmFormat) {
+        offered += format
         if (failNextOpen) {
             failNextOpen = false
             throw IllegalStateException("device refused the new rate")
         }
-        this.sampleRate = sampleRate
+        if (!accepts(format)) throw IllegalStateException("this device does not take $format")
+        this.format = format
+        this.frameBytes = format.bytesPerFrame
+        this.sampleRate = format.sampleRate
         // Per the contract, open STARTS the device -- a fake that leaves
         // [stopped] untouched would let freeze-across-reopen tests pass
         // vacuously.
@@ -81,12 +100,17 @@ class FakePcmSink : PcmSink {
         // And a fresh line counts its frames from zero. The written bytes are
         // kept, because tests assert on them across the reopen; only the
         // playhead restarts, which is what a track switch rebases against.
-        openedAtFrames = (totalBytes / 4).toLong()
+        openedAtFrames = (totalBytes / frameBytes).toLong()
         volumeAtFirstWrite = -1f
         opens++
     }
 
     private var openedAtFrames = 0L
+
+    // The frame size of the line that is open, so the played count means
+    // frames rather than four-byte units. Four until an open says otherwise,
+    // which is what the floor is anyway.
+    private var frameBytes = 4
 
     /**
      * When set, the next [write] throws and clears the flag -- a line whose
@@ -136,7 +160,7 @@ class FakePcmSink : PcmSink {
     override fun framePosition(): Long {
         positionReads.incrementAndGet()
         val manual = positionFrames.get()
-        return if (manual >= 0) manual else (totalBytes / 4).toLong() - openedAtFrames
+        return if (manual >= 0) manual else (totalBytes / frameBytes).toLong() - openedAtFrames
     }
 
     override fun setVolume(volume: Float) {

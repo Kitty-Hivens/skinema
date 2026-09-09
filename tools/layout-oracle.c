@@ -118,6 +118,7 @@ int main(void) {
     P(offsetof(AVCodecParameters, extradata));
     P(offsetof(AVCodecParameters, extradata_size));
     P(offsetof(AVCodecParameters, format));
+    P(offsetof(AVCodecParameters, bits_per_raw_sample));
     P(offsetof(AVCodecParameters, width));
     P(offsetof(AVCodecParameters, height));
     P(sizeof(AVCodecParameters));
@@ -264,6 +265,7 @@ int main(void) {
     P(offsetof(AVCodecContext, color_primaries));
     P(offsetof(AVCodecContext, sample_rate));
     P(offsetof(AVCodecContext, sample_fmt));
+    P(offsetof(AVCodecContext, bits_per_raw_sample));
     P(offsetof(AVCodecContext, frame_size));
     P(offsetof(AVCodecContext, ch_layout));
     P(offsetof(AVCodecContext, profile));

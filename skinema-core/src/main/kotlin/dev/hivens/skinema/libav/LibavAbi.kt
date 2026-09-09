@@ -179,6 +179,15 @@ object LibavAbi {
         /** Samples per encoded frame, reported by the encoder after open (0 = variable). */
         const val FRAME_SIZE = 376L
 
+        /**
+         * How many bits of each decoded sample are real, which is not the width
+         * of the format they arrive in: a 24-bit file decodes into S32 with
+         * eight zero bits below the value, and some DTS carries twenty. Set by
+         * the decoder, so it is worth reading once a frame has come through.
+         * Zero when the codec does not say.
+         */
+        const val BITS_PER_RAW_SAMPLE = 652L
+
         /** AVPixelFormat (*get_format)(...): the hwaccel format-negotiation upcall. */
         const val GET_FORMAT = 192L
 
@@ -330,14 +339,18 @@ object LibavAbi {
     const val AV_CODEC_ID_SUBRIP = 94225
     const val AV_CODEC_ID_WEBVTT = 94226
     const val AV_CODEC_ID_ASS = 94230
+    const val AV_SAMPLE_FMT_U8 = 0
     const val AV_SAMPLE_FMT_S16 = 1
     const val AV_SAMPLE_FMT_S32 = 2
     const val AV_SAMPLE_FMT_FLT = 3
+    const val AV_SAMPLE_FMT_DBL = 4
+    const val AV_SAMPLE_FMT_U8P = 5
     const val AV_SAMPLE_FMT_S16P = 6
     const val AV_SAMPLE_FMT_S32P = 7
 
     /** Planar 32-bit float -- the native AAC encoder's input format. */
     const val AV_SAMPLE_FMT_FLTP = 8
+    const val AV_SAMPLE_FMT_DBLP = 9
 
     /**
      * enum AVCodecConfig, for avcodec_get_supported_config. Each list is

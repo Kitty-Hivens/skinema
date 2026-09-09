@@ -1,5 +1,7 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.audio.PcmEncoding
+import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.core.nanosToPts
 import dev.hivens.skinema.core.ptsToNanos
 import java.lang.foreign.Arena
@@ -46,7 +48,7 @@ class AudioDecoder private constructor(
 
     class PcmChunk internal constructor(
         /**
-         * Interleaved S16LE stereo; only the first [byteCount] bytes are
+         * Interleaved PCM in [format]; only the first [byteCount] bytes are
          * meaningful, and the array is reused -- valid until the next
          * [nextChunk] call.
          */
@@ -54,9 +56,16 @@ class AudioDecoder private constructor(
         val byteCount: Int,
         /** Presentation time of the chunk's first sample. */
         val ptsNanos: Long,
-        /** Source sample rate; constant within a stream in practice. */
-        val sampleRate: Int,
-    )
+        /**
+         * The shape of the bytes above. Until a caller asks for something else
+         * through [convertLastAs], this is the file's own shape: the decoder
+         * narrows nothing on its own.
+         */
+        val format: PcmFormat,
+    ) {
+        /** Shorthand: the rate is the one number every caller needs. */
+        val sampleRate: Int get() = format.sampleRate
+    }
 
     private var draining = false
 
@@ -80,13 +89,32 @@ class AudioDecoder private constructor(
     /** Graphs built; a test observable, so a rebuild per frame cannot hide. */
     internal var swrBuilds = 0
         private set
-    private val outLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF).also {
-        Libav.avChannelLayoutDefault(it, OUT_CHANNELS)
-    }
+    private val outLayout = arena.allocate(LibavAbi.ChannelLayout.SIZEOF)
     private val outPlanes = arena.allocate(ADDRESS)
     private var outNative = MemorySegment.NULL
     private var outCapacitySamples = 0
     private var pcmHeap = ByteArray(0)
+
+    // Scratch for av_channel_layout_describe. Sixty-four bytes covers every
+    // canonical name libav prints, and the call reports what it wanted anyway.
+    private val layoutName = arena.allocate(64)
+
+    /**
+     * What [nextChunk] converts into, or null for the file's own shape.
+     *
+     * Null is the default because narrowing is a decision, and the decoder is
+     * not the side that gets to make it: a player negotiates with its output
+     * device, a transcoder states what its writer takes. Both do so through
+     * [convertLastAs], which is also how the first chunk of a file gets a
+     * second chance once the device has answered.
+     */
+    private var outFormat: PcmFormat? = null
+
+    /** The shape the last decoded frame came in, before anything narrowed it. */
+    private var lastSourceFormat: PcmFormat? = null
+
+    /** The output shape the current graph was built for; see [ensureSwr]. */
+    private var builtFor: PcmFormat? = null
 
     /** Decodes and converts the next chunk; null at end of stream. */
     fun nextChunk(): PcmChunk? {
@@ -137,11 +165,58 @@ class AudioDecoder private constructor(
     }
 
     private fun convertCurrentFrame(): PcmChunk {
+        val source = sourceFormatOfFrame()
+        lastSourceFormat = source
+        return convertHeldFrame(outFormat ?: source)
+    }
+
+    /**
+     * Converts the frame [nextChunk] last returned into [format] instead, and
+     * makes it the shape of every chunk after it.
+     *
+     * The first chunk of a file is decoded before anything knows what the
+     * output device will take, because the file's own shape is only knowable
+     * from a frame. So the caller reads that first chunk, negotiates with its
+     * device, and hands the frame back here when the answer is narrower than
+     * what it got. The frame is still the one that was decoded, so nothing is
+     * re-read and no sample is lost that the narrowing did not cost.
+     */
+    fun convertLastAs(format: PcmFormat): PcmChunk {
+        checkNotNull(lastSourceFormat) { "no frame has been decoded to convert" }
+        outFormat = format
+        return convertHeldFrame(format)
+    }
+
+    /** The shape the file itself has, from the frame in hand. */
+    private fun sourceFormatOfFrame(): PcmFormat {
+        val layout = frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF)
+        val encoding = encodingFor(frame.get(JAVA_INT, LibavAbi.Frame.FORMAT))
+        val width = encoding.bytesPerSample * 8
+        // Set by the decoder rather than by the container, so it is read here
+        // rather than at the open: a frame has been through by now. Through a
+        // reinterpret because nothing on this side had ever read a field off
+        // the context before, so it is held as the bare pointer libav returned.
+        val raw = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+            .get(JAVA_INT, LibavAbi.CodecContext.BITS_PER_RAW_SAMPLE)
+        return PcmFormat(
+            sampleRate = frame.get(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE),
+            channels = layout.get(JAVA_INT, LibavAbi.ChannelLayout.NB_CHANNELS),
+            layout = describeLayout(layout),
+            encoding = encoding,
+            significantBits = if (raw in 1..width) raw else width,
+        )
+    }
+
+    private fun convertHeldFrame(target: PcmFormat): PcmChunk {
         val nbSamples = frame.get(JAVA_INT, LibavAbi.Frame.NB_SAMPLES)
         val format = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
         val rate = frame.get(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE)
-        ensureSwr(format, rate)
-        ensureCapacity(nbSamples)
+        // The rate is the stream's, never the caller's: a mid-stream rate
+        // change rebuilds the graph on both sides rather than resampling to
+        // whatever the target was built for, and the chunk says what it is.
+        val shape = if (target.sampleRate == rate) target else target.copy(sampleRate = rate)
+        ensureSwr(format, rate, shape)
+        ensureCapacity(nbSamples, shape)
 
         // No resampling (out rate = in rate), so swresample buffers nothing
         // and out count always equals in count -- no drain pass needed.
@@ -150,7 +225,7 @@ class AudioDecoder private constructor(
         val inPlanes = frame.get(ADDRESS, LibavAbi.Frame.EXTENDED_DATA)
         val converted = Libav.swrConvert(swrCtx, outPlanes, nbSamples, inPlanes, nbSamples)
         Libav.checkAv(converted, "swr_convert")
-        val bytes = converted * OUT_CHANNELS * 2
+        val bytes = converted * shape.bytesPerFrame
         MemorySegment.copy(outNative, JAVA_BYTE, 0, pcmHeap, 0, bytes)
 
         val pts = frame.get(JAVA_LONG, LibavAbi.Frame.PTS)
@@ -163,13 +238,13 @@ class AudioDecoder private constructor(
         } else {
             (ptsToNanos(pts, timeBaseNum, timeBaseDen) - startTimeNanos).coerceAtLeast(0L)
         }
-        return PcmChunk(pcmHeap, bytes, ptsNanos, rate)
+        return PcmChunk(pcmHeap, bytes, ptsNanos, shape)
     }
 
-    private fun ensureSwr(format: Int, rate: Int) {
+    private fun ensureSwr(format: Int, rate: Int, target: PcmFormat) {
         val layout = frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF)
         if (swrCtx != MemorySegment.NULL && format == srcFormat && rate == srcRate &&
-            Libav.avChannelLayoutCompare(srcLayout, layout) == 0
+            target == builtFor && Libav.avChannelLayoutCompare(srcLayout, layout) == 0
         ) {
             return
         }
@@ -180,29 +255,59 @@ class AudioDecoder private constructor(
             swrCtx = MemorySegment.NULL
         }
 
+        // Same count means the source's own order, copied rather than rebuilt:
+        // a default layout for six channels is 5.1, and a file that carries
+        // 5.1(side) would have its surrounds moved by a rebuild that only
+        // counted them. A different count is a fold, and there the default for
+        // the target is the only order anything downstream can assume.
+        Libav.avChannelLayoutUninit(outLayout)
+        if (target.channels == layout.get(JAVA_INT, LibavAbi.ChannelLayout.NB_CHANNELS)) {
+            Libav.checkAv(Libav.avChannelLayoutCopy(outLayout, layout), "av_channel_layout_copy(out)")
+        } else {
+            Libav.avChannelLayoutDefault(outLayout, target.channels)
+        }
+
         val ctxOut = arena.allocate(ADDRESS)
         Libav.checkAv(
             Libav.swrAllocSetOpts2(
                 ctxOut,
-                outLayout, LibavAbi.AV_SAMPLE_FMT_S16, rate,
+                outLayout, sampleFormatFor(target.encoding), rate,
                 layout, format, rate,
             ),
             "swr_alloc_set_opts2",
         )
         swrCtx = ctxOut.get(ADDRESS, 0)
+        // Dither, because swresample rounds without it and rounding a float or
+        // a 24-bit source into sixteen bits is the one conversion this path
+        // still makes. It costs nothing where nothing narrows: swresample
+        // applies it only when the destination is the narrower of the two. The
+        // result is deliberately not checked -- a build that does not know the
+        // option converts without dither, which is what it did before.
+        Arena.ofConfined().use { strings ->
+            Libav.avOptSet(swrCtx, strings.allocateFrom("dither_method"), strings.allocateFrom("triangular"))
+        }
         Libav.checkAv(Libav.swrInit(swrCtx), "swr_init")
         srcFormat = format
         srcRate = rate
+        builtFor = target
         Libav.checkAv(Libav.avChannelLayoutCopy(srcLayout, layout), "av_channel_layout_copy")
         swrBuilds++
     }
 
-    private fun ensureCapacity(nbSamples: Int) {
-        if (nbSamples <= outCapacitySamples) return
-        outCapacitySamples = maxOf(nbSamples * 2, 8192)
-        outNative = arena.allocate(outCapacitySamples.toLong() * OUT_CHANNELS * 2)
+    private fun ensureCapacity(nbSamples: Int, target: PcmFormat) {
+        val frameBytes = target.bytesPerFrame
+        if (nbSamples <= outCapacitySamples && pcmHeap.size >= outCapacitySamples * frameBytes) return
+        outCapacitySamples = maxOf(maxOf(nbSamples * 2, 8192), outCapacitySamples)
+        outNative = arena.allocate(outCapacitySamples.toLong() * frameBytes)
         outPlanes.set(ADDRESS, 0, outNative)
-        pcmHeap = ByteArray(outCapacitySamples * OUT_CHANNELS * 2)
+        pcmHeap = ByteArray(outCapacitySamples * frameBytes)
+    }
+
+    /** The canonical name of a layout, or a plain count when libav has none. */
+    private fun describeLayout(layout: MemorySegment): String {
+        val wanted = Libav.avChannelLayoutDescribe(layout, layoutName, layoutName.byteSize())
+        if (wanted <= 0) return "${layout.get(JAVA_INT, LibavAbi.ChannelLayout.NB_CHANNELS)} channels"
+        return layoutName.getString(0)
     }
 
     // The arena is closed below, and allocating from a closed one throws --
@@ -219,8 +324,9 @@ class AudioDecoder private constructor(
             Libav.swrFree(ptrPtr)
         }
         // Frees what a custom channel order allocated inside the copy; the
-        // arena owns the struct itself.
+        // arena owns the structs themselves.
         Libav.avChannelLayoutUninit(srcLayout)
+        Libav.avChannelLayoutUninit(outLayout)
         ptrPtr.set(ADDRESS, 0, frame)
         Libav.avFrameFree(ptrPtr)
         ptrPtr.set(ADDRESS, 0, packet)
@@ -235,7 +341,33 @@ class AudioDecoder private constructor(
 
     companion object {
 
-        const val OUT_CHANNELS = 2
+        /**
+         * The interleaved encoding a sample format maps to. Planar and packed
+         * both land on the same member, because the seam is interleaved and
+         * swresample does that half whatever else it is asked for.
+         *
+         * Anything unrecognised takes the widest carrier rather than the
+         * narrowest: the only member left is 64-bit integer, which no decoder
+         * in this build emits, and asking for width loses nothing that a sink's
+         * own refusal will not walk back down.
+         */
+        internal fun encodingFor(sampleFmt: Int): PcmEncoding = when (sampleFmt) {
+            LibavAbi.AV_SAMPLE_FMT_U8, LibavAbi.AV_SAMPLE_FMT_U8P -> PcmEncoding.U8
+            LibavAbi.AV_SAMPLE_FMT_S16, LibavAbi.AV_SAMPLE_FMT_S16P -> PcmEncoding.S16LE
+            LibavAbi.AV_SAMPLE_FMT_S32, LibavAbi.AV_SAMPLE_FMT_S32P -> PcmEncoding.S32LE
+            LibavAbi.AV_SAMPLE_FMT_FLT, LibavAbi.AV_SAMPLE_FMT_FLTP -> PcmEncoding.F32LE
+            LibavAbi.AV_SAMPLE_FMT_DBL, LibavAbi.AV_SAMPLE_FMT_DBLP -> PcmEncoding.F64LE
+            else -> PcmEncoding.F64LE
+        }
+
+        /** The packed sample format swresample is asked to produce. */
+        internal fun sampleFormatFor(encoding: PcmEncoding): Int = when (encoding) {
+            PcmEncoding.U8 -> LibavAbi.AV_SAMPLE_FMT_U8
+            PcmEncoding.S16LE -> LibavAbi.AV_SAMPLE_FMT_S16
+            PcmEncoding.S32LE -> LibavAbi.AV_SAMPLE_FMT_S32
+            PcmEncoding.F32LE -> LibavAbi.AV_SAMPLE_FMT_FLT
+            PcmEncoding.F64LE -> LibavAbi.AV_SAMPLE_FMT_DBL
+        }
 
         /**
          * Opens an audio stream of [path]: the explicit [streamIndex],

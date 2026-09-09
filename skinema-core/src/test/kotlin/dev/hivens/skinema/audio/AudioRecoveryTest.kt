@@ -38,7 +38,7 @@ class AudioRecoveryTest {
 
         // open() is the audio thread's alone (pump/recovery), so the
         // non-atomic increment has a single writer; the test reads it volatile.
-        override fun open(sampleRate: Int) {
+        override fun open(format: PcmFormat) {
             if (!present) throw IllegalStateException("device absent")
             closed = false
             openCount++
@@ -190,7 +190,7 @@ class AudioRecoveryTest {
         private val frames = AtomicLong(0)
         @Volatile private var closed = false
 
-        override fun open(sampleRate: Int) = synchronized(monitor) {
+        override fun open(format: PcmFormat) = synchronized(monitor) {
             if (!present) throw IllegalStateException("device absent")
             closed = false
         }

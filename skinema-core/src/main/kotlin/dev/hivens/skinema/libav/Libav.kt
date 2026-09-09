@@ -220,6 +220,11 @@ object Libav {
     private val hAvChannelLayoutCompare = fn(LibavLibrary.AVUTIL, "av_channel_layout_compare", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvChannelLayoutCopy = fn(LibavLibrary.AVUTIL, "av_channel_layout_copy", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     private val hAvChannelLayoutUninit = fn(LibavLibrary.AVUTIL, "av_channel_layout_uninit", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvChannelLayoutDescribe = fn(
+        LibavLibrary.AVUTIL,
+        "av_channel_layout_describe",
+        FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG),
+    )
     private val hAvHwdeviceCtxCreate = fn(LibavLibrary.AVUTIL, "av_hwdevice_ctx_create", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvHwframeTransferData = fn(LibavLibrary.AVUTIL, "av_hwframe_transfer_data", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT))
     private val hAvBufferRef = fn(LibavLibrary.AVUTIL, "av_buffer_ref", FunctionDescriptor.of(ADDRESS, ADDRESS))
@@ -425,6 +430,13 @@ object Libav {
 
     /** Releases what a custom order allocated; a no-op for the mask orders. */
     fun avChannelLayoutUninit(layout: MemorySegment) { hAvChannelLayoutUninit.invoke(layout) }
+
+    /**
+     * The canonical name of a layout: `stereo`, `5.1`, `5.1(side)`. Writes into
+     * [buf] and answers the size it wanted, the way snprintf does.
+     */
+    fun avChannelLayoutDescribe(layout: MemorySegment, buf: MemorySegment, bufSize: Long): Int =
+        hAvChannelLayoutDescribe.invoke(layout, buf, bufSize) as Int
 
     // -- hwaccel (M11 decode, M13 encode): device setup, frame transfer, get_format --
 

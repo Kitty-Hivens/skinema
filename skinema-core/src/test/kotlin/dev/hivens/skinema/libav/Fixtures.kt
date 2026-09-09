@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.ass.Ass
 import dev.hivens.skinema.audio.JavaSoundSink
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -108,7 +109,7 @@ object Fixtures {
 
     private val audioLineOpens: Boolean by lazy {
         runCatching {
-            JavaSoundSink().use { it.open(48_000) }
+            JavaSoundSink().use { it.open(PcmFormat.floor(48_000)) }
             true
         }.getOrDefault(false)
     }

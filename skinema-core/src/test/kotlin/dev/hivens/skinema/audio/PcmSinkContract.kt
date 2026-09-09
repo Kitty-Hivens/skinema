@@ -59,7 +59,7 @@ abstract class PcmSinkContract {
     @Test
     fun `frame position is zero on a freshly opened sink`() {
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             assertEquals(0L, sink.framePosition(), "a fresh line counts from zero")
         }
     }
@@ -70,7 +70,7 @@ abstract class PcmSinkContract {
         // blocking write would never drain and the position would never move --
         // the pipeline would wait forever on a sink that looks healthy.
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             writeHalfSecond(sink)
             advance(sink, halfSecondFrames() / 2)
             assertTrue(sink.framePosition() > 0L, "open must start the device, position ${sink.framePosition()}")
@@ -80,14 +80,14 @@ abstract class PcmSinkContract {
     @Test
     fun `open resets the frame position`() {
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             writeHalfSecond(sink)
             advance(sink, halfSecondFrames() / 2)
             assertTrue(sink.framePosition() > 0L, "the playhead must be moving before the reopen means anything")
 
             // A track switch reopens the line, and the clock rebases against
             // the fresh one assuming it counts from zero.
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             assertEquals(0L, sink.framePosition(), "a reopened line counts from zero again")
         }
     }
@@ -95,7 +95,7 @@ abstract class PcmSinkContract {
     @Test
     fun `stop freezes the frame position and start resumes it`() {
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             writeHalfSecond(sink)
             advance(sink, halfSecondFrames() / 2)
 
@@ -133,7 +133,7 @@ abstract class PcmSinkContract {
         // the position as handed-over minus still-queued, and a flush
         // destroys the second term, so it reports the whole of the first.
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             val quarter = frames(sampleRate / 4)
             // Play some, THEN hand over more and stop straight away. Both
             // halves are load-bearing: the playhead has to be moving or a
@@ -170,7 +170,7 @@ abstract class PcmSinkContract {
         // against frames played, and a sink answering wall-clock time would
         // drive that balance negative and cut a lap over its own sound.
         newSink().use { sink ->
-            sink.open(sampleRate)
+            sink.open(PcmFormat.floor(sampleRate))
             val written = sampleRate / 2
             val data = frames(written)
             sink.write(data, 0, data.size)
@@ -190,7 +190,7 @@ abstract class PcmSinkContract {
         // The device-death case, and the watchdog's only lever: a write parked
         // on a line that will never drain cannot free itself.
         val sink = newSink()
-        sink.open(sampleRate)
+        sink.open(PcmFormat.floor(sampleRate))
         sink.stop()
 
         val entered = CountDownLatch(1)
@@ -241,7 +241,7 @@ abstract class PcmSinkContract {
     fun `volume is accepted at any value and leaves the device playing`() {
         val sink = newSink()
         sink.setVolume(0.5f)
-        sink.open(sampleRate)
+        sink.open(PcmFormat.floor(sampleRate))
         for (v in listOf(0f, 0.25f, 1f, -1f, 2f, Float.NaN)) sink.setVolume(v)
 
         // Surviving the call is the weaker half, and on its own it is nearly
@@ -278,7 +278,7 @@ abstract class PcmSinkContract {
     @Test
     fun `volume does not wait for a write in flight`() {
         val sink = newSink()
-        sink.open(sampleRate)
+        sink.open(PcmFormat.floor(sampleRate))
         sink.stop()
 
         val entered = CountDownLatch(1)
@@ -308,7 +308,7 @@ abstract class PcmSinkContract {
     @Test
     fun `close is idempotent`() {
         val sink = newSink()
-        sink.open(sampleRate)
+        sink.open(PcmFormat.floor(sampleRate))
         sink.close()
         sink.close()
     }
