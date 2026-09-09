@@ -253,8 +253,16 @@ class SourceSwitchAudioTest {
             val bytesBefore = sink.totalBytes
 
             p.setSource(two)
-            assertTrue(awaitTrue { p.source == two }, "the switch must take")
-            assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "state=${p.state}")
+            // Settled facts only. Whether the file is still running when this
+            // looks is not one of them: the sink takes every write the moment
+            // it is offered, so a one-second file can be through the device
+            // between two polls, and a state assertion here would be a race the
+            // slowest runner loses. What the switch owes is that it happened.
+            assertTrue(
+                awaitTrue { p.source == two && p.state !is VideoPlayer.State.Opening },
+                "the switch must take and settle, source=${p.source} state=${p.state}",
+            )
+            assertTrue(p.state !is VideoPlayer.State.Failed, "and it must not have failed: ${p.state}")
             assertEquals(0, sink.closes, "the sink the player was given must survive the switch")
             assertTrue(sink.opens > opensBefore, "the line is reopened for the new file's rate")
             // Read the moment the switch settles, not awaited: the player holds
@@ -298,8 +306,11 @@ class SourceSwitchAudioTest {
             assertTrue(awaitTrue { p.acquireFrame() != null && p.audioTracks.size == 1 }, "the first file must play")
 
             p.setSource(silent)
-            assertTrue(awaitTrue { p.source == silent }, "the silent file must be taken")
-            assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "and it must play, state=${p.state}")
+            assertTrue(
+                awaitTrue { p.source == silent && p.state !is VideoPlayer.State.Opening },
+                "the silent file must be taken, state=${p.state}",
+            )
+            assertTrue(p.state !is VideoPlayer.State.Failed, "and it must not have failed: ${p.state}")
             assertTrue(p.audioTracks.isEmpty(), "with nothing to select from")
             assertEquals(0, sink.closes, "and the sink must not be taken away with the sound")
             assertTrue(
