@@ -23,48 +23,52 @@ jobs:
           # superset bundle exercises decode, subtitles, webp, the extended
           # formats and encode in one run, so the suite runs whole (the
           # per-tier bundles are gated at build time in natives.yml itself).
-          # Twenty-three where the default is eight, because no hosted runner
-          # has an audio device or a GPU: eleven hardware suites (opt-in everywhere,
-          # six of them added when hardware decode turned out never to engage
-          # -- the negotiation, the downloaded picture, and the player paths
-          # that only exist on the GPU) and NINE that need a real output line -- the sink contract's
-          # real-line row and the mastered clock's pacing test. Those nine are measured on a
-          # developer machine and nowhere else, which is a real gap in this
-          # matrix and not a tolerance. ALSA's dummy driver would close it and
-          # is not in these images: modprobe snd-dummy answers "module not
-          # found" on both ubuntu runners. The hardware gap is narrower than it
-          # reads: the format negotiation, which is where hardware decode was
-          # actually broken, is checked here without a device.
+          # Every ceiling below is what a run measured plus one, and every one
+          # of them was re-read from a run in which each row actually executed
+          # the suite. That qualifier is not decoration: the ceiling used not to
+          # be an input of the task it guards, so a row served from the build
+          # cache returned green without the check ever running, and the numbers
+          # here drifted away from what a run says. See the input declaration in
+          # build.gradle.kts.
           #
-          # Two more everywhere for encoders no bundle carries -- qtrle and the
-          # one the sample-rate refusal names. Those tests only ever run
-          # against a system ffmpeg, so the rules they cover are pinned by
-          # their own decision tests, which run here; the round-trips are what
-          # skip. And one more on every row that is not Linux for the trailer
-          # test, which stages a full disk through /dev/full.
+          # Twenty-six on the Linux rows, glibc and musl alike, and it is the
+          # same twenty-six tests on each. Twelve need a real output line: the
+          # sink contract's ten cases against a live line, the line-position
+          # race, and the mastered clock's pacing test. Thirteen need a GPU:
+          # nine negotiation and fallback cases, three player paths that exist
+          # only on the hardware decoder, and the VAAPI encode round trip. One
+          # is the round trip for an encoder no bundle carries, the one that
+          # refuses yuv420p, so the round trip skips while the rule it covers is
+          # pinned by its own decision test, which runs here.
           #
-          # Every ceiling here is the measured count plus one, re-read from a
-          # run rather than carried forward by arithmetic. Windows adds two
-          # over linux for tests that stage their failure by deleting or
-          # replacing an open file, which it refuses, and one more for the
-          # attached-font fixture, which needs fontconfig's fc-match.
+          # No hosted runner has either device, and ALSA's dummy driver would
+          # close the audio half but is not in these images: modprobe snd-dummy
+          # answers "module not found" on both ubuntu runners. Those twelve are
+          # measured on a developer machine and nowhere else, which is a real
+          # gap in this matrix rather than a tolerance. The hardware gap is
+          # narrower than it reads, because the format negotiation, which is
+          # where hardware decode was actually broken, is checked here without a
+          # device.
+          #
+          # Windows measures four over Linux. Two stage their failure by
+          # deleting or replacing an open file, which it refuses: the audio
+          # track switch and the webp reopen. One is the hardware encoder's
+          # fail-closed case, which wants a device this platform has no VAAPI
+          # for. One is the writer's index failure, which stages a full disk
+          # through /dev/full.
+          #
+          # macOS measures six under Linux, and the direction is the point: the
+          # nine hardware cases that need only a device to open RUN there, since
+          # VideoToolbox opens on Apple Silicon (see that row's own note). Three
+          # go the other way, the still-webp decode and the two Windows also
+          # skips for want of VAAPI and /dev/full.
           #
           # The DVB tests used to be three skips per row waiting on a bundle
           # that did not carry the decoder. It does now, so 'dvbsub' is a
           # required capability above: absent, it fails the row loudly rather
           # than skipping quietly, which is what the required list is for. The
-          # three run everywhere -- the Alpine containers' own ffmpeg encodes
-          # dvbsub too, which was the open question -- so those ceilings went
-          # back where they were before the feature, read off a run rather than
-          # subtracted: 25 on the glibc and musl Linux rows, 31 on Windows, 21
-          # on macOS.
-          #
-          # Then two, and exactly two, were added to each: the sink contract
-          # grew a volume pair, and the row that runs it against a REAL output
-          # line skips everywhere here for the reason every audio test does.
-          # Derived rather than measured this once, because the arithmetic is
-          # the whole of it -- two tests, one class, no runner has a device --
-          # and the next run that reads them will say so either way.
+          # three run everywhere, the Alpine containers' own ffmpeg encodes
+          # dvbsub too, which was the open question.
           #
           # 'encav1' and 'encopus' join the required list on the same argument
           # as dvbsub, and under names of their own rather than riding
@@ -84,7 +88,7 @@ jobs:
             platform: windows-x64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 33
+            maxSkipped: 31
           # windows-arm64 is here for the clean-PATH step below, which is the
           # only proof a bundle resolves its runtime imports from itself. The
           # natives workflow's own acceptance run cannot give it: that one
@@ -94,14 +98,13 @@ jobs:
             platform: windows-arm64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
-            maxSkipped: 33
-          # Twenty-one, and every one of them named, re-counted from the run:
-          # nine audio suites needing a real output line (as everywhere else)
-          # and the mastered clock's pacing test; six hardware (four VAAPI-only
-          # decode paths and both hardware-encode tests -- a mac has no VAAPI);
-          # three encoder tests, two for encoders no bundle carries and one
-          # that stages a full disk through /dev/full; and two font tests that
-          # want a Linux font path.
+            maxSkipped: 31
+          # Twenty measured, and every one of them named: twelve that need a
+          # real output line, as everywhere else in this matrix; three
+          # VAAPI-only decode paths and both hardware-encode cases, since a mac
+          # has no VAAPI; the writer's index failure, which wants /dev/full; the
+          # round trip for the encoder that refuses yuv420p; and the still-webp
+          # decode. The font tests that used to sit here run now.
           #
           # It was thirty-one, and nine of the difference were tests that could
           # not build their fixture at all: Homebrew's ffmpeg carries neither
@@ -128,7 +131,7 @@ jobs:
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             hwaccel: "1"
-            maxSkipped: 23
+            maxSkipped: 21
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
@@ -165,17 +168,17 @@ jobs:
           # this tier does not carry. The AV1 and Opus encoders are still
           # required, because this is the tier M18 taught to write.
           #
-          # Forty-two measured, declared at forty-three. Fifteen over the full
-          # row on the same machine, and all fifteen are the encode suites that
-          # gate on libx264: the round trips, the colour comparisons, the
-          # encoder-negotiation cases. That gap IS the tier difference, so a
-          # number that stops matching it means a test started depending on the
-          # GPL encoders without saying so.
+          # Forty-three measured, declared at forty-four. Seventeen over the
+          # full row on the same machine, and all seventeen write through
+          # libx264: nine writer cases, seven transcoder cases and the
+          # non-ascii path write. That gap IS the tier difference, so a number
+          # that stops matching it means a test started depending on the GPL
+          # encoders without saying so.
           - os: ubuntu-latest
             platform: linux-x64
             tier: decode
             caps: decode,subs,dvbsub,cea608,webp,encav1,encopus,formats
-            maxSkipped: 43
+            maxSkipped: 44
           # macos-x64 is shipped but NOT tested anywhere: it cross-builds on an
           # arm mac and no hosted Intel runner remains to load the result. It
           # stays community-tier until one does; treat the platform table as

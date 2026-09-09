@@ -91,6 +91,12 @@ subprojects {
         val maxSkipped = providers.gradleProperty("maxSkippedTests")
             .orElse(providers.environmentVariable("SKINEMA_MAX_SKIPPED"))
             .orElse("8")
+        // Declared as an input because it decides whether this task passes, and
+        // Gradle keys the cache on inputs alone. Left out, a run that lowered
+        // the ceiling was served the previous run's green result and the check
+        // never executed -- which is also why the numbers in build.yml drifted
+        // away from what a run actually measures.
+        inputs.property("skinemaMaxSkipped", maxSkipped)
         val xmlDir = reports.junitXml.outputLocation
         val label = path
         doLast {
