@@ -102,7 +102,7 @@ val state: VideoPlayer.State   // @Volatile, read anywhere
 
 | State        | Meaning                                                      |
 |--------------|-------------------------------------------------------------|
-| `Opening`    | Initial; the decode thread is opening the file.             |
+| `Opening`    | Initial, and again while a `setSource` opens the next file. |
 | `Playing`    | Frames are advancing.                                       |
 | `Paused`     | Frozen; the last frame stays on screen. Also how a `Freeze` player reads while nobody takes the picture -- see below. |
 | `Seeking`    | A landing is in flight (a loading affordance can show).     |
@@ -279,6 +279,53 @@ rejoins through a landing, where the lap boundary inside the player turns
 the decoder, the sound and the subtitles together with the clock never
 stopping.
 
+## Changing the file
+
+```kotlin
+fun setSource(path: Path)
+val source: Path                // @Volatile, the file playing now
+val sourceFailure: Throwable?   // @Volatile, why the last switch did not take
+```
+
+Plays another file on the same player, keeping everything built around it:
+the decode and pacer threads, the mailbox, the audio line, and the volume,
+rate, looping and subtitle canvas already set. This is the seam a playlist
+is built on -- the queue, the order and what "next" means stay yours, and
+this is the part you cannot write from outside.
+
+The alternative is not equivalent, which is the reason it exists. A second
+player opens a second device and a second set of threads, knows nothing of
+what was set on the first, and leaves a gap where one has gone and the next
+has not opened yet.
+
+A switch keeps the **shape** of the player. One that opened a file with a
+picture takes files with a picture; one playing sound alone takes what the
+audio side can open. A file of the wrong shape is refused, as is one that
+will not open at all: the file playing carries on untouched and the cause
+lands in `sourceFailure`. That is what a queue needs from one unreadable
+item -- lose the item, not the player and everything queued behind it.
+
+A file with **no sound** is not a refusal. Its picture plays, the timeline
+runs on the wall clock, and the sound comes back with the next file that has
+some: the audio side keeps its thread and your sink through the silent one.
+
+What does not carry over is everything that belonged to the old file. The
+position starts at zero, subtitles go off, and duration, tags, chapters,
+cover art and both track lists are republished once the switch lands.
+`state` passes through `Opening` and settles on `Playing`, or on `Paused`
+for a player you had paused -- with the first frame of the new file already
+on screen, the way a paused start shows its poster. A player that had
+`Ended` plays again.
+
+```kotlin
+// A queue, in full. The player is built once.
+var index = 0
+fun play(at: Int) { index = at; player.setSource(queue[at]) }
+
+// ... and "next", from wherever you watch for the end:
+if (player.state is VideoPlayer.State.Ended) play((index + 1) % queue.size)
+```
+
 ## Volume
 
 ```kotlin
@@ -354,6 +401,11 @@ lands, or about what an effect is ordered against.
 - `loop` queues nothing at all. The decode thread reads the field when a
   lap runs out, so the write is ordered against the next end of stream
   rather than against your other calls.
+
+`setSource` queues like the rest, and it is the one command that takes a
+while to land: the decode thread performs it at a point where nothing is in
+flight, and it waits for the audio side to change files with it. Read
+`source` (and `sourceFailure`) once `state` has settled, not before.
 
 The one rule is the ownership window: the `FrameSlot` from
 `acquireFrame` is yours only until the next `acquireFrame`, and the same

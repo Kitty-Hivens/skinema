@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * static fallback.
  */
 class VideoPlayer internal constructor(
-    private val path: Path,
+    path: Path,
     loop: Boolean,
     audio: Boolean,
     private val explicitClock: MediaClock?,
@@ -207,6 +207,7 @@ class VideoPlayer internal constructor(
         data object StepForward : Command
         data object StepBackward : Command
         data class SetPresenting(val presenting: Boolean) : Command
+        data class SetSource(val path: Path) : Command
         data object Close : Command
 
         /**
@@ -282,10 +283,20 @@ class VideoPlayer internal constructor(
      * The file's audio tracks. Empty while [State.Opening], without
      * `audio = true`, and when the audio device failed to open -- a dead
      * pipeline must not advertise a working selector.
+     *
+     * Read off the audio side rather than copied from it, so a [setSource]
+     * publishes the new file's tracks by the same act that opens them. Copied,
+     * the list stayed the first file's until something else republished it,
+     * and nothing did.
      */
+    val audioTracks: List<AudioTrack>
+        get() = if (audioDeviceOpened) audioPipeline?.tracks.orEmpty() else emptyList()
+
+    // Whether the audio side ever came up with a device. Settled once, when the
+    // clock resolves; which tracks it then advertises follows the file it is
+    // on, which is why the list above is a question rather than a copy.
     @Volatile
-    var audioTracks: List<AudioTrack> = emptyList()
-        private set
+    private var audioDeviceOpened = false
 
     /** Stream index of the track playing; null when no live audio. */
     val activeAudioTrack: Int?
@@ -684,6 +695,64 @@ class VideoPlayer internal constructor(
     var loop: Boolean = loop
 
     /**
+     * The file playing now: the one the constructor was given, until a
+     * [setSource] takes.
+     *
+     * It is how a refused switch is read. [setSource] is queued like every
+     * other press, so nothing can be returned from the call itself; when the
+     * player settles back into [State.Playing] or [State.Paused] this names
+     * which file it settled on, and [sourceFailure] says why if it is not the
+     * one that was asked for.
+     */
+    @Volatile
+    var source: Path = path
+        private set
+
+    /**
+     * Why the last [setSource] did not take, or null when the last one did.
+     *
+     * A file that cannot be opened leaves the player where it was rather than
+     * failing it: a queue that hits one unreadable item should skip that item,
+     * not lose the player and the position of everything after it. The cause
+     * is kept here so a consumer can say which item was dropped and why.
+     */
+    @Volatile
+    var sourceFailure: Throwable? = null
+        private set
+
+    /**
+     * Plays [path] on this player instead, keeping everything the player is
+     * made of: its threads, its mailbox, the audio line, and the volume, rate,
+     * looping and subtitle canvas already set on it.
+     *
+     * This is the seam a queue is built on, and the reason it exists is that
+     * the alternative is not equivalent. Building a second player opens a
+     * second device and a second set of threads, drops whatever was set on the
+     * first, and shows the consumer a gap where the old player has gone and
+     * the new one has not opened yet.
+     *
+     * The switch keeps the shape of the player. One that opened a file with a
+     * picture takes files with a picture, and one playing sound alone (see
+     * [State] and the frameless note in the guide) takes what the audio side
+     * can open. A file of the wrong shape is refused through [sourceFailure],
+     * as is one that will not open at all, and the file playing carries on
+     * untouched in both cases.
+     *
+     * What does NOT carry over is everything that belonged to the old file:
+     * the position starts at zero, subtitles go off, and duration, tags,
+     * chapters, cover art and the track lists are republished as the new file's
+     * once the switch has landed. [state] passes through [State.Opening] while
+     * that happens and settles on [State.Playing] or, for a player that was
+     * paused, [State.Paused] on the first frame of the new file. A player that
+     * had ended plays again.
+     *
+     * A file with no sound is not a refusal: the picture plays and the timeline
+     * runs on the wall clock, which is what a silent file means anywhere else
+     * in this player.
+     */
+    fun setSource(path: Path) = submit(Command.SetSource(path))
+
+    /**
      * Switches the sound to another of [audioTracks], in place: the
      * picture keeps playing, the sound re-anchors at the playhead. A
      * track that cannot open or that ends before the playhead is
@@ -915,11 +984,11 @@ class VideoPlayer internal constructor(
         // enumerated them too, but nothing would serve a switch), and
         // before the video open so the frameless branch sees them.
         if (audioClock != null) {
-            audioTracks = audioPipeline.tracks
+            audioDeviceOpened = true
         }
 
         val decoder = try {
-            frameSourceFactory(path)
+            frameSourceFactory(source)
         } catch (t: Throwable) {
             // Frameless is the answer to a file with nothing to show, and to
             // nothing else. Every throw used to take this door when the file
@@ -956,7 +1025,18 @@ class VideoPlayer internal constructor(
                     // wall clock is the only thing that moves and it would
                     // otherwise sit at zero forever.
                     if (ownsClock) clock.start(0)
-                    framelessLoop()
+                    enterFramelessStart()
+                    while (true) {
+                        framelessLoop()
+                        val wanted = pendingSourceSwitch ?: break
+                        pendingSourceSwitch = null
+                        // A close read at the top of the loop leaves the switch
+                        // standing behind it; going through with it here would
+                        // spend the teardown's budget opening a file nobody is
+                        // going to hear.
+                        if (closing || state is State.Failed) break
+                        switchFramelessSource(wanted)
+                    }
                     framelessReturned = true
                 } catch (framelessFailure: Throwable) {
                     publishState(State.Failed(framelessFailure))
@@ -988,21 +1068,28 @@ class VideoPlayer internal constructor(
         // close() joining a thread that had already unwound.
         var pacer: Thread? = null
         var loopReturned = false
+        // The file being played, which a switch replaces. The pacer, the
+        // mailbox and every side around them outlive it: that is what a switch
+        // is for.
+        var current = decoder
         try {
-            durationNanos = decoder.durationNanos()
-            tags = decoder.tags()
-            chapters = decoder.chapters()
-            coverArt = decoder.coverArt()
-            rotationDegrees = decoder.rotationDegrees()
-            hardwareActive = decoder.hardwareActive()
-            synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
+            publishFileMetadata(current)
             pacer = Thread(::runPacer, "skinema-pace").apply {
                 isDaemon = true
                 start()
             }
             if (ownsClock) clock.start(0)
-            if (startPaused) enterStartPaused(decoder) else publishState(State.Playing)
-            decodeLoop(decoder)
+            if (startPaused) enterStartPaused(current) else publishState(State.Playing)
+            while (true) {
+                decodeLoop(current)
+                val wanted = pendingSourceSwitch ?: break
+                pendingSourceSwitch = null
+                // A close read at the top of the loop leaves the switch
+                // standing behind it; going through with it here would spend
+                // the teardown's budget opening a file nobody is going to see.
+                if (closing || state is State.Failed) break
+                current = switchSource(current, wanted)
+            }
             loopReturned = true
         } catch (t: Throwable) {
             publishState(State.Failed(t))
@@ -1016,7 +1103,7 @@ class VideoPlayer internal constructor(
             audioPipeline?.announceClose()
             subtitlePipeline?.announceClose()
             joinWithin(pacer, deadline)
-            runCatching { decoder.close() }
+            runCatching { current.close() }
             runCatching { audioPipeline?.awaitExit(deadline) }
             runCatching { subtitlePipeline?.awaitExit(deadline) }
             // Published after the teardown rather than before it. A consumer
@@ -1026,6 +1113,144 @@ class VideoPlayer internal constructor(
             // A failure has already published its own state and keeps it.
             if (loopReturned && state !is State.Failed) publishState(State.Closed)
         }
+    }
+
+    /**
+     * Publishes what a file says about itself.
+     *
+     * The subtitle tracks are appended rather than assigned, because an
+     * external file a consumer added before the open belongs in that list too.
+     * A switch empties the list first, so the same call publishes the new
+     * file's tracks alone.
+     */
+    private fun publishFileMetadata(decoder: FrameSource) {
+        durationNanos = decoder.durationNanos()
+        tags = decoder.tags()
+        chapters = decoder.chapters()
+        coverArt = decoder.coverArt()
+        rotationDegrees = decoder.rotationDegrees()
+        hardwareActive = decoder.hardwareActive()
+        synchronized(subtitleTracksLock) { subtitleTracks = subtitleTracks + decoder.subtitleTracks() }
+    }
+
+    /**
+     * Puts another file on this player, keeping everything built around it.
+     *
+     * Open-new-before-close-old, the rule the audio side's track switch already
+     * keeps: a file that will not open leaves the one playing alone, and the
+     * consumer reads the refusal off [sourceFailure]. Nothing else is touched
+     * until the new file is in hand, the sound above all -- told first, a
+     * refusal would have taken the sound of the file still playing with it.
+     *
+     * The sound is then waited for, because the new file's tracks and duration
+     * are read off the audio side: published without the wait, they would be
+     * the last file's.
+     */
+    private fun switchSource(old: FrameSource, wanted: Path): FrameSource {
+        val next = try {
+            frameSourceFactory(wanted)
+        } catch (t: Throwable) {
+            sourceFailure = t
+            return old
+        }
+        // Where the player was is where it goes back to. One standing at the
+        // end of a file is one a queue is handing the next item to, so it
+        // plays; only a pause the consumer asked for survives the switch.
+        val resumePlaying = state !is State.Paused
+        publishState(State.Opening)
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(wanted)
+        runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
+        runCatching { old.close() }
+        resetForNewSource(wanted)
+        publishFileMetadata(next)
+        landFirstFrame(next, resumePlaying)
+        return next
+    }
+
+    /** The frameless half of [switchSource]: no picture to open or to land. */
+    private fun switchFramelessSource(wanted: Path) {
+        val resumePlaying = state !is State.Paused
+        publishState(State.Opening)
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(wanted)
+        runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
+        resetForNewSource(wanted)
+        durationNanos = audioPipeline?.durationNanos
+        tags = audioPipeline?.tags ?: emptyMap()
+        chapters = audioPipeline?.chapters ?: emptyList()
+        coverArt = audioPipeline?.coverArt
+        settleAfterSwitch(atNanos = 0L, resumePlaying = resumePlaying)
+    }
+
+    /**
+     * Drops everything that belonged to the file that is leaving.
+     *
+     * The two playhead fields are the pacer's to write, and they are written
+     * here anyway: the queue has just been emptied, so there is nothing left
+     * for it to publish, and a publish already in flight can only put the old
+     * file's last frame back for the moment it takes the new file's first frame
+     * to replace it. What that would cost if it were left alone is a lap end
+     * measured against a pts from another file.
+     */
+    private fun resetForNewSource(wanted: Path) {
+        queue.clear()
+        eofPending = false
+        seekInFlight = false
+        stateBeforeSeek.set(null)
+        lapProducedFrames = false
+        stepBackRun = null
+        landedPts = -1L
+        intendedPositionNanos = 0L
+        lastPublishedPts = 0L
+        lastPublishGapNanos = 0L
+        captionsSeen = false
+        subtitlePipeline?.announceClose()
+        subtitlePipeline = null
+        externalSubtitleIds.set(0)
+        synchronized(subtitleTracksLock) { subtitleTracks = emptyList() }
+        source = wanted
+        sourceFailure = null
+    }
+
+    /**
+     * Lands the first frame of a file the way a paused start lands its poster:
+     * forced, so the pacer publishes it whatever the state says and the picture
+     * is up before anything decides whether to run.
+     */
+    private fun landFirstFrame(decoder: FrameSource, resumePlaying: Boolean) {
+        val first = decoder.nextFrame(convert = false)
+        if (first == null) {
+            // A file with no pictures in it. The EOF path is what decides what
+            // that means, and it runs as soon as this player is playing.
+            eofPending = true
+        } else {
+            noteCaptions(decoder, first.ptsNanos)
+            enqueue(decoder, first, forced = true)
+            landedPts = first.ptsNanos
+            intendedPositionNanos = first.ptsNanos
+        }
+        settleAfterSwitch(landedPts.coerceAtLeast(0), resumePlaying)
+    }
+
+    /**
+     * Puts the timeline at the start of the new file and the player back into
+     * the state the switch interrupted.
+     *
+     * Whose clock it is decides who places it: this side when it owns the
+     * clock, the audio side otherwise, which anchored the new file as it opened
+     * it. What is left to do in that case is the pause, since a player coming
+     * from [State.Ended] has a stopped clock and nothing else would start it.
+     */
+    private fun settleAfterSwitch(atNanos: Long, resumePlaying: Boolean) {
+        if (ownsClock) {
+            clock.seek(atNanos)
+            if (resumePlaying) clock.resume() else clock.pause()
+        } else if (resumePlaying && clock.isPaused) {
+            clock.resume()
+        }
+        // The sound has been holding since the switch, the way it holds through
+        // a seek. This is the landing it waits for.
+        audioPipeline?.videoLanded(atNanos)
+        publishState(if (resumePlaying) State.Playing else State.Paused)
     }
 
     /**
@@ -1119,8 +1344,12 @@ class VideoPlayer internal constructor(
     private fun framelessLapCanTurn(): Boolean =
         audioPipeline?.alive == true || durationNanos != null
 
-    /** Audio-only playback: commands and lifecycle, no frames. */
-    private fun framelessLoop() {
+    /**
+     * The state a frameless player opens in. Separate from the loop because a
+     * source switch re-enters the loop and must not be told again how the file
+     * was opened: what a switch settles on is where it was, playing or paused.
+     */
+    private fun enterFramelessStart() {
         if (startPaused) {
             // No picture to land on, so this is the whole of it: the sound
             // holds and the lap-done check below never runs, since it asks
@@ -1131,9 +1360,14 @@ class VideoPlayer internal constructor(
         } else {
             publishState(State.Playing)
         }
+    }
+
+    /** Audio-only playback: commands and lifecycle, no frames. */
+    private fun framelessLoop() {
         while (true) {
             val cmd = commands.poll(100, TimeUnit.MILLISECONDS)
             if (cmd != null && !handle(cmd, decoder = null)) return
+            if (pendingSourceSwitch != null) return
             if (state is State.Playing && framelessLapDone()) {
                 val pipe = audioPipeline
                 if (loop && framelessLapCanTurn()) {
@@ -1166,6 +1400,11 @@ class VideoPlayer internal constructor(
                 if (!handle(cmd, decoder)) return
                 cmd = commands.poll()
             }
+            // Every path through this loop comes back here, so a switch asked
+            // for anywhere is noticed within one pass. The caller performs it:
+            // this function is entered with the decoder it runs on, so the way
+            // to change that decoder is to leave.
+            if (pendingSourceSwitch != null) return
 
             noteUnwatched()
             if (state !is State.Playing || !presenting) {
@@ -1356,6 +1595,14 @@ class VideoPlayer internal constructor(
             true
         }
         is Command.SetPresenting -> applyPresenting(cmd.presenting, decoder)
+        is Command.SetSource -> {
+            // Recorded here and acted on at the top of the loop. This handler
+            // is also reached from inside a seek landing and from the wait at
+            // the end of a lap, and both hold a decoder mid-flight: the top of
+            // the loop is the one place where nothing is in the air.
+            pendingSourceSwitch = cmd.path
+            true
+        }
         is Command.SetRate -> {
             rate = cmd.rate
             if (ownsClock) {
@@ -1441,6 +1688,10 @@ class VideoPlayer internal constructor(
     // (a seek past the end of the footage). Owned by the decode thread.
     private var landedPts = -1L
 
+    // The file a setSource asked for, from the moment the command is read to
+    // the moment the loop leaves to perform it. Owned by the decode thread.
+    private var pendingSourceSwitch: Path? = null
+
     // Started last, after every field the thread it starts can reach. Kotlin
     // runs initializers in declaration order, so a thread started higher up
     // reads the JVM default of everything below it: [presenting] defaults to
@@ -1519,6 +1770,16 @@ class VideoPlayer internal constructor(
             val cmd = commands.poll(20, TimeUnit.MILLISECONDS) ?: continue
             val seeked = cmd is Command.Seek || cmd is Command.SeekBy
             if (!handle(cmd, decoder)) return LapWait.CLOSE
+            // Another file was asked for, so this one's tail is nobody's
+            // interest any more. Reported as a supersede for the same reason a
+            // seek is: the wrap must not go through, and the caller's own check
+            // takes it from there.
+            //
+            // Asked here rather than in the loop's own condition, which is
+            // where it went first and where it is unreachable: the flag is set
+            // by a command, commands are read by the poll above, and this line
+            // stands between that poll and the next turn of the loop.
+            if (pendingSourceSwitch != null) return LapWait.SUPERSEDED
             // A seek that landed while we waited has already put the decoder
             // and the clock where the user asked. Wrapping on top of it would
             // throw that away and restart the lap from zero, so the wrap is
@@ -1838,7 +2099,7 @@ class VideoPlayer internal constructor(
         if (track.isText && !Ass.available) return
         current?.announceClose()
         val fresh = SubtitlePipeline(
-            path = track.externalPath ?: path,
+            path = track.externalPath ?: source,
             clock = clock,
             track = track,
             storageSize = decoder?.videoSize(),
@@ -2276,6 +2537,16 @@ class VideoPlayer internal constructor(
          * spend even this has [closeAsync].
          */
         const val CLOSE_BUDGET_NANOS = 1_000_000_000L
+
+        /**
+         * How long a source switch waits for the audio side to change files
+         * with it. The same five seconds the open spends waiting for the
+         * device, and for the same reason: what is being waited on is a line
+         * reopening, which this side can neither hurry nor do itself. Past it
+         * the switch goes through anyway and the sound joins when its own
+         * thread gets there.
+         */
+        const val SOURCE_SWITCH_BUDGET_MS = 5_000L
 
         /**
          * How long a mailbox that was being read may go unread before the

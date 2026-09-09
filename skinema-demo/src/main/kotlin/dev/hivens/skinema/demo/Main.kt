@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,19 +62,35 @@ private fun trackLabel(track: AudioTrack): String = buildString {
 }
 
 fun main(args: Array<String>) {
-    val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: skinema-demo <video> [sound] [subs=<file>]" })
+    // Every file argument is an item; the queue, the order and what "next"
+    // means live here rather than in the library, and the player is asked only
+    // to change files.
+    val queue = args.filter { it != "sound" && !it.startsWith("subs=") }.map { Path.of(it) }
+    require(queue.isNotEmpty()) { "usage: skinema-demo <video> [more files...] [sound] [subs=<file>]" }
     val sound = args.contains("sound")
     val externalSubs = args.firstOrNull { it.startsWith("subs=") }?.removePrefix("subs=")
     val readAhead = System.getProperty("skinema.demo.readAhead")?.toInt() ?: 1
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema demo") {
-            val player = remember { VideoPlayer(video, loop = true, audio = sound, readAheadFrames = readAhead) }
+            val player = remember {
+                VideoPlayer(queue.first(), loop = queue.size == 1, audio = sound, readAheadFrames = readAhead)
+            }
             DisposableEffect(player) {
                 onDispose { player.close() }
             }
 
             var paused by remember { mutableStateOf(false) }
-            var looping by remember { mutableStateOf(true) }
+            var looping by remember { mutableStateOf(queue.size == 1) }
+            // The play order is a list of indices, so shuffling is a shuffle of
+            // it and nothing else has to know.
+            var order by remember { mutableStateOf(queue.indices.toList()) }
+            var position by remember { mutableIntStateOf(0) }
+            var shuffled by remember { mutableStateOf(false) }
+            fun jump(step: Int) {
+                if (order.size < 2) return
+                position = (position + step + order.size) % order.size
+                player.setSource(queue[order[position]])
+            }
             var volume by remember { mutableFloatStateOf(1f) }
             var positionMs by remember { mutableLongStateOf(0L) }
             var durationMs by remember { mutableLongStateOf(0L) }
@@ -105,6 +122,8 @@ fun main(args: Array<String>) {
                     activeSub = player.activeSubtitleTrack
                     chapterTitle = player.chapters
                         .lastOrNull { it.startNanos <= positionMs * 1_000_000 }?.title ?: ""
+                    // What a queue does at the end of an item, decided here.
+                    if (player.state is VideoPlayer.State.Ended) jump(1)
                     kotlinx.coroutines.delay(200.milliseconds)
                 }
             }
@@ -206,6 +225,21 @@ fun main(args: Array<String>) {
                         player.loop = looping
                     }) {
                         Text(if (looping) "loop on" else "loop off")
+                    }
+                    if (queue.size > 1) {
+                        Button(onClick = { jump(-1) }) { Text("|<<") }
+                        Button(onClick = { jump(1) }) { Text(">>|") }
+                        Button(onClick = {
+                            shuffled = !shuffled
+                            // Keep the item that is playing where it is; only
+                            // what comes after it changes.
+                            val current = order[position]
+                            order = if (shuffled) queue.indices.shuffled() else queue.indices.toList()
+                            position = order.indexOf(current)
+                        }) {
+                            Text(if (shuffled) "shuffle" else "in order")
+                        }
+                        Text("${position + 1}/${queue.size}", color = Color.Gray)
                     }
                     val total = if (durationMs > 0) {
                         " / %d:%02d".format(durationMs / 60_000, durationMs / 1_000 % 60)

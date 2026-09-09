@@ -248,6 +248,14 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
   is told at construction rather than paused by a command, which would
   arrive after the device had already started. `resume` is what starts
   the file, and this is the one pause `WhenUnwatched` never lifts.
+- **One player, many files.** `setSource` puts the next file on the
+  player you already have -- the same threads, the same audio line, the
+  same volume, rate, looping and subtitle canvas -- so a playlist is a
+  list you own plus one call, and the queue, the order and what "next"
+  means stay yours. A file that will not open is refused
+  (`sourceFailure`) and the one playing carries on, which is what a queue
+  needs from one broken item. `loop` is live in the same way: turning
+  repeat on no longer costs the position by rebuilding the player.
 - **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
   many decoded frames of inventory, so a decode stall does not stall
   the screen while inventory lasts. Each step of depth costs one full
