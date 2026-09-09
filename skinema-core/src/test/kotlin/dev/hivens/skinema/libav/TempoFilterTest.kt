@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.audio.PcmFormat
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -26,7 +27,7 @@ class TempoFilterTest {
     /** Feeds one second in decoder-sized chunks; returns output frames. */
     private fun stretchedFrames(tempo: Double): Int {
         var bytes = 0
-        TempoFilter(48_000, tempo).use { f ->
+        TempoFilter(PcmFormat.floor(48_000), tempo).use { f ->
             val pcm = sineSecond()
             var off = 0
             while (off < pcm.size) {
@@ -56,7 +57,7 @@ class TempoFilterTest {
     @Test
     fun `reset drops the buffered state`() {
         Fixtures.assumeDecodeEnvironment()
-        TempoFilter(48_000, 2.0).use { f ->
+        TempoFilter(PcmFormat.floor(48_000), 2.0).use { f ->
             val pcm = sineSecond()
             f.process(pcm, pcm.size)
             f.reset()
@@ -67,7 +68,7 @@ class TempoFilterTest {
     @Test
     fun `reset revives a drained graph`() {
         Fixtures.assumeDecodeEnvironment()
-        TempoFilter(48_000, 1.5).use { f ->
+        TempoFilter(PcmFormat.floor(48_000), 1.5).use { f ->
             val pcm = sineSecond()
             f.process(pcm, pcm.size)
             f.flush()
@@ -83,7 +84,7 @@ class TempoFilterTest {
         // The graph's filter strings now live in a per-build transient
         // arena. Rebuilding a thousand times must neither corrupt the graph
         // nor leave a use-after-free behind a freed arena.
-        TempoFilter(48_000, 1.5).use { f ->
+        TempoFilter(PcmFormat.floor(48_000), 1.5).use { f ->
             val pcm = sineSecond()
             repeat(1_000) {
                 f.reset()
@@ -102,7 +103,7 @@ class TempoFilterTest {
     @Test
     fun `closing twice is not an error`() {
         Fixtures.assumeDecodeEnvironment()
-        val filter = TempoFilter(48_000, 2.0)
+        val filter = TempoFilter(PcmFormat.floor(48_000), 2.0)
         filter.close()
         filter.close()
     }
@@ -117,7 +118,7 @@ class TempoFilterTest {
     @Test
     fun `a partial sample frame is refused rather than written past the buffer`() {
         Fixtures.assumeDecodeEnvironment()
-        TempoFilter(48_000, 2.0).use { filter ->
+        TempoFilter(PcmFormat.floor(48_000), 2.0).use { filter ->
             assertFailsWith<IllegalArgumentException> { filter.process(ByteArray(64), 61) }
         }
     }

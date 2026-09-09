@@ -1,5 +1,7 @@
 package dev.hivens.skinema.libav
 
+import dev.hivens.skinema.audio.PcmEncoding
+import dev.hivens.skinema.audio.PcmFormat
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout.ADDRESS
@@ -9,20 +11,30 @@ import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Pitch-preserving time-stretch over interleaved S16LE stereo PCM at a
- * fixed sample rate: an in-process avfilter graph, abuffer -> atempo ->
- * abuffersink. Push input with [process] and read the stretched bytes
- * from [output]; [flush] drains atempo's internal window at end of
- * stream, after which the graph is spent -- [reset] before feeding
- * again. A tempo change is a new instance: the pipeline re-anchors its
- * clock and re-crops the stream anyway, so the buffered state is stale
- * by construction. Confined to the constructing thread, like the
+ * Pitch-preserving time-stretch over interleaved PCM in one fixed shape: an
+ * in-process avfilter graph, abuffer -> atempo -> aformat -> abuffersink. Push
+ * input with [process] and read the stretched bytes from [output]; [flush]
+ * drains atempo's internal window at end of stream, after which the graph is
+ * spent -- [reset] before feeding again. A tempo change is a new instance: the
+ * pipeline re-anchors its clock and re-crops the stream anyway, so the buffered
+ * state is stale by construction. Confined to the constructing thread, like the
  * decoders.
+ *
+ * The `aformat` before the sink is what makes the bytes out the same shape as
+ * the bytes in. atempo accepts a set of sample formats rather than all of them,
+ * and libavfilter answers a format it does not take by negotiating one it does
+ * -- silently, and then the graph would hand back samples of another width than
+ * the caller counted on. Pinning the output is also what makes the internal
+ * conversion visible as a cost rather than as a surprise: at a rate other than
+ * 1.0, a source wider than atempo's own formats is converted in and back out.
  */
 internal class TempoFilter(
-    private val sampleRate: Int,
+    /** The shape of the PCM in and out; see the class note on `aformat`. */
+    val format: PcmFormat,
     val tempo: Double,
 ) : AutoCloseable {
+
+    private val sampleRate = format.sampleRate
 
     /** Stretched PCM; only the byte count the last call returned is valid. */
     var output = ByteArray(16384)
@@ -62,19 +74,22 @@ internal class TempoFilter(
         // the copy defeats the bounds check that would have said so. Refused
         // rather than rounded: the input is S16LE stereo by contract, so a
         // partial frame is a caller that has lost track of its own stream.
-        require(byteCount % BYTES_PER_FRAME == 0) {
-            "S16LE stereo takes whole sample frames, got $byteCount bytes"
+        require(byteCount % format.bytesPerFrame == 0) {
+            "${format.encoding} in ${format.channels} channels takes whole sample frames, got $byteCount bytes"
         }
-        val samples = byteCount / BYTES_PER_FRAME
+        val samples = byteCount / format.bytesPerFrame
         if (samples == 0) return 0
         check(src != MemorySegment.NULL && sink != MemorySegment.NULL) {
             "the tempo graph is not built; process after a failed build or a close"
         }
-        frame.set(JAVA_INT, LibavAbi.Frame.FORMAT, LibavAbi.AV_SAMPLE_FMT_S16)
+        frame.set(JAVA_INT, LibavAbi.Frame.FORMAT, AudioDecoder.sampleFormatFor(format.encoding))
         frame.set(JAVA_INT, LibavAbi.Frame.SAMPLE_RATE, sampleRate)
         frame.set(JAVA_INT, LibavAbi.Frame.NB_SAMPLES, samples)
         frame.set(JAVA_LONG, LibavAbi.Frame.PTS, inputFramesFed)
-        Libav.avChannelLayoutDefault(frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF), CHANNELS)
+        Libav.avChannelLayoutDefault(
+            frame.asSlice(LibavAbi.Frame.CH_LAYOUT, LibavAbi.ChannelLayout.SIZEOF),
+            format.channels,
+        )
         Libav.checkAv(Libav.avFrameGetBuffer(frame, 0), "av_frame_get_buffer")
         val data = frame.get(ADDRESS, LibavAbi.Frame.DATA).reinterpret(byteCount.toLong())
         MemorySegment.copy(pcm, 0, data, JAVA_BYTE, 0, byteCount)
@@ -109,7 +124,7 @@ internal class TempoFilter(
             val ret = Libav.avBuffersinkGetFrame(sink, frame)
             if (ret == LibavAbi.AVERROR_EAGAIN || ret == LibavAbi.AVERROR_EOF) return total
             Libav.checkAv(ret, "av_buffersink_get_frame")
-            val bytes = frame.get(JAVA_INT, LibavAbi.Frame.NB_SAMPLES) * BYTES_PER_FRAME
+            val bytes = frame.get(JAVA_INT, LibavAbi.Frame.NB_SAMPLES) * format.bytesPerFrame
             if (output.size < total + bytes) output = output.copyOf(maxOf(output.size * 2, total + bytes))
             val data = frame.get(ADDRESS, LibavAbi.Frame.DATA).reinterpret(bytes.toLong())
             MemorySegment.copy(data, JAVA_BYTE, 0, output, total, bytes)
@@ -126,14 +141,21 @@ internal class TempoFilter(
         // reclaims them per build, so a reset (seek, loop wrap, scrub) does
         // not pile them up in the session arena until close.
         Arena.ofConfined().use { strings ->
+            val fmtName = sampleFormatName(format.encoding)
             src = createFilter(
                 strings, "abuffer", "in",
-                "time_base=1/$sampleRate:sample_rate=$sampleRate:sample_fmt=s16:channel_layout=stereo",
+                "time_base=1/$sampleRate:sample_rate=$sampleRate:" +
+                    "sample_fmt=$fmtName:channel_layout=${format.layout}",
             )
             val atempo = createFilter(strings, "atempo", "atempo", "tempo=$tempo")
+            val shape = createFilter(
+                strings, "aformat", "shape",
+                "sample_fmts=$fmtName:channel_layouts=${format.layout}:sample_rates=$sampleRate",
+            )
             sink = createFilter(strings, "abuffersink", "out", null)
             Libav.checkAv(Libav.avfilterLink(src, 0, atempo, 0), "avfilter_link(in->atempo)")
-            Libav.checkAv(Libav.avfilterLink(atempo, 0, sink, 0), "avfilter_link(atempo->out)")
+            Libav.checkAv(Libav.avfilterLink(atempo, 0, shape, 0), "avfilter_link(atempo->shape)")
+            Libav.checkAv(Libav.avfilterLink(shape, 0, sink, 0), "avfilter_link(shape->out)")
             Libav.checkAv(Libav.avfilterGraphConfig(graph), "avfilter_graph_config")
         }
         inputFramesFed = 0
@@ -179,9 +201,13 @@ internal class TempoFilter(
     }
 
     private companion object {
-        const val CHANNELS = 2
-
-        /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
-        const val BYTES_PER_FRAME = 4
+        /** How libavfilter spells a sample format in a filter argument. */
+        fun sampleFormatName(encoding: PcmEncoding): String = when (encoding) {
+            PcmEncoding.U8 -> "u8"
+            PcmEncoding.S16LE -> "s16"
+            PcmEncoding.S32LE -> "s32"
+            PcmEncoding.F32LE -> "flt"
+            PcmEncoding.F64LE -> "dbl"
+        }
     }
 }

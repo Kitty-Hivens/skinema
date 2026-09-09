@@ -1,6 +1,8 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
+import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.FrameSource
@@ -49,7 +51,7 @@ class SourceSwitchTest {
     }
 
     private fun player(sources: Map<Path, FrameSource>, loop: Boolean = false) = VideoPlayer(
-        first, loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f,
+        first, loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { asked -> sources[asked] ?: throw NoSuchFileException(asked.toString()) }
 
     @Test
@@ -214,9 +216,9 @@ class SourceSwitchAudioTest {
     private class SlowOpenSink(private val delayMs: Long) : PcmSink {
         val inner = FakePcmSink()
 
-        override fun open(sampleRate: Int) {
+        override fun open(format: PcmFormat) {
             Thread.sleep(delayMs)
-            inner.open(sampleRate)
+            inner.open(format)
         }
 
         override fun write(data: ByteArray, offset: Int, length: Int) = inner.write(data, offset, length)

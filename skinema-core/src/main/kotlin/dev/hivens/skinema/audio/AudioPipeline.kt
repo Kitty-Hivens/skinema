@@ -45,6 +45,13 @@ internal class AudioPipeline(
      * the same reason.
      */
     private val startPaused: Boolean = false,
+    /**
+     * How many channels to ask the device for. [ChannelPreference.Source] hands
+     * over what the file has and lets the sink refuse; [ChannelPreference.Stereo]
+     * folds first and asks for two. Either way the fold is swresample's, and
+     * either way a sink that refuses walks the request down.
+     */
+    private val channelPreference: ChannelPreference = ChannelPreference.Source,
     private val writeStallNanos: Long = DEFAULT_WRITE_STALL_NANOS,
     private val recoveryIntervalMs: Long = DEFAULT_RECOVERY_INTERVAL_MS,
 ) {
@@ -121,6 +128,25 @@ internal class AudioPipeline(
     private var tempo = 1.0
     private var tempoFilter: TempoFilter? = null
     private var sampleRate = 0
+
+    /**
+     * The shape the line is actually open in, which is what the device agreed
+     * to rather than what was asked for. Null before the first open and while a
+     * source with no sound is playing.
+     *
+     * Read off the sink's answer for the reason the hardware-decode flag is
+     * read off the frames: a value derived from the request tells a consumer
+     * what was wanted, and the whole point of a negotiation is that it may not
+     * be what happened.
+     */
+    @Volatile
+    var activeFormat: PcmFormat? = null
+        private set
+
+    // The frame size that follows from [activeFormat]. Written by openLine
+    // alone, which is the one place a line is opened, so the accounting below
+    // can never be denominated in a frame size the device is not using.
+    private var frameBytes = PcmEncoding.S16LE.bytesPerSample * 2
 
     /**
      * Seeks issued but not yet performed. While nonzero the clock's
@@ -461,9 +487,15 @@ internal class AudioPipeline(
             clockFuture.complete(null)
             return
         }
+        // The file's own shape is only knowable from a frame, so the first one
+        // is decoded before the device is asked anything. What the device then
+        // accepts may be narrower, and the chunk in hand is converted again
+        // rather than thrown away.
+        var opening = first
         val theClock = try {
-            openLine(first.sampleRate)
-            AudioClock(first.sampleRate) { sink.framePosition() }
+            val agreed = openNegotiated(first.format)
+            if (agreed != first.format) opening = checkNotNull(decoder).convertLastAs(agreed)
+            AudioClock(agreed.sampleRate) { sink.framePosition() }
         } catch (_: Throwable) {
             // No audio device: silent playback on the player's wall clock.
             clockFuture.complete(null)
@@ -478,10 +510,9 @@ internal class AudioPipeline(
             return
         }
         clock = theClock
-        theClock.start(first.ptsNanos)
+        theClock.start(opening.ptsNanos)
         clockFuture.complete(theClock)
         startWatchdog()
-        sampleRate = first.sampleRate
         if (startPaused) {
             // Frozen before the first sample rather than after it. The chunk
             // is kept rather than dropped, because it is the start of the
@@ -491,9 +522,9 @@ internal class AudioPipeline(
             // that would revive it is on this same thread.
             paused = true
             freezeSink()
-            pendingPcm = first.pcm.copyOf(first.byteCount)
+            pendingPcm = opening.pcm.copyOf(opening.byteCount)
         } else {
-            guardedWrite(first.pcm, first.byteCount)
+            guardedWrite(opening.pcm, opening.byteCount)
         }
 
         while (true) {
@@ -620,7 +651,7 @@ internal class AudioPipeline(
         }
         try {
             sink.write(data, 0, length)
-            queuedFrames += length / BYTES_PER_FRAME
+            queuedFrames += length / frameBytes
             writeFailures = 0
         } catch (t: Throwable) {
             // A write that did not finish is a device that stopped taking
@@ -665,8 +696,35 @@ internal class AudioPipeline(
      * way this pipeline opens a line: an open that skipped the anchor would
      * leave the tail wait owed a whole previous line's worth of frames.
      */
-    private fun openLine(rate: Int) {
-        sink.open(rate)
+    /**
+     * Opens the line for the best shape this sink will take, from the file's
+     * own down to [PcmFormat.floor], and answers what was agreed.
+     *
+     * Refusal is the whole protocol: a sink says what it can do by taking it,
+     * and every rung but the last is allowed to throw. The last one is not,
+     * because a device that will not take the floor is a device that cannot
+     * play, which is the case the caller degrades on.
+     */
+    private fun openNegotiated(source: PcmFormat): PcmFormat {
+        val ladder = formatLadder(source, channelPreference)
+        for (candidate in ladder.dropLast(1)) {
+            try {
+                openLine(candidate)
+                return candidate
+            } catch (t: Throwable) {
+                Debug.trace("the sink refused $candidate", t)
+            }
+        }
+        val last = ladder.last()
+        openLine(last)
+        return last
+    }
+
+    private fun openLine(format: PcmFormat) {
+        sink.open(format)
+        activeFormat = format
+        sampleRate = format.sampleRate
+        frameBytes = format.bytesPerFrame
         // Before a single sample goes in, so a player asked to start quiet is
         // quiet from its first chunk rather than from whenever a setVolume
         // call gets through -- the first write follows this immediately, on
@@ -719,6 +777,26 @@ internal class AudioPipeline(
     private fun flushLine() {
         sink.flush()
         anchorTail()
+    }
+
+    /**
+     * Puts the stretcher on [format], and rebuilds it only when the shape it
+     * was built for actually changed.
+     *
+     * A graph is bound to both halves of that shape: the rate is in its own
+     * arguments, and the frame width decides what its output bytes mean. A
+     * track at another rate needs a new one, and so does a track the device
+     * took at another width, while the same shape needs only its buffered
+     * state dropped.
+     */
+    private fun rebuildTempoFor(format: PcmFormat) {
+        val old = tempoFilter ?: return
+        if (old.format == format) {
+            old.reset()
+            return
+        }
+        old.close()
+        tempoFilter = TempoFilter(format, tempo)
     }
 
     private fun anchorTail() {
@@ -868,7 +946,11 @@ internal class AudioPipeline(
             // a contract made true by construction, like the terminal Failed
             // state in the player.
             if (closing) return@runCatching false
-            openLine(sampleRate)
+            // The shape that was agreed when the device was last there, not a
+            // fresh negotiation: recovery is answering an outage of the same
+            // device, and a device that comes back narrower refuses this open
+            // the way it would refuse any other.
+            openLine(activeFormat ?: return@runCatching false)
             theClock.rebase(resumeAt, sampleRate)
             // open() starts the device by contract; honour a pause, landing
             // or end-of-stream that began during the outage.
@@ -1060,8 +1142,8 @@ internal class AudioPipeline(
             if (!wasAwaiting && !paused && !isEnded) runSink()
             return
         }
-        val crop = cropAt(next, pos)
-        if (crop == null) {
+        val probe = cropAt(next, pos)
+        if (probe == null) {
             // The new track ends before the playhead; refuse rather than
             // wrap the mastered clock mid-lap or strand a non-looping
             // player at a frozen anchor.
@@ -1080,7 +1162,7 @@ internal class AudioPipeline(
         // at one anchor; between open and rebase the old base makes raw
         // readings negative, and the not-yet-reset monotonic floor clamps
         // that window.
-        val opened = runCatching { openLine(crop.sampleRate) }
+        val opened = runCatching { openNegotiated(probe.format) }
         if (opened.isFailure) {
             Debug.trace("audio line open for track switch", opened.exceptionOrNull() ?: Throwable())
             runCatching { next.close() }
@@ -1092,6 +1174,16 @@ internal class AudioPipeline(
             deviceLost = true
             return
         }
+        // The device may have taken less than the track offers, and the crop in
+        // hand is then in the wrong shape. Narrowing the decoder and cropping
+        // again costs one seek at a position that has already cropped once.
+        val agreed = opened.getOrThrow()
+        val crop = if (agreed == probe.format) {
+            probe
+        } else {
+            next.convertLastAs(agreed)
+            cropAt(next, pos) ?: error("the track cropped at $pos and then would not crop again")
+        }
         runCatching { current.close() }
         decoder = next
         durationNanos = next.durationNanos
@@ -1101,15 +1193,9 @@ internal class AudioPipeline(
         isEnded = false
         if (wasAwaiting || paused) freezeSink() // open() starts the device by contract
         theClock.rebase(crop.anchorNanos, crop.sampleRate)
-        // The stretcher is rate-bound; the new track may run at another.
-        val oldFilter = tempoFilter
-        if (oldFilter != null && sampleRate != crop.sampleRate) {
-            oldFilter.close()
-            tempoFilter = TempoFilter(crop.sampleRate, tempo)
-        } else {
-            oldFilter?.reset()
-        }
-        sampleRate = crop.sampleRate
+        // The stretcher is bound to the shape it was built for, rate and frame
+        // alike; the new track may run at either.
+        rebuildTempoFor(crop.format)
         pendingPcm = crop.remainder
         activeAudioTrack = next.streamIndex
         if (DEBUG_SEEK) {
@@ -1147,22 +1233,29 @@ internal class AudioPipeline(
         } catch (_: Throwable) {
             null
         }
-        val crop = next?.let { cropAt(it, 0L) }
-        if (crop == null) {
+        val probe = next?.let { cropAt(it, 0L) }
+        if (probe == null) {
             runCatching { next?.close() }
             goSilent(theClock)
             return
         }
         // Open-new-before-close-old runs down to the device here as well. A
-        // line that refuses the new file's rate leaves this side silent rather
-        // than dead: the thread and the sink stay, so a later file this device
-        // can take still plays.
-        val opened = runCatching { openLine(crop.sampleRate) }
+        // line that refuses everything the new file can be offered leaves this
+        // side silent rather than dead: the thread and the sink stay, so a
+        // later file this device can take still plays.
+        val opened = runCatching { openNegotiated(probe.format) }
         if (opened.isFailure) {
             Debug.trace("audio line open for source switch", opened.exceptionOrNull() ?: Throwable())
             runCatching { next.close() }
             goSilent(theClock)
             return
+        }
+        val agreed = opened.getOrThrow()
+        val crop = if (agreed == probe.format) {
+            probe
+        } else {
+            next.convertLastAs(agreed)
+            cropAt(next, 0L) ?: error("the file cropped at its start and then would not crop again")
         }
         runCatching { decoder?.close() }
         decoder = next
@@ -1179,15 +1272,9 @@ internal class AudioPipeline(
         // the line holds until the picture reports one.
         freezeSink()
         theClock.rebase(crop.anchorNanos, crop.sampleRate)
-        // The stretcher is rate-bound, and the new file may run at another.
-        val oldFilter = tempoFilter
-        if (oldFilter != null && sampleRate != crop.sampleRate) {
-            oldFilter.close()
-            tempoFilter = TempoFilter(crop.sampleRate, tempo)
-        } else {
-            oldFilter?.reset()
-        }
-        sampleRate = crop.sampleRate
+        // The stretcher is bound to the shape it was built for, and the new
+        // file may differ in either half of it.
+        rebuildTempoFor(crop.format)
         pendingPcm = crop.remainder
         if (DEBUG_SEEK) {
             System.err.println("[audio-source] $newPath rate=${crop.sampleRate} anchored=${crop.anchorNanos / 1_000_000}ms")
@@ -1208,6 +1295,10 @@ internal class AudioPipeline(
     private fun goSilent(theClock: AudioClock) {
         runCatching { decoder?.close() }
         decoder = null
+        // The line is still open in its last shape, but nothing is being played
+        // through it, and a consumer reading a format off a silent player would
+        // be reading the previous file's.
+        activeFormat = null
         durationNanos = null
         tracks = emptyList()
         activeAudioTrack = null
@@ -1246,8 +1337,13 @@ internal class AudioPipeline(
         val next = if (newTempo == 1.0) {
             null
         } else {
+            val shape = activeFormat
+            if (shape == null) {
+                if (!wasAwaiting && !paused && !isEnded) runSink()
+                return
+            }
             try {
-                TempoFilter(sampleRate, newTempo)
+                TempoFilter(shape, newTempo)
             } catch (_: Throwable) {
                 if (!wasAwaiting && !paused && !isEnded) runSink()
                 return
@@ -1276,8 +1372,11 @@ internal class AudioPipeline(
     private class Crop(
         val anchorNanos: Long,
         val remainder: ByteArray,
-        val sampleRate: Int,
-    )
+        /** The shape [remainder] is in, which is the decoder's current output. */
+        val format: PcmFormat,
+    ) {
+        val sampleRate: Int get() = format.sampleRate
+    }
 
     /**
      * Positions [d] at the chunk covering [targetNanos] and crops the
@@ -1291,7 +1390,10 @@ internal class AudioPipeline(
         d.seekTo(targetNanos)
         while (true) {
             val chunk = d.nextChunk() ?: return null
-            val samples = chunk.byteCount / BYTES_PER_FRAME
+            // The frame size is the chunk's own: a decoder that has not been
+            // narrowed yet hands over the file's shape, and this runs on both.
+            val chunkFrame = chunk.format.bytesPerFrame
+            val samples = chunk.byteCount / chunkFrame
             val chunkEnd = chunk.ptsNanos + samples * 1_000_000_000L / chunk.sampleRate
             if (chunkEnd <= targetNanos) continue
 
@@ -1302,8 +1404,8 @@ internal class AudioPipeline(
             // Copied out because the decoder reuses chunk.pcm.
             return Crop(
                 anchorNanos = anchorNanos,
-                remainder = chunk.pcm.copyOfRange(skipSamples * BYTES_PER_FRAME, chunk.byteCount),
-                sampleRate = chunk.sampleRate,
+                remainder = chunk.pcm.copyOfRange(skipSamples * chunkFrame, chunk.byteCount),
+                format = chunk.format,
             )
         }
     }
@@ -1345,8 +1447,6 @@ internal class AudioPipeline(
     }
 
     private companion object {
-        /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
-        const val BYTES_PER_FRAME = 4
 
         /**
          * Slack past the queued tail's own length before a device that

@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
@@ -37,7 +38,7 @@ class ReadAheadTest {
     }
 
     private fun player(source: ScriptedFrameSource, depth: Int, loop: Boolean = false) = VideoPlayer(
-        Path.of("scripted"), loop, false, clock, null, depth, null, WhenUnwatched.Freeze, false, 1f,
+        Path.of("scripted"), loop, false, clock, null, depth, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     @Test

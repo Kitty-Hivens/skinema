@@ -7,10 +7,14 @@ val player = VideoPlayer(Path.of("clip.mkv"), audio = true)
 ```
 
 With sound on, aac, ac3/eac3, alac, opus, vorbis, mp3, flac and WAV PCM
-(16/24/32-bit and float) decode through the same bindings.
-Multichannel audio downmixes to stereo. Audio-only files (an mp3, a
-flac) play frameless through the normal lifecycle -- no frames, just
-sound and metadata.
+(16/24/32-bit and float) decode through the same bindings. Audio-only
+files (an mp3, a flac) play frameless through the normal lifecycle -- no
+frames, just sound and metadata.
+
+The sound reaches the device in the shape the file has it: six channels
+stay six, twenty-four bits stay twenty-four, and the rate is never
+converted. What the device will not take is folded, and only then. See
+[The shape of the sound](#the-shape-of-the-sound).
 
 ## The clock model
 
@@ -100,13 +104,66 @@ pitch stays natural. With sound on, the audio clock advances at the new
 rate and the picture follows; on a silent player the wall clock scales
 instead. The rate survives seeks, pauses and track switches.
 
+## The shape of the sound
+
+```kotlin
+val format: PcmFormat? = player.activeAudioFormat   // what the device took
+```
+
+The player offers the device the shape the file actually has and walks
+down until the device takes one. Nothing is converted for the sake of the
+seam: a 5.1 float file reaches a device that can take 5.1 float as 5.1
+float, and the fold happens only where a device refuses.
+
+```kotlin
+data class PcmFormat(
+    val sampleRate: Int,
+    val channels: Int,
+    val layout: String,          // "mono", "stereo", "5.1", "5.1(side)"
+    val encoding: PcmEncoding,   // U8, S16LE, S32LE, F32LE, F64LE
+    val significantBits: Int,    // how many bits of each sample are real
+)
+```
+
+Three of those fields are worth a sentence each.
+
+`layout` names the channel order rather than leaving it to be assumed. A
+count says how many channels arrive and not where they go, and 5.1
+against 5.1(side) is the ordinary pair that differs.
+
+`significantBits` is not the width of the encoding. A 24-bit file decodes
+into `S32LE` with eight zero bits below the value, and some DTS carries
+twenty. A sink that has to narrow samples for its device needs this to
+know whether it is discarding padding or data.
+
+`encoding` has no 24-bit member, and that is a decision: FFmpeg has no
+24-bit sample format, so 24-bit content arrives in `S32LE` whole. A device
+that wants three packed bytes wants a narrower container, not more
+information, and that packing belongs beside the device.
+
+**Read it, do not assume it.** `activeAudioFormat` is what the device
+agreed to, not what was asked for, which is the only version worth
+having: on a stereo device a 5.1 file reports stereo.
+
+`audioChannels` decides what gets asked for in the first place:
+
+```kotlin
+VideoPlayer(path, audio = true, audioChannels = ChannelPreference.Stereo)
+```
+
+`Source` is the default, on the same argument the sample rate is left
+alone under: the audio server knows the speaker layout and this library
+does not. `Stereo` folds before the device is asked, for a consumer that
+knows the fold is wanted -- a device accepting six channels is not
+evidence that six speakers exist.
+
 ## Playing through your own audio stack
 
 The `sink` constructor parameter is the seam. Implement
-`dev.hivens.skinema.audio.PcmSink` and the player pushes S16LE
-interleaved stereo through it instead of opening a platform line -- an
-adapter onto your own mixer, a socket, a server connection. No change is
-needed on this side; the adapter is yours.
+`dev.hivens.skinema.audio.PcmSink` and the player pushes interleaved PCM
+through it instead of opening a platform line -- an adapter onto your own
+mixer, a socket, a server connection. No change is needed on this side;
+the adapter is yours.
 
 It only means anything with `audio = true`. A silent player decodes no sound,
 so it never opens the sink at all -- passing one is not an error and not a
@@ -114,7 +171,7 @@ substitute for turning audio on.
 
 ```kotlin
 interface PcmSink : AutoCloseable {
-    fun open(sampleRate: Int)                                  // and starts it
+    fun open(format: PcmFormat)                                // and starts it; throws to refuse
     fun write(data: ByteArray, offset: Int, length: Int)       // blocking: this is the pacing
     fun stop()                                                 // freezes; framePosition holds
     fun start()
@@ -124,13 +181,27 @@ interface PcmSink : AutoCloseable {
 }
 ```
 
-Two things carry the whole contract. `write` blocks until the device has
-taken the bytes -- that is what paces playback, so a sink that accepts
-everything instantly runs the decoder at its own speed. And
+Three things carry the whole contract.
+
+`write` blocks until the device has taken the bytes -- that is what paces
+playback, so a sink that accepts everything instantly runs the decoder at
+its own speed.
+
 `framePosition` counts frames the device has *played*, not frames it has
 accepted: it is the clock the player runs on, and a sink that reports
 what it was handed makes the picture run ahead of the sound by a whole
 buffer.
+
+`open` is allowed to **refuse**, and refusing is how a sink says what it
+can do. The player offers the file's own shape and walks down until one
+is taken, ending at `PcmFormat.floor(rate)` -- S16LE stereo, which every
+implementation must accept. Two rules follow: a refusal must leave
+nothing playing, since the next call is another `open` on the same sink;
+and it must be a throw rather than a quiet substitution, because a sink
+that accepts 5.1 and plays the front two channels is indistinguishable
+from one that works, and the player would never learn to fold the rest
+itself. The rate is the media's own and is never converted by either
+side.
 
 The calls do not all arrive on one thread. `open`/`write`/`stop`/
 `start`/`flush` come from the audio thread in order; `close` can also

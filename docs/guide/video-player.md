@@ -21,6 +21,7 @@ VideoPlayer(
     unwatched: WhenUnwatched = WhenUnwatched.Freeze,
     startPaused: Boolean = false,
     volume: Float = 1f,
+    audioChannels: ChannelPreference = ChannelPreference.Source,
 )
 ```
 
@@ -70,6 +71,11 @@ VideoPlayer(
   -- the sink opens on the audio thread's own schedule, while the decode
   thread is still inside the video open. It is a caller's pause, so
   `WhenUnwatched` never lifts it. Default `false`.
+- `audioChannels` -- how many channels to ask the output device for.
+  `ChannelPreference.Source` (the default) hands over what the file
+  carries and lets the device refuse; `Stereo` folds first. What the
+  device actually took is `activeAudioFormat`, not this. See
+  [audio.md](audio.md).
 - `volume` -- linear 0..1 from the first sample onward, rather than from
   whenever a `setVolume` call gets through: the sink opens and takes its
   first chunk on the audio thread's own schedule, so there is no moment
@@ -370,7 +376,9 @@ must rotate by it (see [compose.md](compose.md)).
 
 Those surfaces have their own pages:
 
-- audio track enumeration and live switching: [audio.md](audio.md)
+- audio track enumeration and live switching, the shape the sound leaves
+  in (`activeAudioFormat`), and playing through your own stack:
+  [audio.md](audio.md)
 - subtitle enumeration, selection and external files:
   [subtitles.md](subtitles.md)
 

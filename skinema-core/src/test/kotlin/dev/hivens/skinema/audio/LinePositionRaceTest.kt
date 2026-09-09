@@ -30,7 +30,7 @@ class LinePositionRaceTest {
         Fixtures.assumeAudioDevice()
         val rate = 48_000
         val sink = JavaSoundSink()
-        sink.open(rate)
+        sink.open(PcmFormat.floor(rate))
         try {
             val stop = AtomicBoolean(false)
             val worstOvershootFrames = AtomicLong(0)

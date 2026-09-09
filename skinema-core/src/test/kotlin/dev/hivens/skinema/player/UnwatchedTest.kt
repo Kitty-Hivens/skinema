@@ -1,5 +1,6 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -48,7 +49,7 @@ class UnwatchedTest {
         // depth, so what the fill side's own gate saves is bounded and once.
         readAheadFrames: Int = 1,
     ) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, unwatched, false, 1f,
+        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, unwatched, false, 1f, ChannelPreference.Source,
     ) { source }
 
     /** Media time forward by [millis], the way a device consuming would. */

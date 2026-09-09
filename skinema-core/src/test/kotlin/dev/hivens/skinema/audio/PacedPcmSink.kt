@@ -32,7 +32,13 @@ class PacedPcmSink(private val bufferFrames: Long) : PcmSink {
     private var released = false
     private var sampleRate = 0
 
-    override fun open(sampleRate: Int) {
+    // The frame size of the line that is open; the seam no longer fixes it.
+    @Volatile
+    private var frameBytes = 4
+
+    override fun open(format: PcmFormat) {
+        val sampleRate = format.sampleRate
+        frameBytes = format.bytesPerFrame
         synchronized(lock) {
             this.sampleRate = sampleRate
             // A fresh line starts empty and at frame position zero.
@@ -49,7 +55,7 @@ class PacedPcmSink(private val bufferFrames: Long) : PcmSink {
     }
 
     override fun write(data: ByteArray, offset: Int, length: Int) {
-        var remaining = (length / BYTES_PER_FRAME).toLong()
+        var remaining = (length / frameBytes).toLong()
         synchronized(lock) {
             while (remaining > 0) {
                 if (released) {
@@ -131,6 +137,5 @@ class PacedPcmSink(private val bufferFrames: Long) : PcmSink {
 
     private companion object {
         /** S16LE stereo: 2 bytes x 2 channels per sample frame. */
-        const val BYTES_PER_FRAME = 4
     }
 }

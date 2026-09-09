@@ -1,5 +1,7 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.audio.PcmFormat
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.audio.PacedPcmSink
@@ -111,7 +113,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
         )
         val boom = LibavException("no decoder for this video stream")
-        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze, false, 1f) { throw boom }.use { player ->
+        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { throw boom }.use { player ->
             assertTrue(
                 awaitTrue { player.state is VideoPlayer.State.Failed },
                 "an unopenable video must surface as Failed, state=${player.state}",
@@ -164,7 +166,11 @@ class VideoPlayerTest {
         VideoPlayer(tone, loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "audio-only playback must reach Ended")
             assertEquals(null, player.acquireFrame(), "frameless mode serves no frames")
-            assertEquals(44_100 * 4, sink.totalBytes, "the whole tone reaches the sink")
+            assertEquals(
+                44_100 * checkNotNull(sink.format).bytesPerFrame,
+                sink.totalBytes,
+                "the whole tone reaches the sink",
+            )
             val d = player.durationNanos
             assertTrue(
                 d != null && d in 900_000_000L..1_300_000_000L,
@@ -980,7 +986,7 @@ class VideoPlayerTest {
         // player degrades to silent wall-clock playback and must not
         // offer a selector nothing would serve.
         val deaf = object : PcmSink {
-            override fun open(sampleRate: Int) = throw IllegalStateException("no audio device")
+            override fun open(format: PcmFormat) = throw IllegalStateException("no audio device")
             override fun write(data: ByteArray, offset: Int, length: Int) = Unit
             override fun stop() = Unit
             override fun start() = Unit
@@ -1674,7 +1680,7 @@ class VideoPlayerTest {
         // the state reporting Playing. Each turn is a seek, and for a source
         // whose demuxer cannot seek it is a reopen from disk.
         val source = ScriptedFrameSource(frameCount = 0)
-        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f) { source }.use { player ->
+        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }.use { player ->
             assertTrue(
                 awaitTrue(3_000) { player.state is VideoPlayer.State.Ended },
                 "a lap with no frames must end, state was ${player.state}",
@@ -1694,7 +1700,7 @@ class VideoPlayerTest {
         // version of it did.
         val opening = CountDownLatch(1)
         val source = ScriptedFrameSource(frameCount = 50)
-        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f) {
+        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) {
             opening.await(20, TimeUnit.SECONDS)
             source
         }
@@ -1786,7 +1792,7 @@ class VideoPlayerTest {
             }
         }
         val source = ScriptedFrameSource(frameCount = 500)
-        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f) { source }
+        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
         try {
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Failed },
