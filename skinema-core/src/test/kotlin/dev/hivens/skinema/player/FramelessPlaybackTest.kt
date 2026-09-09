@@ -104,6 +104,29 @@ class FramelessPlaybackTest {
     }
 
     /**
+     * The frameless lap reads the same flag as the framed one, and its consumer
+     * is a music player, where repeat is a button rather than a decision taken
+     * when the file was opened.
+     */
+    @Test
+    fun `a looping audio-only file stops coming round when the flag goes off`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeEncoder("libmp3lame")
+        VideoPlayer(audioOnly("toggle.mp3", "1"), loop = true, audio = true, sink = NoDevice()).use { player ->
+            assertTrue(awaitTrue(5_000) { player.state is VideoPlayer.State.Playing }, "must start")
+            assertTrue(
+                awaitTrue(4_000) { player.positionNanos() > 300_000_000L },
+                "a lap must be running before the flag moves, at ${player.positionNanos() / 1_000_000}ms",
+            )
+            player.loop = false
+            assertTrue(
+                awaitTrue(8_000) { player.state is VideoPlayer.State.Ended },
+                "the lap that was running must be the last one, state=${player.state}",
+            )
+        }
+    }
+
+    /**
      * A frameless lap that cannot be measured has to end rather than turn.
      *
      * Both marks go at once here: an audio side that never opened a stream

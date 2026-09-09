@@ -25,7 +25,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * moving (without sound there is nothing left to sync to).
  */
 internal class AudioPipeline(
-    private val path: Path,
+    // A var because the file itself can change under this pipeline: a source
+    // switch reopens it here, and a track switch after that has to reopen the
+    // file being played rather than the one this side was built with.
+    private var path: Path,
     private val sink: PcmSink,
     private val initialTrack: Int? = null,
     initialVolume: Float = 1f,
@@ -89,6 +92,7 @@ internal class AudioPipeline(
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
         data class SwitchTrack(val streamIndex: Int) : Command
+        data class SetSource(val path: Path, val done: CompletableFuture<Unit>) : Command
         data class SetTempo(val tempo: Double) : Command
         data class VideoLanded(val atNanos: Long) : Command
         data object Close : Command
@@ -98,10 +102,18 @@ internal class AudioPipeline(
     private var clock: AudioClock? = null
     private var paused = false
 
-    // The decoder is a field, not a parameter: a track switch swaps it,
-    // and a single access path keeps every seek and loop wrap on the
-    // CURRENT decoder. Owned by the audio thread (confined arena).
-    private lateinit var decoder: AudioDecoder
+    // The decoder is a field, not a parameter: a track switch swaps it, a
+    // source switch replaces it, and a single access path keeps every seek and
+    // loop wrap on the CURRENT decoder. Owned by the audio thread (confined
+    // arena).
+    //
+    // Null is a source with nothing to play, which a queue meets as soon as one
+    // of its files carries no audio stream. This side then holds its thread and
+    // the line, plays nothing, and hands the timeline to the wall the way the
+    // end of a track does. Ending the thread instead would close the sink for
+    // good, and the next file that does have sound would find nothing left to
+    // play through.
+    private var decoder: AudioDecoder? = null
 
     // Playback rate. At 1.0 the stretcher does not exist and PCM flows
     // through untouched; otherwise every write passes the atempo graph.
@@ -287,6 +299,26 @@ internal class AudioPipeline(
         commands.put(Command.SwitchTrack(streamIndex))
     }
 
+    /**
+     * Plays [newPath] through the thread, the line and the clock this pipeline
+     * already holds.
+     *
+     * The future completes once the switch has been performed, and the caller
+     * waits on it: the new file's tracks, duration and tags are read off this
+     * side afterwards, and a player that published them without waiting would
+     * publish the previous file's. A pipeline that is no longer there completes
+     * it at once, since nothing is going to happen either way.
+     */
+    fun setSource(newPath: Path): CompletableFuture<Unit> {
+        val done = CompletableFuture<Unit>()
+        if (!alive) {
+            done.complete(Unit)
+            return done
+        }
+        commands.put(Command.SetSource(newPath, done))
+        return done
+    }
+
     /** Playback rate, pitch preserved; the caller clamps to atempo's range. */
     fun setTempo(tempo: Double) {
         if (!alive) return
@@ -395,7 +427,7 @@ internal class AudioPipeline(
             // leave the video side gated on seeks no one will perform.
             pendingSeeks.set(0)
             runCatching { tempoFilter?.close() }
-            runCatching { decoder.close() }
+            runCatching { decoder?.close() }
             // Off the device before the device goes. The clock samples the
             // sink for every reading, and nothing here used to tell it to
             // stop: a consumer that took its own sink back on Closed -- which
@@ -405,11 +437,26 @@ internal class AudioPipeline(
             runCatching { clock?.detachToWallTime() }
             runCatching { sink.close() }
             finish()
+            // After [finish], so the flag that stops new ones is visible before
+            // the queue is drained. A caller waiting on a switch this side will
+            // never perform would otherwise spend its whole budget waiting for
+            // a thread that has already gone.
+            releaseQueuedSwitches()
+        }
+    }
+
+    /** Answers every queued [setSource] that nobody is going to perform. */
+    private fun releaseQueuedSwitches() {
+        var queued = commands.poll()
+        while (queued != null) {
+            (queued as? Command.SetSource)?.done?.complete(Unit)
+            queued = commands.poll()
         }
     }
 
     private fun pump() {
-        val first = decoder.nextChunk()
+        // Non-null by construction: run() only reaches here having opened one.
+        val first = checkNotNull(decoder).nextChunk()
         if (first == null) {
             clockFuture.complete(null)
             return
@@ -478,7 +525,16 @@ internal class AudioPipeline(
                 continue
             }
 
-            val chunk = decoder.nextChunk()
+            val playing = decoder
+            if (playing == null) {
+                // A source with nothing to play. The idle branch above is what
+                // holds this thread on its command queue, and the flag is what
+                // sends it there; without it this loop would spin on a decoder
+                // that is not coming back.
+                isEnded = true
+                continue
+            }
+            val chunk = playing.nextChunk()
             if (chunk == null) {
                 // The stretcher still holds part of the stream's tail;
                 // surface it before the time decision, then start the
@@ -792,7 +848,7 @@ internal class AudioPipeline(
             // Resync to where video advanced on the wall clock: the outage
             // audio is dropped, sound rejoins in step rather than lagging.
             val resumeAt = theClock.mediaNanos()
-            decoder.seekTo(resumeAt)
+            decoder?.seekTo(resumeAt)
             pendingPcm = null
             // The same shutter [guardedWrite] keeps, one step earlier. Opening
             // is not a write, but it reaches into the same object: a consumer's
@@ -879,6 +935,11 @@ internal class AudioPipeline(
             switchTrack(cmd.streamIndex)
             true
         }
+        is Command.SetSource -> {
+            switchSource(cmd.path)
+            cmd.done.complete(Unit)
+            true
+        }
         is Command.SetTempo -> {
             applyTempo(cmd.tempo)
             true
@@ -927,7 +988,10 @@ internal class AudioPipeline(
         // audio-mastered clock is for.
         val wasEnded = isEnded
         isEnded = false
-        val crop = cropAt(decoder, targetNanos)
+        // No decoder is a source with no sound in it, and it wants exactly what
+        // a seek past the last sample gets: nothing to play, the timeline on
+        // the wall, and the picture's own landing to place it.
+        val crop = decoder?.let { cropAt(it, targetNanos) }
         if (crop == null) {
             // Seeked past the last sample, laps or not: this side is done.
             // Wrapping the sound to zero here made the SOUND decide where a
@@ -969,7 +1033,10 @@ internal class AudioPipeline(
      */
     private fun switchTrack(streamIndex: Int) {
         val theClock = clock ?: return
-        if (streamIndex == decoder.streamIndex) return
+        // A source with no sound has no streams to choose between either, and
+        // [tracks] is empty for it, so the refusal below covers that case too.
+        val current = decoder ?: return
+        if (streamIndex == current.streamIndex) return
         if (tracks.none { it.streamIndex == streamIndex }) return
 
         val wasAwaiting = awaitingLanding
@@ -1025,7 +1092,7 @@ internal class AudioPipeline(
             deviceLost = true
             return
         }
-        runCatching { decoder.close() }
+        runCatching { current.close() }
         decoder = next
         durationNanos = next.durationNanos
         // The new track has samples at the playhead, so this side is not
@@ -1050,6 +1117,108 @@ internal class AudioPipeline(
                 "[audio-switch] track=${next.streamIndex} anchored=${crop.anchorNanos / 1_000_000}ms rate=${crop.sampleRate}",
             )
         }
+    }
+
+    /**
+     * Plays another file through the line this pipeline already holds.
+     *
+     * Both of [switchTrack]'s ordering rules carry over whole: freeze first,
+     * and open the new decoder before letting go of the old one. What differs
+     * is where it lands. A track switch continues at the playhead because the
+     * listener is in the middle of something; this starts a file, so the crop
+     * is taken at zero and the clock is rebased there.
+     *
+     * The sound then waits for the picture the way it waits through a seek.
+     * The video side lands the first frame of the new file and reports it, and
+     * only then does the line run, so the two start together instead of the
+     * sound running out ahead of a picture that is still opening.
+     */
+    private fun switchSource(newPath: Path) {
+        val theClock = clock ?: return
+        freezeSink()
+        flushLine()
+        pendingPcm = null
+        tempoFilter?.reset()
+        awaitingLanding = true
+        path = newPath
+
+        val next = try {
+            AudioDecoder.openOrNull(newPath, null)
+        } catch (_: Throwable) {
+            null
+        }
+        val crop = next?.let { cropAt(it, 0L) }
+        if (crop == null) {
+            runCatching { next?.close() }
+            goSilent(theClock)
+            return
+        }
+        // Open-new-before-close-old runs down to the device here as well. A
+        // line that refuses the new file's rate leaves this side silent rather
+        // than dead: the thread and the sink stay, so a later file this device
+        // can take still plays.
+        val opened = runCatching { openLine(crop.sampleRate) }
+        if (opened.isFailure) {
+            Debug.trace("audio line open for source switch", opened.exceptionOrNull() ?: Throwable())
+            runCatching { next.close() }
+            goSilent(theClock)
+            return
+        }
+        runCatching { decoder?.close() }
+        decoder = next
+        durationNanos = next.durationNanos
+        tracks = next.tracks
+        activeAudioTrack = next.streamIndex
+        tags = next.tags
+        chapters = next.chapters
+        coverArt = next.coverArt
+        // There is sound at the start of this file, so this side is playing
+        // again whatever the last one left behind.
+        isEnded = false
+        // open() starts the device by contract, and this switch is a landing:
+        // the line holds until the picture reports one.
+        freezeSink()
+        theClock.rebase(crop.anchorNanos, crop.sampleRate)
+        // The stretcher is rate-bound, and the new file may run at another.
+        val oldFilter = tempoFilter
+        if (oldFilter != null && sampleRate != crop.sampleRate) {
+            oldFilter.close()
+            tempoFilter = TempoFilter(crop.sampleRate, tempo)
+        } else {
+            oldFilter?.reset()
+        }
+        sampleRate = crop.sampleRate
+        pendingPcm = crop.remainder
+        if (DEBUG_SEEK) {
+            System.err.println("[audio-source] $newPath rate=${crop.sampleRate} anchored=${crop.anchorNanos / 1_000_000}ms")
+        }
+    }
+
+    /**
+     * The current source has nothing this side can play: a file with no audio
+     * stream, one whose stream will not decode, or a device that refused its
+     * rate.
+     *
+     * The thread and the sink are kept, which is the whole point. Ending here
+     * instead would close a sink the consumer lent us and take the sound away
+     * from every later file as well, where what actually happened is that one
+     * file in a queue is silent. The timeline goes to the wall, exactly as it
+     * does when a track plays out under a longer picture.
+     */
+    private fun goSilent(theClock: AudioClock) {
+        runCatching { decoder?.close() }
+        decoder = null
+        durationNanos = null
+        tracks = emptyList()
+        activeAudioTrack = null
+        tags = emptyMap()
+        chapters = emptyList()
+        coverArt = null
+        isEnded = true
+        // Detach first, place second: the detach carries over where the clock
+        // reads now, and the seek is what moves it to the start of the file.
+        theClock.detachToWallTime()
+        theClock.seek(0)
     }
 
     /**
@@ -1090,7 +1259,7 @@ internal class AudioPipeline(
         theClock.setTempo(newTempo)
 
         pendingPcm = null
-        val crop = cropAt(decoder, pos)
+        val crop = decoder?.let { cropAt(it, pos) }
         if (crop == null) {
             // The playhead sits past the last sample; nothing to re-feed.
             theClock.seek(pos)

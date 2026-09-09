@@ -35,7 +35,7 @@ internals -- lives in [docs/](docs/README.md).
 ## Dependencies
 
 ```kotlin
-implementation("dev.hivens:skinema-compose:0.8.0")   // brings -core and -skiko
+implementation("dev.hivens:skinema-compose:0.8.1")   // brings -core and -skiko
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-x64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-linux-musl-x64")
@@ -46,7 +46,7 @@ runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
-0.8.0 compiles against Skiko 0.150.1, which is what Compose Multiplatform
+0.8.1 compiles against Skiko 0.150.1, which is what Compose Multiplatform
 1.12.0 ships. Skiko is `compileOnly` here, so the copy that runs is the one
 your Compose brings: that makes Compose 1.12 a floor rather than a
 preference. On an older Compose, take 0.7.0.
@@ -248,6 +248,14 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
   is told at construction rather than paused by a command, which would
   arrive after the device had already started. `resume` is what starts
   the file, and this is the one pause `WhenUnwatched` never lifts.
+- **One player, many files.** `setSource` puts the next file on the
+  player you already have -- the same threads, the same audio line, the
+  same volume, rate, looping and subtitle canvas -- so a playlist is a
+  list you own plus one call, and the queue, the order and what "next"
+  means stay yours. A file that will not open is refused
+  (`sourceFailure`) and the one playing carries on, which is what a queue
+  needs from one broken item. `loop` is live in the same way: turning
+  repeat on no longer costs the position by rebuilding the player.
 - **Read-ahead is opt-in.** `readAheadFrames` (default 1) holds that
   many decoded frames of inventory, so a decode stall does not stall
   the screen while inventory lasts. Each step of depth costs one full
