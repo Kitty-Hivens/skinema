@@ -20,13 +20,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  * state is stale by construction. Confined to the constructing thread, like the
  * decoders.
  *
- * The `aformat` before the sink is what makes the bytes out the same shape as
- * the bytes in. atempo accepts a set of sample formats rather than all of them,
- * and libavfilter answers a format it does not take by negotiating one it does
- * -- silently, and then the graph would hand back samples of another width than
- * the caller counted on. Pinning the output is also what makes the internal
- * conversion visible as a cost rather than as a surprise: at a rate other than
- * 1.0, a source wider than atempo's own formats is converted in and back out.
+ * The bytes come back in the shape they went in, and nothing in the graph is
+ * asked to guarantee that: atempo takes u8, s16, s32, flt and dbl and any
+ * channel count, so with the input the only constraint there is nothing for
+ * libavfilter to negotiate away. [drain] checks it rather than trusting it,
+ * because the whole output arithmetic is denominated in that shape and a future
+ * atempo with a narrower format list would otherwise change the meaning of
+ * every byte quietly.
+ *
+ * An `aformat` filter would state the same thing declaratively and was tried:
+ * the shipped bundles build avfilter with atempo as the only filter component,
+ * so it is absent there and the graph fails to build on every platform. The
+ * dev box's system FFmpeg carries every filter and said nothing. Anything added
+ * to this graph has to exist in a trimmed build, and today that means atempo,
+ * abuffer and abuffersink and nothing else.
  */
 internal class TempoFilter(
     /** The shape of the PCM in and out; see the class note on `aformat`. */
@@ -124,6 +131,17 @@ internal class TempoFilter(
             val ret = Libav.avBuffersinkGetFrame(sink, frame)
             if (ret == LibavAbi.AVERROR_EAGAIN || ret == LibavAbi.AVERROR_EOF) return total
             Libav.checkAv(ret, "av_buffersink_get_frame")
+            // The shape out must be the shape in, because every byte count
+            // below is denominated in it. Nothing enforces that inside the
+            // graph, so it is asked here: an atempo that one day refuses a
+            // format would otherwise hand back samples of another width and
+            // the caller would read the count as frames it does not have.
+            val outFormat = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
+            if (outFormat != AudioDecoder.sampleFormatFor(format.encoding)) {
+                throw LibavException(
+                    "the tempo graph returned sample format $outFormat, not the ${format.encoding} it was fed",
+                )
+            }
             val bytes = frame.get(JAVA_INT, LibavAbi.Frame.NB_SAMPLES) * format.bytesPerFrame
             if (output.size < total + bytes) output = output.copyOf(maxOf(output.size * 2, total + bytes))
             val data = frame.get(ADDRESS, LibavAbi.Frame.DATA).reinterpret(bytes.toLong())
@@ -141,21 +159,15 @@ internal class TempoFilter(
         // reclaims them per build, so a reset (seek, loop wrap, scrub) does
         // not pile them up in the session arena until close.
         Arena.ofConfined().use { strings ->
-            val fmtName = sampleFormatName(format.encoding)
             src = createFilter(
                 strings, "abuffer", "in",
                 "time_base=1/$sampleRate:sample_rate=$sampleRate:" +
-                    "sample_fmt=$fmtName:channel_layout=${format.layout}",
+                    "sample_fmt=${sampleFormatName(format.encoding)}:channel_layout=${format.layout}",
             )
             val atempo = createFilter(strings, "atempo", "atempo", "tempo=$tempo")
-            val shape = createFilter(
-                strings, "aformat", "shape",
-                "sample_fmts=$fmtName:channel_layouts=${format.layout}:sample_rates=$sampleRate",
-            )
             sink = createFilter(strings, "abuffersink", "out", null)
             Libav.checkAv(Libav.avfilterLink(src, 0, atempo, 0), "avfilter_link(in->atempo)")
-            Libav.checkAv(Libav.avfilterLink(atempo, 0, shape, 0), "avfilter_link(atempo->shape)")
-            Libav.checkAv(Libav.avfilterLink(shape, 0, sink, 0), "avfilter_link(shape->out)")
+            Libav.checkAv(Libav.avfilterLink(atempo, 0, sink, 0), "avfilter_link(atempo->out)")
             Libav.checkAv(Libav.avfilterGraphConfig(graph), "avfilter_graph_config")
         }
         inputFramesFed = 0
