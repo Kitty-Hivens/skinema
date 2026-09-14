@@ -1,5 +1,5 @@
 [versions]
-kotlin       = "2.4.10"
+kotlin       = "2.4.20"
 compose      = "1.12.0"
 # Moves with `compose`, never on its own: skiko is compileOnly here, so the
 # copy that runs is whatever the consumer's Compose brings, and 0.150.1 is
