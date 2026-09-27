@@ -61,12 +61,13 @@ jobs:
           # through /dev/full.
           #
           # macOS measures seven under Linux, and the direction is the point:
-          # the nine hardware cases that need only a device to open RUN there,
-          # since VideoToolbox opens on Apple Silicon (see that row's own note),
-          # and so does the AV1 device case, which finds no AV1 hwaccel in a
-          # mac bundle and checks that libdav1d still decodes. Three
-          # go the other way, the still-webp decode and the two Windows also
-          # skips for want of VAAPI and /dev/full.
+          # ten of the sixteen hardware cases RUN there, since VideoToolbox
+          # opens on Apple Silicon (see that row's own note). They are six of
+          # the nine negotiation and fallback cases, the three player paths,
+          # and the AV1 device case, which finds no AV1 hwaccel in a mac bundle
+          # and checks that libdav1d still decodes. Three go the other way, the
+          # still-webp decode and the two Windows also skips for want of VAAPI
+          # and /dev/full.
           #
           # The DVB tests used to be three skips per row waiting on a bundle
           # that did not carry the decoder. It does now, so 'dvbsub' is a
@@ -105,15 +106,15 @@ jobs:
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats
             maxSkipped: 34
           # Twenty-two measured, and every one of them named: twelve that need a
-          # real output line, as everywhere else in this matrix; three
-          # VAAPI-only decode paths and both hardware-encode cases, since a mac
-          # has no VAAPI; the writer's index failure, which wants /dev/full; the
-          # round trip for the encoder that refuses yuv420p; the still-webp
-          # decode; the 4:4:4 AV1 refusal, whose fixture needs libaom, which
-          # Homebrew's ffmpeg does not carry; and the VP9 device case, since
-          # VideoToolbox opens here and then decodes in software, which leaves
-          # nothing on the device to check. The font tests that used to sit
-          # here run now.
+          # real output line, as everywhere else in this matrix; four decode
+          # cases that need frames on the device, since VideoToolbox opens here
+          # and then decodes in software (the surfaces check, the second
+          # decoder, the downloaded picture and the VP9 device case); both
+          # hardware-encode cases, since a mac has no VAAPI; the writer's index
+          # failure, which wants /dev/full; the round trip for the encoder that
+          # refuses yuv420p; the still-webp decode; and the 4:4:4 AV1 refusal,
+          # whose fixture needs libaom, which Homebrew's ffmpeg does not carry.
+          # The font tests that used to sit here run now.
           #
           # It was thirty-one, and nine of the difference were tests that could
           # not build their fixture at all: Homebrew's ffmpeg carries neither

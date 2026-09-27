@@ -118,8 +118,10 @@ tools/build-natives.sh, is authoritative): demuxers mov/mp4,
 matroska/webm, gif, apng, image2 and the still pipes, plus the
 standalone-audio set (ogg, mp3, flac, wav, ac3, eac3); video decoders
 h264, hevc, vp8, vp9, av1 (libdav1d for software decode, since the native
-av1 decoder has no software path and runs only behind a hwaccel), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
-vorbis, mp3, flac and WAV pcm (s16/s24/s32/float -- the real-life set
+av1 decoder has no software path and runs only behind a hwaccel: corrected
+2026-09-27, this said the native decoder was too slow, see M11), mjpeg,
+png, webp; audio decoders aac, ac3/eac3, alac, opus, vorbis, mp3, flac and
+WAV pcm (s16/s24/s32/float -- the real-life set
 added 2026-06-11: movie-rip tracks, m4a lossless, DAW exports);
 libswscale + libswresample; libavfilter trimmed to exactly the
 playback-rate chain (atempo + abuffer/abuffersink, added in M8);
@@ -376,7 +378,10 @@ README once the library is usable.
   adapters belong to skinema-compose. Found on the way: the native
   vp8/vp9 decoders silently drop the webm alpha side-channel. Software
   decode therefore swaps to libvpx for every 8-bit vp8/vp9 stream (see
-  `pickDecoder`), so trimmed builds must carry libvpx.
+  `pickDecoder`), so trimmed builds must carry libvpx. (Corrected
+  2026-09-27: this said "for those streams", and the swap was never limited
+  to alpha ones, which is also why AUTO never reached the GPU for VP8/VP9.
+  See M11.)
 - **M2 -- skiko + compose: DONE (2026-06-10); the consumer wired it in
   2026-08.** VideoFrameImage raster-copies a frame into a Skia image and
   closes the previous one (straight/UNPREMUL alpha); deliberately
@@ -793,7 +798,10 @@ README once the library is usable.
   re-run of tools/layout-oracle.c. The acceptance suite (VideoDecoderHwTest)
   is gated behind SKINEMA_TEST_HWACCEL=1 so a GPU-less CI, and macOS's
   always-present VideoToolbox, are not silently exercised on a path this
-  change cannot see.
+  change cannot see. (The macOS row has since opted in on purpose: its
+  VideoToolbox device opens and decodes in software, which exercises the
+  negotiation and the fallback, and build.yml says which cases that leaves
+  skipped.)
 
   Corrected 2026-08-18, and the correction is the lesson: the surface to
   negotiate for was scoped to the thread that opened the file, and a
@@ -817,18 +825,33 @@ README once the library is usable.
   Corrected again 2026-09-27, for a narrower reason with the same shape: the
   device was offered only the decoder software decode uses, and for AV1
   (libdav1d) and 8-bit VP8/VP9 (libvpx) that decoder is a library wrapper
-  with no hardware config. So AUTO never engaged the GPU for those codecs on
-  any platform, although every bundle carries av1/vp9 hwaccels. The report
-  was honest (`hardwareActive` false), and nobody read it for those files. A
-  4K AV1 clip measured the cost: 4.2 cores for playback in the Compose demo,
-  where the Iris Xe video engine decodes the same stream at about 5% of its
-  capacity. The device is now offered FFmpeg's own decoder beside the
-  software one, except for a stream tagged with webm alpha, which only
-  libvpx reads. The native AV1 decoder has no software path, so a stream it
-  refuses after the device opened (4:4:4 on consumer hardware) is moved back
-  to libdav1d under AUTO and fails under REQUIRE. The old ROADMAP line saying
-  the native AV1 decoder was "too slow for 1080p" was the misreading behind
-  it: that decoder is not slow, it cannot decode without a device.
+  with no hardware config. So AUTO never engaged the GPU for those codecs,
+  although the Linux and Windows bundles carry av1 and vp9 hwaccels and the
+  macOS bundle a vp9 one. The report was honest (`hardwareActive` false), and
+  nobody read it for those files. A 4K AV1 clip measured the cost: 4.2 cores
+  for playback in the Compose demo, where the Iris Xe video engine decodes
+  the same stream at about 5% of its capacity. The device is now offered
+  FFmpeg's own decoder beside the software one, except for a stream tagged
+  with webm alpha, which only libvpx reads.
+
+  That change has a consequence of its own. The native AV1 decoder has no
+  software path: whenever its hwaccel cannot initialise for a stream the
+  device accepted (a GPU with no AV1 decode, which is every Intel before
+  Gen12, AMD before RDNA2 and a Windows machine on the WARP adapter, or a
+  profile or size the driver refuses), the first packet fails with ENOSYS
+  instead of decoding on in software. Measured for 4:4:4, for a width past
+  the driver's limit and after a seek: one packet consumed each time. AUTO
+  therefore moves to libdav1d and replays the packets the refused decoder
+  was sent, so nothing is read twice and a source that cannot seek loses
+  nothing. REQUIRE fails. The first version of the fallback seeked back
+  instead, which a forward-only source can answer by landing past the start.
+  And because that refusal now comes at the first frame rather than at the
+  open, `setSource` decodes the new file's first frame before it touches the
+  sound or closes the old file: a file that opens and cannot give a picture
+  is refused like one that will not open, where it used to fail the player.
+  The old ROADMAP line saying the native AV1 decoder was "too slow for
+  1080p" was the misreading behind all of it: that decoder is not slow, it
+  cannot decode without a device.
 
 - **M12 -- software encode + mux (DONE, 2026-06-22; the bundle followed in M16/M18).**
   The push-side inverse of the decode pipeline. `MediaWriter`
