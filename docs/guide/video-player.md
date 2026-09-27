@@ -59,7 +59,9 @@ VideoPlayer(
   per file otherwise; `HwAccel.REQUIRE` fails the open (`Failed`) when
   hardware decode cannot be set up. The RGBA frame contract is identical
   on every path -- frames still come back through system memory, so this
-  buys decode cost, not a zero-copy path.
+  buys decode cost, not a zero-copy path. One exception to "GPU when
+  present": a VP8/VP9 webm carrying alpha always decodes in software,
+  because no GPU decoder keeps the alpha channel, and `REQUIRE` fails it.
 - `unwatched` -- what the timeline does while nobody is taking the
   picture. See the `WhenUnwatched` discussion below.
 - `startPaused` -- open onto the first frame and stay on it. `state`

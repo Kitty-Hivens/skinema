@@ -22,5 +22,11 @@ package dev.hivens.skinema.libav
  * Hardware frames are downloaded to a software format and run through the
  * existing swscale chokepoint, so the RGBA8888 output contract is
  * unchanged whichever path a frame took.
+ *
+ * The device may decode with a different decoder than software would:
+ * libdav1d (AV1) and libvpx (8-bit VP8/VP9) have no hardware path, so the
+ * device is offered FFmpeg's own decoder for those codecs. A VP8/VP9 stream
+ * carrying webm alpha stays on libvpx, because the GPU would drop the alpha:
+ * it decodes in software under [AUTO] and fails under [REQUIRE].
  */
 enum class HwAccel { OFF, AUTO, REQUIRE }

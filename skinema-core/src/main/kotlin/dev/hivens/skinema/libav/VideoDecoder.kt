@@ -23,7 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class VideoDecoder private constructor(
     private val arena: Arena,
     private var fmtCtx: MemorySegment,
-    private val codecCtx: MemorySegment,
+    // Replaced once at most, when a decoder chosen for the device refuses the
+    // stream and decoding moves to [softwareFallback].
+    private var codecCtx: MemorySegment,
     private val packet: MemorySegment,
     private val frame: MemorySegment,
     val streamIndex: Int,
@@ -47,6 +49,11 @@ class VideoDecoder private constructor(
     // AVBufferRef* to the hw device this decoder owns, unref'd at close; NULL
     // for software.
     private val hwDeviceCtx: MemorySegment,
+    // The AVCodec decoding right now.
+    private var decoder: MemorySegment,
+    // The decoder software decode would have used, when the one above was
+    // picked only because the device can drive it. Null otherwise.
+    private var softwareFallback: MemorySegment?,
     // The custom byte source backing this decoder (freed at close, after the
     // format context); null for a file-Path decoder.
     private val avioSource: AvioSource?,
@@ -114,6 +121,60 @@ class VideoDecoder private constructor(
      * every other signal is read off the request rather than off a frame.
      */
     internal fun lastFrameFormat(): Int = frame.get(JAVA_INT, LibavAbi.Frame.FORMAT)
+
+    /** Whether the decoder in use is the one FFmpeg names [name]. An AVCodec is otherwise opaque here. */
+    internal fun usesDecoder(name: String): Boolean = Arena.ofConfined().use { a ->
+        Libav.avcodecFindDecoderByName(a.allocateFrom(name)).address() == decoder.address()
+    }
+
+    // Whether any frame has come out since the open. A decoder that has
+    // produced one has proven it can decode this stream, and a failure after
+    // that is a decode error rather than a refusal.
+    private var frameSeen = false
+
+    // The unit the last seek positioned the demuxer at. Null while it still
+    // stands where the open left it.
+    private var lastSeekUnit: Long? = null
+
+    /**
+     * Moves decoding to [softwareFallback] when the decoder picked for the
+     * device refused the stream before producing a single frame. True when
+     * it did, so the caller asks again, and false when this is not that case.
+     *
+     * The decoder picked for the device can be one with no software path of
+     * its own. FFmpeg's native AV1 decoder decodes only through a hwaccel, so
+     * when the hwaccel cannot initialise for a stream the device accepted (a
+     * profile the driver does not do), avcodec's usual answer of decoding on
+     * in software is not available, and the first packet fails instead.
+     * AUTO promises the file plays either way, so it moves to the decoder
+     * software decode would have used and starts again from where the demuxer
+     * was last positioned. REQUIRE promises the opposite and fails.
+     */
+    private fun fellBackToSoftware(ret: Int): Boolean {
+        val software = softwareFallback ?: return false
+        if (frameSeen) return false
+        if (hardware == HwAccel.REQUIRE) {
+            throw LibavException(
+                "the device opened but could not decode this stream (HwAccel.REQUIRE): ${Libav.errorText(ret)} ($ret)",
+            )
+        }
+        softwareFallback = null
+        val ptrPtr = arena.allocate(ADDRESS)
+        ptrPtr.set(ADDRESS, 0, codecCtx)
+        Libav.avcodecFreeContext(ptrPtr)
+        // Cleared before the replacement is built, so a throw out of it
+        // leaves close() nothing to free twice.
+        codecCtx = MemorySegment.NULL
+        val codecpar = streamAt(fmtCtx, streamIndex).get(ADDRESS, LibavAbi.Stream.CODECPAR)
+            .reinterpret(LibavAbi.CodecParameters.SIZEOF)
+        codecCtx = decoderContext(arena, software, codecpar)
+        Libav.checkAv(Libav.avcodecOpen2(codecCtx, software), "avcodec_open2(software fallback)")
+        decoder = software
+        hwFellBack = true
+        val unit = lastSeekUnit
+        if (unit != null) seekToUnit(unit) else seekTo(0)
+        return true
+    }
 
     class RgbaFrame internal constructor(
         val width: Int,
@@ -192,6 +253,7 @@ class VideoDecoder private constructor(
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> {
+                    frameSeen = true
                     noteFrameEnd()
                     noteHwEngagement()
                     return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
@@ -203,7 +265,7 @@ class VideoDecoder private constructor(
                     }
                     return null
                 }
-                else -> Libav.checkAv(ret, "avcodec_receive_frame")
+                else -> if (!fellBackToSoftware(ret)) Libav.checkAv(ret, "avcodec_receive_frame")
             }
         }
     }
@@ -281,6 +343,7 @@ class VideoDecoder private constructor(
     }
 
     private fun seekToUnit(ts: Long) {
+        lastSeekUnit = ts
         val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
         avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
         Libav.checkAv(seeked, "av_seek_frame")
@@ -431,6 +494,7 @@ class VideoDecoder private constructor(
             }
             val sent = Libav.avcodecSendPacket(codecCtx, packet)
             Libav.avPacketUnref(packet)
+            if (sent < 0 && fellBackToSoftware(sent)) return
             Libav.checkAv(sent, "avcodec_send_packet")
             return
         }
@@ -741,6 +805,10 @@ class VideoDecoder private constructor(
          * opaque. libvpx decodes those streams straight to yuva420p, so
          * prefer it when present; absent libvpx (a build without it), the
          * default decoder still plays the stream -- just without alpha.
+         *
+         * This is the software choice. libvpx has no hardware config, so under
+         * a hardware policy [hardwareCandidates] offers the device FFmpeg's own
+         * decoder beside it.
          */
         private fun pickDecoder(arena: Arena, codecpar: MemorySegment, defaultDecoder: MemorySegment): MemorySegment {
             val libvpxName = when (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)) {
@@ -764,7 +832,53 @@ class VideoDecoder private constructor(
             return if (libvpx == MemorySegment.NULL) defaultDecoder else libvpx
         }
 
-        private class HwSetup(val pixFmt: Int, val deviceCtx: MemorySegment)
+        /**
+         * The decoders worth offering a device, in order: the one software
+         * decode uses, then FFmpeg's own decoder for the codec when that is a
+         * different one.
+         *
+         * Hardware decode lives in FFmpeg's own decoders (a hwaccel is a
+         * hook inside them) and never in a wrapper around an external
+         * library. So wherever software decode prefers a library, the device
+         * has to be offered the native decoder instead, or it is never asked:
+         * AV1 goes to libdav1d and 8-bit VP8/VP9 to libvpx, neither of which
+         * has a hardware config, and AUTO decoded both on the CPU on every
+         * machine. FFmpeg names its own decoder after the codec, which is how
+         * it is found without walking the whole decoder list.
+         *
+         * A stream carrying webm alpha keeps libvpx alone. The alpha plane
+         * travels beside the picture and only libvpx reads it. The native
+         * decoders drop it on the GPU exactly as they do on the CPU, and a
+         * transparent clip turning opaque is worse than one decoding in
+         * software. REQUIRE then has no device-capable decoder and fails,
+         * which is what it promises for a stream the GPU cannot play as is.
+         */
+        internal fun hardwareCandidates(
+            arena: Arena,
+            software: MemorySegment,
+            codecName: String,
+            alphaTagged: Boolean,
+        ): List<MemorySegment> {
+            if (alphaTagged) return listOf(software)
+            val native = Libav.avcodecFindDecoderByName(arena.allocateFrom(codecName))
+            if (native == MemorySegment.NULL || native.address() == software.address()) return listOf(software)
+            return listOf(software, native)
+        }
+
+        /** Whether the stream declares webm alpha (matroska's AlphaMode, surfaced as a stream tag). */
+        private fun alphaTagged(arena: Arena, stream: MemorySegment): Boolean =
+            dictValue(stream.get(ADDRESS, LibavAbi.Stream.METADATA), arena.allocateFrom("alpha_mode")) == "1"
+
+        /**
+         * A device opened for [decoder], or none. [deviceRef] is the reference
+         * the codec context takes over once it is wired in.
+         */
+        private class HwSetup(
+            val pixFmt: Int,
+            val deviceCtx: MemorySegment,
+            val deviceRef: MemorySegment,
+            val decoder: MemorySegment,
+        )
 
         /**
          * The platform's hw device types, best first (see [HwAccel]).
@@ -807,19 +921,18 @@ class VideoDecoder private constructor(
         }
 
         /**
-         * Tries each platform device type until one both decodes this codec
-         * and opens a device, then wires that device and the get_format
-         * negotiation upcall into [codecCtx]. Returns the hw surface format
-         * to expect on decoded frames; AV_PIX_FMT_NONE (software) when none
-         * opens -- unless [hardware] is REQUIRE, which throws instead. Only
-         * a successful device touches [codecCtx], so AUTO-without-a-device
-         * is byte-for-byte the software path.
+         * Tries each platform device type, best first, against [candidates]
+         * in order, until one decoder has a config for the type and the
+         * device opens. No device touches a codec context here. [wireHwDevice]
+         * hands it over once the context for the chosen decoder exists.
+         * When none opens the answer is AV_PIX_FMT_NONE and the first
+         * candidate, so AUTO without a device is byte-for-byte the software
+         * path. REQUIRE throws instead.
          */
-        private fun setupHwAccel(arena: Arena, codecCtx: MemorySegment, decoder: MemorySegment, hardware: HwAccel): HwSetup {
-            val ctx = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+        private fun openHwDevice(arena: Arena, candidates: List<MemorySegment>, hardware: HwAccel): HwSetup {
             for (type in preferredHwTypes()) {
+                val decoder = candidates.firstOrNull { decoderHwPixFmt(it, type) != LibavAbi.AV_PIX_FMT_NONE } ?: continue
                 val hwPixFmt = decoderHwPixFmt(decoder, type)
-                if (hwPixFmt == LibavAbi.AV_PIX_FMT_NONE) continue
                 val deviceOut = arena.allocate(ADDRESS)
                 if (Libav.avHwdeviceCtxCreate(deviceOut, type) < 0) continue
                 val device = deviceOut.get(ADDRESS, 0)
@@ -836,22 +949,49 @@ class VideoDecoder private constructor(
                     Libav.avBufferUnref(deviceOut)
                     continue
                 }
-                ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, deviceRef)
-                ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
-                // The surface to negotiate for, travelling with the context so
-                // the upcall finds it whichever thread avcodec calls it on.
-                // Written before avcodec_open2, which is where frame threading
-                // clones the context for its workers. Freed with the session
-                // arena, which outlives avcodec_free_context.
-                val target = arena.allocate(JAVA_INT)
-                target.set(JAVA_INT, 0, hwPixFmt)
-                ctx.set(ADDRESS, LibavAbi.CodecContext.OPAQUE, target)
-                return HwSetup(hwPixFmt, device)
+                return HwSetup(hwPixFmt, device, deviceRef, decoder)
             }
             if (hardware == HwAccel.REQUIRE) {
                 throw LibavException("no hardware decoder available for this file (HwAccel.REQUIRE)")
             }
-            return HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL)
+            return HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL, MemorySegment.NULL, candidates.first())
+        }
+
+        /** Hands [setup]'s device and the get_format negotiation to [codecCtx], before avcodec_open2. */
+        private fun wireHwDevice(arena: Arena, codecCtx: MemorySegment, setup: HwSetup) {
+            val ctx = codecCtx.reinterpret(LibavAbi.CodecContext.SIZEOF)
+            ctx.set(ADDRESS, LibavAbi.CodecContext.HW_DEVICE_CTX, setup.deviceRef)
+            ctx.set(ADDRESS, LibavAbi.CodecContext.GET_FORMAT, Libav.getFormatUpcall())
+            // The surface to negotiate for, travelling with the context so
+            // the upcall finds it whichever thread avcodec calls it on.
+            // Written before avcodec_open2, which is where frame threading
+            // clones the context for its workers. Freed with the session
+            // arena, which outlives avcodec_free_context.
+            val target = arena.allocate(JAVA_INT)
+            target.set(JAVA_INT, 0, setup.pixFmt)
+            ctx.set(ADDRESS, LibavAbi.CodecContext.OPAQUE, target)
+        }
+
+        /** A codec context for [decoder] over [codecpar], not yet opened. */
+        private fun decoderContext(arena: Arena, decoder: MemorySegment, codecpar: MemorySegment): MemorySegment {
+            val ctx = Libav.avcodecAllocContext3(decoder)
+            if (ctx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3 returned NULL")
+            try {
+                Libav.checkAv(Libav.avcodecParametersToContext(ctx, codecpar), "avcodec_parameters_to_context")
+                // The context defaults to a single decode thread; "auto"
+                // sizes to the machine. On 1080p AV1 that is the difference
+                // between a multi-second seek landing and a sub-second one.
+                Libav.checkAv(
+                    Libav.avOptSet(ctx, arena.allocateFrom("threads"), arena.allocateFrom("auto")),
+                    "av_opt_set(threads)",
+                )
+            } catch (t: Throwable) {
+                val ptrPtr = arena.allocate(ADDRESS)
+                ptrPtr.set(ADDRESS, 0, ctx)
+                Libav.avcodecFreeContext(ptrPtr)
+                throw t
+            }
+            return ctx
         }
 
         /** Opens [path] and prepares a decoder for its best video stream. */
@@ -884,6 +1024,8 @@ class VideoDecoder private constructor(
         ): VideoDecoder {
             var codecCtx = MemorySegment.NULL
             var hwDevice = MemorySegment.NULL
+            // The device reference meant for the context, while no context holds it.
+            var deviceRef = MemorySegment.NULL
             // Declared out here so the catch can release them: every throw
             // past their allocation -- the no-dimensions guard, the metadata
             // readers, the duration arithmetic -- used to leak both.
@@ -916,27 +1058,27 @@ class VideoDecoder private constructor(
                 val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
                     .reinterpret(LibavAbi.CodecParameters.SIZEOF)
 
-                val decoder = pickDecoder(arena, codecpar, decoderOut.get(ADDRESS, 0))
-                codecCtx = Libav.avcodecAllocContext3(decoder)
-                if (codecCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3 returned NULL")
-                Libav.checkAv(Libav.avcodecParametersToContext(codecCtx, codecpar), "avcodec_parameters_to_context")
-                // The context defaults to a single decode thread; "auto"
-                // sizes to the machine. On 1080p AV1 that is the difference
-                // between a multi-second seek landing and a sub-second one.
-                Libav.checkAv(
-                    Libav.avOptSet(codecCtx, arena.allocateFrom("threads"), arena.allocateFrom("auto")),
-                    "av_opt_set(threads)",
-                )
-                // Wire a hardware device + the get_format upcall before open,
-                // or stay on AV_PIX_FMT_NONE (software). REQUIRE turns "no
+                val software = pickDecoder(arena, codecpar, decoderOut.get(ADDRESS, 0))
+                // The device is opened before the context, because which
+                // decoder the context is for depends on it. REQUIRE turns "no
                 // device" into a throw; AUTO falls through to software.
                 val hw = if (hardware == HwAccel.OFF) {
-                    HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL)
+                    HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL, MemorySegment.NULL, software)
                 } else {
-                    setupHwAccel(arena, codecCtx, decoder, hardware)
+                    val codecName = Libav.avcodecGetName(codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID))
+                        .reinterpret(Long.MAX_VALUE).getString(0)
+                    val candidates = hardwareCandidates(arena, software, codecName, alphaTagged(arena, stream))
+                    openHwDevice(arena, candidates, hardware)
                 }
                 hwDevice = hw.deviceCtx
-                Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2")
+                deviceRef = hw.deviceRef
+                codecCtx = decoderContext(arena, hw.decoder, codecpar)
+                if (hw.pixFmt != LibavAbi.AV_PIX_FMT_NONE) {
+                    wireHwDevice(arena, codecCtx, hw)
+                    // The context owns that reference now and releases it itself.
+                    deviceRef = MemorySegment.NULL
+                }
+                Libav.checkAv(Libav.avcodecOpen2(codecCtx, hw.decoder), "avcodec_open2")
 
                 packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
                 frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
@@ -970,6 +1112,8 @@ class VideoDecoder private constructor(
                     hw.pixFmt,
                     hardware,
                     hwDevice,
+                    hw.decoder,
+                    software.takeIf { it.address() != hw.decoder.address() },
                     avioSource,
                     reopenPath,
                 )
@@ -986,6 +1130,10 @@ class VideoDecoder private constructor(
                 if (frame != MemorySegment.NULL) {
                     ptrPtr.set(ADDRESS, 0, frame)
                     Libav.avFrameFree(ptrPtr)
+                }
+                if (deviceRef != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, deviceRef)
+                    Libav.avBufferUnref(ptrPtr)
                 }
                 // free_context released the codec's ref; release ours.
                 if (hwDevice != MemorySegment.NULL) {

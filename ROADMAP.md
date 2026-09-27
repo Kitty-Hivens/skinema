@@ -117,8 +117,8 @@ Trimmed build configure baseline: `--disable-everything --enable-shared
 tools/build-natives.sh, is authoritative): demuxers mov/mp4,
 matroska/webm, gif, apng, image2 and the still pipes, plus the
 standalone-audio set (ogg, mp3, flac, wav, ac3, eac3); video decoders
-h264, hevc, vp8, vp9, av1 (libdav1d -- the native decoder is too slow
-for 1080p), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
+h264, hevc, vp8, vp9, av1 (libdav1d for software decode, since the native
+av1 decoder has no software path and runs only behind a hwaccel), mjpeg, png, webp; audio decoders aac, ac3/eac3, alac, opus,
 vorbis, mp3, flac and WAV pcm (s16/s24/s32/float -- the real-life set
 added 2026-06-11: movie-rip tracks, m4a lossless, DAW exports);
 libswscale + libswresample; libavfilter trimmed to exactly the
@@ -374,9 +374,9 @@ README once the library is usable.
   Resolved on the way: core ships with NO coroutine dependency -- the
   consumer polls `acquireFrame()` on its own cadence and reads `state`;
   adapters belong to skinema-compose. Found on the way: the native
-  vp8/vp9 decoders silently drop the webm alpha side-channel; the decoder
-  swaps to libvpx for those streams (see `pickDecoder`), so trimmed builds
-  must carry libvpx.
+  vp8/vp9 decoders silently drop the webm alpha side-channel. Software
+  decode therefore swaps to libvpx for every 8-bit vp8/vp9 stream (see
+  `pickDecoder`), so trimmed builds must carry libvpx.
 - **M2 -- skiko + compose: DONE (2026-06-10); the consumer wired it in
   2026-08.** VideoFrameImage raster-copies a frame into a Skia image and
   closes the previous one (straight/UNPREMUL alpha); deliberately
@@ -772,7 +772,7 @@ README once the library is usable.
   beyond it). Sequence: M11 GPU decode, M12 software encode + mux, M13 GPU
   encode, M14 transcode/record; CPU decode is the existing engine.
 
-- **M11 -- hardware decode (DONE, 2026-06-22; negotiation corrected 2026-08-18).**
+- **M11 -- hardware decode (DONE, 2026-06-22; negotiation corrected 2026-08-18; decoder choice corrected 2026-09-27).**
   VideoDecoder grew an opt-in GPU path behind `HwAccel` (OFF default / AUTO /
   REQUIRE), threaded through FrameSources and a VideoPlayer `hardware`
   parameter; `VideoPlayer.hardwareActive` (and `FrameSource.hardwareActive`)
@@ -813,6 +813,22 @@ README once the library is usable.
   carry the platform hwaccels (VAAPI adds a libva system dependency on Linux,
   like fontconfig). NVDEC/NVENC/QSV/AMF and zero-copy GPU->Skiko interop are
   deferred.
+
+  Corrected again 2026-09-27, for a narrower reason with the same shape: the
+  device was offered only the decoder software decode uses, and for AV1
+  (libdav1d) and 8-bit VP8/VP9 (libvpx) that decoder is a library wrapper
+  with no hardware config. So AUTO never engaged the GPU for those codecs on
+  any platform, although every bundle carries av1/vp9 hwaccels. The report
+  was honest (`hardwareActive` false), and nobody read it for those files. A
+  4K AV1 clip measured the cost: 4.2 cores for playback in the Compose demo,
+  where the Iris Xe video engine decodes the same stream at about 5% of its
+  capacity. The device is now offered FFmpeg's own decoder beside the
+  software one, except for a stream tagged with webm alpha, which only
+  libvpx reads. The native AV1 decoder has no software path, so a stream it
+  refuses after the device opened (4:4:4 on consumer hardware) is moved back
+  to libdav1d under AUTO and fails under REQUIRE. The old ROADMAP line saying
+  the native AV1 decoder was "too slow for 1080p" was the misreading behind
+  it: that decoder is not slow, it cannot decode without a device.
 
 - **M12 -- software encode + mux (DONE, 2026-06-22; the bundle followed in M16/M18).**
   The push-side inverse of the decode pipeline. `MediaWriter`
