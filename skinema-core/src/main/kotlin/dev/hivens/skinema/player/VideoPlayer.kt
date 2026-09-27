@@ -114,8 +114,10 @@ class VideoPlayer internal constructor(
          * decode -- the historical behaviour and the only CI-tested path.
          * [HwAccel.AUTO] uses the platform's GPU decoder when present and
          * falls back to software per file otherwise; [HwAccel.REQUIRE]
-         * fails the open ([State.Failed]) when hardware decode cannot be
-         * set up. The RGBA frame contract is identical on every path.
+         * fails the player ([State.Failed]) when hardware decode cannot be
+         * set up, at the open or at the first frame, and refuses a
+         * [setSource] for the same reason. The RGBA frame contract is
+         * identical on every path.
          */
         hardware: HwAccel = HwAccel.OFF,
         /**
@@ -744,8 +746,9 @@ class VideoPlayer internal constructor(
     /**
      * Why the last [setSource] did not take, or null when the last one did.
      *
-     * A file that cannot be opened leaves the player where it was rather than
-     * failing it: a queue that hits one unreadable item should skip that item,
+     * A file that cannot be opened, or opens and cannot produce its first
+     * picture, leaves the player where it was rather than failing it: a queue
+     * that hits one unreadable item should skip that item,
      * not lose the player and the position of everything after it. The cause
      * is kept here so a consumer can say which item was dropped and why.
      */
@@ -768,8 +771,8 @@ class VideoPlayer internal constructor(
      * picture takes files with a picture, and one playing sound alone (see
      * [State] and the frameless note in the guide) takes what the audio side
      * can open. A file of the wrong shape is refused through [sourceFailure],
-     * as is one that will not open at all, and the file playing carries on
-     * untouched in both cases.
+     * as is one that will not open at all and one that opens and then refuses
+     * its first frame, and the file playing carries on untouched in each case.
      *
      * What does NOT carry over is everything that belonged to the old file:
      * the position starts at zero, subtitles go off, and duration, tags,
@@ -1175,6 +1178,16 @@ class VideoPlayer internal constructor(
      * until the new file is in hand, the sound above all -- told first, a
      * refusal would have taken the sound of the file still playing with it.
      *
+     * In hand means a picture came out of it, not that it opened. A file can
+     * open and then refuse its first frame: a stream the decoder cannot read, a
+     * hardware policy of REQUIRE on a device that hands decoding back to the
+     * CPU, a GPU that takes AV1 at the open and refuses it at the first packet.
+     * Decoded after the sound had been switched and the old file closed, that
+     * refusal had nothing left to fall back to, so it failed the whole player
+     * where a file that would not open costs only itself. The first frame is
+     * decoded here instead, bare, and converted once the switch has gone
+     * through. Nothing decodes between the two.
+     *
      * The sound is then waited for, because the new file's tracks and duration
      * are read off the audio side: published without the wait, they would be
      * the last file's.
@@ -1183,6 +1196,15 @@ class VideoPlayer internal constructor(
         val next = try {
             frameSourceFactory(wanted)
         } catch (t: Throwable) {
+            sourceFailure = t
+            return old
+        }
+        // Null is a file with no pictures in it, which is not a refusal: the
+        // EOF path decides what it means once the switch has gone through.
+        val first = try {
+            next.nextFrame(convert = false)
+        } catch (t: Throwable) {
+            runCatching { next.close() }
             sourceFailure = t
             return old
         }
@@ -1196,7 +1218,7 @@ class VideoPlayer internal constructor(
         runCatching { old.close() }
         resetForNewSource(wanted)
         publishFileMetadata(next)
-        landFirstFrame(next, resumePlaying)
+        landFirstFrame(next, first, resumePlaying)
         return next
     }
 
@@ -1247,10 +1269,10 @@ class VideoPlayer internal constructor(
     /**
      * Lands the first frame of a file the way a paused start lands its poster:
      * forced, so the pacer publishes it whatever the state says and the picture
-     * is up before anything decides whether to run.
+     * is up before anything decides whether to run. [first] is the frame
+     * [switchSource] already decoded from [decoder], still unconverted.
      */
-    private fun landFirstFrame(decoder: FrameSource, resumePlaying: Boolean) {
-        val first = decoder.nextFrame(convert = false)
+    private fun landFirstFrame(decoder: FrameSource, first: VideoDecoder.RgbaFrame?, resumePlaying: Boolean) {
         if (first == null) {
             // A file with no pictures in it. The EOF path is what decides what
             // that means, and it runs as soon as this player is playing.

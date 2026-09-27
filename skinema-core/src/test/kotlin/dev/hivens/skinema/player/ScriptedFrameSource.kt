@@ -30,6 +30,12 @@ class ScriptedFrameSource(
      * test that needs the wait itself has to declare one.
      */
     private val declaredDurationNanos: Long? = null,
+    /**
+     * The index whose decode throws instead of producing a frame; -1 (the
+     * default) never throws. At 0 it is a file that opens and then refuses
+     * its first frame.
+     */
+    private val failAt: Int = -1,
 ) : FrameSource {
 
     override fun durationNanos(): Long? = declaredDurationNanos
@@ -67,6 +73,7 @@ class ScriptedFrameSource(
         maxStartedIndex.updateAndGet { maxOf(it, i) }
         decodeCount.incrementAndGet()
         if (i == gateIndex) gate?.await()
+        if (i == failAt) throw IllegalStateException("scripted decode failure at frame $i")
         lastIndex = i
         index++
         return if (convert) fill(target, i) else VideoDecoder.RgbaFrame(width, height, i * periodNanos, NO_PIXELS)
