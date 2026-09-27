@@ -273,7 +273,9 @@ class VideoDecoderHwTest {
         VideoDecoder.open(video, HwAccel.AUTO).use { d ->
             assertTrue(d.nextFrame() != null, "AUTO must decode AV1")
             assertDecodedOnDevice(d, "AV1")
-            if (d.hardwareActive()) assertTrue(d.usesDecoder("av1"), "frames on the device came from FFmpeg's own decoder")
+            // No guard: holds with a device or without one, and after a
+            // refusal too, which lands on libdav1d with hardwareActive false.
+            assertEquals(d.hardwareActive(), d.usesDecoder("av1"), "frames on the device come from FFmpeg's own decoder, and only those")
         }
         assertEquals(software, ptsGrid(video, HwAccel.AUTO), "AV1 under AUTO must decode the software pts grid")
     }
@@ -323,7 +325,11 @@ class VideoDecoderHwTest {
         VideoDecoder.open(video, HwAccel.AUTO).use { d ->
             assertTrue(d.nextFrame() != null, "AUTO must decode VP9")
             assertDecodedOnDevice(d, "VP9")
-            if (d.hardwareActive()) assertTrue(d.usesDecoder("vp9"), "frames on the device came from FFmpeg's own decoder")
+            // No guard either way. A device opens only for FFmpeg's own decoder,
+            // which keeps it even when it then decodes in software. With no
+            // device the choice is the software one.
+            val deviceOpened = d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE
+            assertTrue(d.usesDecoder(if (deviceOpened) "vp9" else "libvpx-vp9"), "deviceOpened=$deviceOpened")
         }
         assertEquals(ptsGrid(video, HwAccel.OFF), ptsGrid(video, HwAccel.AUTO), "VP9 under AUTO must decode the software pts grid")
     }

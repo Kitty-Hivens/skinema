@@ -47,7 +47,7 @@ override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
             0 -> return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
             LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
             LibavAbi.AVERROR_EOF -> return null
-            else -> Libav.checkAv(ret, "avcodec_receive_frame")
+            else -> if (!fellBackToSoftware(ret)) Libav.checkAv(ret, "avcodec_receive_frame")
         }
     }
 }
@@ -55,7 +55,8 @@ override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
 
 `feedOnePacket` reads packets with `av_read_frame`, skips those not on
 the video stream, sends ours to the decoder, and on input EOF sends a
-NULL flush packet so the decoder drains. The whole format zoo collapses
+NULL flush packet so the decoder drains. Packets a software fallback still
+owes (see below) go out first, ahead of anything new from the demuxer. The whole format zoo collapses
 at one swscale chokepoint: decoded YUV becomes RGBA8888 in
 `convertCurrentFrame`. The swscale and destination buffers are reused
 across frames (allocating per frame would churn the GC), and the
@@ -101,12 +102,24 @@ Two exceptions follow from the same facts:
   the CPU, and an opaque picture is worse than a software decode. Under
   `REQUIRE` such a stream has nothing for a device and fails.
 - A decoder picked for the device can refuse the stream after the device
-  opened: a profile the driver does not do, such as 4:4:4 AV1. H.264 or
-  VP9 then carries on in software inside the same decoder, but the native
-  AV1 decoder cannot, and its first packet fails. `fellBackToSoftware`
-  catches exactly that case (a device-picked decoder, no frame produced
-  yet), rebuilds the codec context on the software decoder, repositions
-  the demuxer where it last stood and carries on. `REQUIRE` fails instead.
+  opened, whenever its hwaccel cannot initialise: a GPU with no AV1 decode
+  at all (Intel before Gen12, AMD before RDNA2, a Windows machine on the
+  WARP adapter), or a profile or size the driver refuses. H.264 or VP9 then
+  carries on in software inside the same decoder, but the native AV1
+  decoder cannot, and its first packet fails with ENOSYS. Measured for
+  4:4:4, for a width past the driver's limit and after a seek: exactly one
+  packet consumed. `fellBackToSoftware` catches that case (a device-picked
+  decoder, no frame produced yet), builds and opens a context on the
+  software decoder before letting the old one go, releases the device, and
+  replays the packets the refused decoder was sent, which it has kept as
+  references since the demuxer was last positioned (at most
+  `HELD_PACKET_LIMIT`). Nothing is read twice, so a source that cannot seek
+  loses nothing. `REQUIRE` fails instead.
+
+The fallback is covered on every CI row by `SoftwareFallbackTest`, which
+opens the native AV1 decoder as a device would pick it, with no device
+behind it: that decoder refuses every packet without a hwaccel, which is
+the same refusal in the same place.
 
 The codec context is opened with `threads = auto` via one `av_opt_set`
 downcall -- the default is single-threaded, which put a 5.5s AV1 keyframe

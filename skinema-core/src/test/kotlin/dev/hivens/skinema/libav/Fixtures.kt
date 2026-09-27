@@ -402,19 +402,27 @@ object Fixtures {
      * binary, and remuxes the result -- copying a stream, which needs no
      * encoder either.
      */
-    fun av1(target: Path, seconds: Int = 1, size: String = "64x64", rate: Int = 10): Path {
+    fun av1(
+        target: Path,
+        seconds: Int = 1,
+        size: String = "64x64",
+        rate: Int = 10,
+        /** Frames between keyframes. Null leaves each encoder's own default, which is one keyframe for a short clip. */
+        keyframeEvery: Int? = null,
+    ): Path {
+        val gop = keyframeEvery?.let { listOf("-g", "$it") } ?: emptyList()
         if (cliCan("libaom-av1")) {
             return generate(
                 target,
                 "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
-                "-pix_fmt", "yuv420p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40",
+                "-pix_fmt", "yuv420p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40", *gop.toTypedArray(),
             )
         }
         if (cliCan("libsvtav1")) {
             return generate(
                 target,
                 "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds",
-                "-pix_fmt", "yuv420p", "-c:v", "libsvtav1", "-preset", "12",
+                "-pix_fmt", "yuv420p", "-c:v", "libsvtav1", "-preset", "12", *gop.toTypedArray(),
             )
         }
         val raw = target.resolveSibling("${target.fileName}.y4m")
@@ -424,7 +432,8 @@ object Fixtures {
                 raw,
                 "-f", "lavfi", "-i", "testsrc2=size=$size:rate=$rate", "-t", "$seconds", "-pix_fmt", "yuv420p",
             )
-            runTool("SvtAv1EncApp", "-i", raw.toString(), "--preset", "12", "-b", ivf.toString())
+            val keyint = keyframeEvery?.let { listOf("--keyint", "$it") } ?: emptyList()
+            runTool("SvtAv1EncApp", "-i", raw.toString(), "--preset", "12", *keyint.toTypedArray(), "-b", ivf.toString())
             return generate(target, "-i", ivf.toString(), "-c", "copy")
         } finally {
             Files.deleteIfExists(raw)
