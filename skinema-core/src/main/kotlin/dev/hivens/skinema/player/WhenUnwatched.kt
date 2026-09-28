@@ -15,27 +15,14 @@ package dev.hivens.skinema.player
  * put behind another while its music plays is still being listened to, and
  * stopping it would stop the part the person is using. A silent one behind
  * another is doing nothing for anybody. [FollowSound], the default, asks.
+ * It became the default after [Freeze], which a consumer wanting the old
+ * behaviour passes by name.
  *
  * It decides one thing only: whether the clock stops. Either way the player
  * stops decoding and converting frames nobody is taking, which is the point
  * of noticing at all.
  */
 enum class WhenUnwatched {
-
-    /**
-     * Time runs on while the player can be heard, and stops while it cannot.
-     *
-     * Heard means sound is playing through a device at a volume above zero. A
-     * player with no audio, a muted one, and one whose track has ended under
-     * a longer picture take [Freeze]. The rest take [KeepTime]: the sound
-     * plays on, and the picture catches up with it when it is wanted again.
-     *
-     * Asked once, at the moment the picture stops being taken, and not again
-     * until it is taken and stopped once more. Unmuting a hidden frozen
-     * player leaves it frozen, and muting a hidden playing one leaves it
-     * playing, since neither changes whether anyone is looking.
-     */
-    FollowSound,
 
     /**
      * Time stops with the picture and resumes where it stopped.
@@ -51,14 +38,39 @@ enum class WhenUnwatched {
     /**
      * Time runs on, and the picture rejoins it wherever it has got to.
      *
-     * The rejoin moves the picture alone. The decoder jumps to the keyframe
-     * before the clock and decodes forward from there, showing a frame now
-     * and then while it catches up, and the sound is left exactly where it
-     * is: someone who went on listening would otherwise hear the stretch
-     * since that keyframe a second time.
+     * The rejoin moves the picture alone, and the sound is left exactly where
+     * it is: someone who went on listening would otherwise hear a stretch a
+     * second time. A picture less than a couple of seconds behind decodes
+     * forward to the clock. One further behind jumps to the keyframe before
+     * the clock and catches up from there, showing a frame now and then, and
+     * never a frame older than the one already on screen.
      *
-     * The lap still turns while nobody watches. A looping file whose time runs
-     * out starts over, sound included, and one that does not loop ends.
+     * The lap still turns while nobody watches, read off the file's declared
+     * duration. A looping file whose time runs out starts over, sound
+     * included. One that does not loop ends, and when the picture is wanted
+     * again it still shows the frame it had when it was hidden, since nothing
+     * decoded the end. A source that declares no duration cannot tell when
+     * its lap is over, and turns it only once the picture comes back.
      */
     KeepTime,
+
+    /**
+     * Time runs on while the player can be heard, and stops while it cannot.
+     *
+     * Heard means sound is going out through a device at a player volume above
+     * zero. A player with no audio, one at volume zero, and one whose track
+     * has ended under a longer picture take [Freeze]. The rest take
+     * [KeepTime]: the sound plays on, and the picture catches up with it when
+     * it is wanted again. What happens past the player is not seen: a sink
+     * that discards the sound, or a system mixer muted for this stream, still
+     * counts as heard.
+     *
+     * Asked once, at the moment the picture stops being taken, and not again
+     * until it is taken and stopped once more. Unmuting a hidden frozen
+     * player leaves it frozen, and muting a hidden playing one leaves it
+     * playing, since neither changes whether anyone is looking. A fade-in that
+     * starts from zero is silent at that moment, so a window hidden before the
+     * fade has begun pauses.
+     */
+    FollowSound,
 }

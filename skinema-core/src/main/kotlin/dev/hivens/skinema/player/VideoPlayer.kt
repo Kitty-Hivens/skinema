@@ -26,6 +26,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 
 /**
  * Plays one video file: a dedicated decode thread keeps a small queue
@@ -237,6 +238,16 @@ class VideoPlayer internal constructor(
         data object StepBackward : Command
         data class SetPresenting(val presenting: Boolean) : Command
         data class ReportVisible(val visible: Boolean?) : Command
+
+        /**
+         * The mailbox was read while the player stood down for it.
+         *
+         * Not a [SetPresenting], because that one is the application's word
+         * and is obeyed as it arrives. This one is only a guess from a read,
+         * and a report or an application's word can land between the read
+         * and its turn in the queue, so it is weighed again when handled.
+         */
+        data object Revive : Command
         data class SetSource(val path: Path) : Command
         data object Close : Command
 
@@ -584,7 +595,7 @@ class VideoPlayer internal constructor(
         // polling is what this notices.
         lastAcquireNanos = System.nanoTime()
         unreadPublishes = 0
-        if (!presenting && !presentingSaid && !visibilityReported) submit(Command.SetPresenting(true))
+        if (!presenting && !presentingSaid && !visibilityReported) submit(Command.Revive)
         return buffer?.acquire()
     }
 
@@ -656,11 +667,12 @@ class VideoPlayer internal constructor(
      * pictures into a mailbox nothing empties. What stopping costs the
      * timeline is [WhenUnwatched]'s to say.
      *
-     * Saying nothing is allowed. A mailbox that WAS being read and stops
-     * being read is noticed on its own, and the next [acquireFrame] undoes
-     * it -- so a consumer that never thinks about this still stops burning a
-     * core behind a hidden window, and one that wants the transition exact
-     * says so here.
+     * Saying nothing is allowed. Whatever draws the picture may say it through
+     * [reportVisible], and the Compose surface does. With neither, a mailbox
+     * that WAS being read and stops being read is noticed on its own, and the
+     * next [acquireFrame] undoes it. So a consumer that never thinks about this
+     * still stops burning a core behind a hidden window, and one that wants
+     * the transition exact says so here.
      *
      * Saying it once takes the automatic notice out of play for good, and
      * [reportVisible] with it. The two would otherwise argue: a player told to
@@ -696,7 +708,9 @@ class VideoPlayer internal constructor(
      * reads is noticed the old way.
      *
      * [setPresenting] outranks it. Once an application has said, reports are
-     * ignored for good.
+     * ignored for good. A frameless player ignores them too: it has no
+     * pictures to stop, and a window put behind another is no reason to stop
+     * its sound.
      */
     fun reportVisible(visible: Boolean?) {
         if (presentingSaid) return
@@ -714,7 +728,8 @@ class VideoPlayer internal constructor(
      * Continues from where [pause] froze, without a frame jump.
      *
      * Not the way back from a pause the player imposed on itself because
-     * nobody was taking the picture ([WhenUnwatched.Freeze]) -- the picture
+     * nobody was taking the picture ([WhenUnwatched.Freeze], or
+     * [WhenUnwatched.FollowSound] on a player nobody could hear). The picture
      * being wanted again lifts that one. Calling this instead takes the automatic
      * lift out of play and publishes [State.Playing], while nothing is decoded
      * until frames are being taken again: what stopped is the pictures, and
@@ -1366,6 +1381,7 @@ class VideoPlayer internal constructor(
     private fun resetForNewSource(wanted: Path) {
         queue.clear()
         eofPending = false
+        rejoinFloorPts = Long.MIN_VALUE
         seekInFlight = false
         stateBeforeSeek.set(null)
         lapProducedFrames = false
@@ -1582,8 +1598,10 @@ class VideoPlayer internal constructor(
             if (state is State.Playing && !presenting) turnLapUnwatched(decoder)
             if (state !is State.Playing || !presenting) {
                 // Paused, ended, or drawing for nobody: idle until the next
-                // command. Under KeepTime the clock runs on through this, so
-                // what is skipped is the decoding, not the timeline.
+                // command. Where the policy keeps time (KeepTime, or
+                // FollowSound on a player that can be heard) the clock runs on
+                // through this, so what is skipped is the decoding, not the
+                // timeline.
                 //
                 // The pacer holding its inventory would stop this side anyway
                 // -- a queue nothing drains fills and the fill side parks on
@@ -1681,6 +1699,11 @@ class VideoPlayer internal constructor(
                 eofPending = true
                 continue
             }
+            if (rejoinFloorPts != Long.MIN_VALUE) {
+                // Behind the picture already on screen: see [rejoinClock].
+                if (frame.ptsNanos <= rejoinFloorPts) continue
+                rejoinFloorPts = Long.MIN_VALUE
+            }
 
             val lateNanos = -clock.nanosUntilDue(frame.ptsNanos)
             if (lateNanos > CHASE_DROP_NANOS && !clockSettling()) {
@@ -1768,15 +1791,19 @@ class VideoPlayer internal constructor(
             true
         }
         is Command.SetPresenting -> applyPresenting(cmd.presenting, decoder)
+        Command.Revive -> if (presentingSaid || visibilityReported) true else applyPresenting(true, decoder)
         is Command.ReportVisible -> when {
             // Asked again here, because the application's word can have
             // arrived between the report's own check and its turn in the queue.
-            presentingSaid -> true
+            presentingSaid || frameless -> true
             cmd.visible == null -> {
                 // Handed back to the mailbox with a clean slate, so what the
                 // notice counts starts now rather than at whatever the reads
-                // left behind while the report stood.
-                lastAcquireNanos = System.nanoTime()
+                // left behind while the report stood. A mailbox never read
+                // stays never read: the notice leaves such a player alone,
+                // and a surface that left before its first take is no reason
+                // to change that.
+                if (lastAcquireNanos != 0L) lastAcquireNanos = System.nanoTime()
                 unreadPublishes = 0
                 true
             }
@@ -1879,6 +1906,12 @@ class VideoPlayer internal constructor(
     // Where the last landing put the picture, -1 when it landed on nothing
     // (a seek past the end of the footage). Owned by the decode thread.
     private var landedPts = -1L
+
+    // The picture on screen when [rejoinClock] jumped the decoder, and
+    // Long.MIN_VALUE otherwise. Frames at or before it are behind what the
+    // viewer already sees, so the fill loop drops them unshown. Anything that
+    // repositions the decoder on purpose clears it. Owned by the decode thread.
+    private var rejoinFloorPts = Long.MIN_VALUE
 
     // The file a setSource asked for, from the moment the command is read to
     // the moment the loop leaves to perform it. Owned by the decode thread.
@@ -2007,6 +2040,7 @@ class VideoPlayer internal constructor(
         // decoder also voids a pending EOF.
         queue.clear()
         eofPending = false
+        rejoinFloorPts = Long.MIN_VALUE
         // Remember what to return to (Playing/Paused/Ended) and advertise
         // the landing so a consumer can show a loading affordance.
         stateBeforeSeek.compareAndSet(null, state.takeIf { it != State.Seeking } ?: State.Playing)
@@ -2209,8 +2243,8 @@ class VideoPlayer internal constructor(
      */
     private fun applyPresenting(now: Boolean, decoder: FrameSource?): Boolean {
         if (now == presenting) return true
-        presenting = now
         if (!now) {
+            presenting = false
             // What stopping costs the timeline is the policy's to say. That the
             // pictures stop is not a policy, it is the point.
             val freeze = when (unwatched) {
@@ -2226,14 +2260,17 @@ class VideoPlayer internal constructor(
         }
         unreadPublishes = 0
         if (pausedByUnwatch) {
+            presenting = true
             resumeNow(decoder)
             return true
         }
         // Time ran on, coming back: the file went on without the viewer while
         // the decoder stood where it was left, so the gap between them is
-        // exactly what nobody watched.
-        if (state is State.Playing && decoder != null) rejoinClock(decoder)
-        return true
+        // exactly what nobody watched. Rejoined before the pacer is let go,
+        // or it would publish a frame from before the gap in between.
+        val keepRunning = if (decoder != null) rejoinClock(decoder) else true
+        presenting = true
+        return keepRunning
     }
 
     /**
@@ -2264,18 +2301,51 @@ class VideoPlayer internal constructor(
      * stop. The clock is not touched and no landing is announced, so nothing
      * on the sound's side waits for one.
      *
+     * Only when the gap is worth a jump. The keyframe can be further back than
+     * the picture on screen: after a short absence on a file with keyframes
+     * ten seconds apart, the jump went back up to ten seconds and the catch-up
+     * then decoded all of it again. Within [REJOIN_DECODE_NANOS] the decoder
+     * just carries on from where it stood, and when it does jump, nothing it
+     * decodes at or before the picture already on screen is shown, so the
+     * picture never steps back.
+     *
+     * Where the gap is measured to matters as much. A seek made while nobody
+     * watched lands its picture at once but leaves the sound's half queued,
+     * and until the audio thread performs it the clock still reads where it
+     * was before the seek. The intended position is the truth then, and
+     * reading the clock split the picture from the sound by the whole seek.
+     *
+     * A player paused while nobody watched has no clock running to catch up
+     * with, so it gets its frame at the playhead the way a seek lands one,
+     * the sound included: it is paused, so moving it plays nothing twice. One
+     * that ended while nobody watched is left on the picture it had.
+     *
      * Closed captions come off the frames, so their half-built row belongs to
      * wherever the decoder was, and it is dropped with the jump. A text or
      * bitmap track reads its own file against the clock and has nothing to
-     * rejoin.
+     * rejoin. Returns false when a Close arrived inside a paused landing.
      */
-    private fun rejoinClock(decoder: FrameSource) {
-        val at = clock.mediaNanos()
+    private fun rejoinClock(decoder: FrameSource): Boolean {
+        val at = if (clockSettling()) intendedPositionNanos else clock.mediaNanos()
+        val shown = lastPublishedPts
+        when (state) {
+            State.Playing -> {}
+            State.Paused -> {
+                if (abs(at - shown) <= lastPublishGapNanos) return true
+                return handleSeek(at, exact = true, decoder, preview = false)
+            }
+            // A landing in flight lands on its own, and an ended or opening
+            // player has nothing to catch up.
+            else -> return true
+        }
+        if (at - shown in 0..REJOIN_DECODE_NANOS) return true
         queue.clear()
         eofPending = false
         intendedPositionNanos = at
+        rejoinFloorPts = shown
         decoder.seekTo(at)
         subtitlePipeline?.takeIf { it.track.id == SubtitleTrack.CLOSED_CAPTION_ID }?.seek(at)
+        return true
     }
 
     /**
@@ -2289,7 +2359,9 @@ class VideoPlayer internal constructor(
      *
      * The end is read off the clock and the file's declared duration, the way
      * a frameless lap ends, and only once there is no sound left to play: a
-     * track that outlasts the picture is still being listened to.
+     * track that outlasts the picture is still being listened to. A source
+     * that declares no duration (a still, the first lap of an animated webp)
+     * has no end to read, and its lap waits for the picture to come back.
      */
     private fun turnLapUnwatched(decoder: FrameSource) {
         val end = durationNanos ?: return
@@ -2536,6 +2608,7 @@ class VideoPlayer internal constructor(
      */
     private fun restartLap(decoder: FrameSource, resume: Boolean) {
         lapProducedFrames = false
+        rejoinFloorPts = Long.MIN_VALUE
         decoder.seekTo(0)
         audioPipeline?.takeIf { it.alive }?.let {
             it.seek(0)
@@ -2851,6 +2924,18 @@ class VideoPlayer internal constructor(
          * or a landing run, and a blink is not a consumer leaving.
          */
         const val UNREAD_PUBLISHES_BEFORE_UNWATCHED = 60
+
+        /**
+         * How far behind the clock a returning picture may be and still get
+         * there by decoding forward rather than by jumping the decoder.
+         *
+         * A jump lands on the keyframe at or before the clock, which on
+         * ordinary web video is two to ten seconds back, so for a gap shorter
+         * than that the jump costs more decoding than it saves. Two seconds is
+         * the short end of that range: past it the gap is the larger cost on
+         * most files, and under it the forward decode is bounded by it.
+         */
+        const val REJOIN_DECODE_NANOS = 2_000_000_000L
 
         val DEBUG_SEEK = System.getenv("SKINEMA_DEBUG_SEEK") != null
     }
