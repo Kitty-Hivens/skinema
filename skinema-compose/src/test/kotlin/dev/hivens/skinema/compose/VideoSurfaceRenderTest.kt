@@ -1,6 +1,7 @@
 package dev.hivens.skinema.compose
 
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
@@ -227,20 +228,24 @@ class VideoSurfaceRenderTest {
         VideoPlayer(video, loop = true).use { player ->
             var canvas = 0 to 0
             var selected = false
-            var drawsWhileActive = 0
+            var activeSince = 0L
             val deadline = System.currentTimeMillis() + 25_000
             ImageComposeScene(240, 180, Density(1f)) {
                 VideoSurface(player, Modifier.size(240.dp, 180.dp))
             }.use { scene ->
                 var frame = 0L
-                // Render only until the track is ACTIVE and the draw has run a
-                // few times with it -- the post lives in the draw and needs
-                // nothing from the overlay. Then close the scene: the surface
-                // takes overlays from the mailbox itself, and a mailbox with one
-                // slot has one winner per publish. Two readers made this a coin
-                // flip that a slower machine lost. Stopping the renders used to
-                // be enough, back when the surface read only on the frame clock;
-                // it now reads when the player changes, so it has to be gone.
+                // Render only until the track has been ACTIVE for a second --
+                // the post lives in the draw and needs nothing from the overlay.
+                // A second of renders rather than a count of them: a render
+                // re-runs the surface's draw only when the surface invalidated
+                // it, which it does once the new track's first overlay arrives,
+                // and a count of renders could run out before that on a slow
+                // machine. Then close the scene: the surface takes overlays from
+                // the mailbox itself, and a mailbox with one slot has one winner
+                // per publish. Two readers made this a coin flip that a slower
+                // machine lost. Stopping the renders used to be enough, back when
+                // the surface read only on the frame clock. It now reads when the
+                // player changes, so it has to be gone.
                 //
                 // Counting draws from the SELECT rather than from the track
                 // going active was the other half of that coin, and the worse
@@ -259,14 +264,14 @@ class VideoSurfaceRenderTest {
                     }
                     scene.render(frame)
                     frame += 16_000_000L
-                    if (player.activeSubtitleTrack != null) drawsWhileActive++
-                    if (drawsWhileActive > 5) break
+                    if (player.activeSubtitleTrack != null && activeSince == 0L) activeSince = System.currentTimeMillis()
+                    if (activeSince != 0L && System.currentTimeMillis() - activeSince > 1_000) break
                     Thread.sleep(10)
                 }
             }
             assumeTrue(selected, "no subtitle track to select")
             assertTrue(
-                drawsWhileActive > 0,
+                activeSince != 0L,
                 "the track never became active, so the surface never posted a size to wait for",
             )
 
@@ -301,6 +306,19 @@ class VideoSurfaceRenderTest {
         val log = p.inputStream.readAllBytes().decodeToString()
         check(p.waitFor() == 0) { "ffmpeg failed: $log" }
         return out
+    }
+
+    /**
+     * Whether anything is asking the scene for a frame. A state write reaches
+     * [ImageComposeScene.hasInvalidations] only once snapshot changes have been
+     * applied, and this scene has no pump of its own that would apply them, so
+     * without the call a surface invalidating by writing state would read as
+     * asking for nothing.
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    private fun ImageComposeScene.asksForFrame(): Boolean {
+        Snapshot.sendApplyNotifications()
+        return hasInvalidations()
     }
 
     private fun redAt(image: Image, x: Int, y: Int): Boolean {
@@ -343,7 +361,7 @@ class VideoSurfaceRenderTest {
                 val settleDeadline = System.currentTimeMillis() + 2_000
                 var quietSince = System.currentTimeMillis()
                 while (System.currentTimeMillis() < settleDeadline) {
-                    if (scene.hasInvalidations()) {
+                    if (scene.asksForFrame()) {
                         scene.render(frame)
                         frame += 16_000_000L
                         quietSince = System.currentTimeMillis()
@@ -382,7 +400,7 @@ class VideoSurfaceRenderTest {
                 scene.render(frame)
                 frame += 16_000_000L
                 Thread.sleep(300)
-                assertFalse(scene.hasInvalidations(), "nothing changed, so nothing may ask for a frame")
+                assertFalse(scene.asksForFrame(), "nothing changed, so nothing may ask for a frame")
             }
         }
     }
@@ -417,7 +435,7 @@ class VideoSurfaceRenderTest {
                 var renders = 0
                 val start = System.currentTimeMillis()
                 while (System.currentTimeMillis() - start < 2_000) {
-                    if (scene.hasInvalidations()) {
+                    if (scene.asksForFrame()) {
                         scene.render(frame)
                         renders++
                     }
@@ -454,7 +472,7 @@ class VideoSurfaceRenderTest {
                 fun drawWhile(condition: () -> Boolean, deadlineMs: Long) {
                     val deadline = System.currentTimeMillis() + deadlineMs
                     while (condition() && System.currentTimeMillis() < deadline) {
-                        if (scene.hasInvalidations()) scene.render(frame)
+                        if (scene.asksForFrame()) scene.render(frame)
                         frame += 16_000_000L
                         Thread.sleep(8)
                     }

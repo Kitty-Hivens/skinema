@@ -33,10 +33,22 @@ import kotlin.math.roundToInt
 
 /**
  * How long one wait on [VideoPlayer.awaitChange] lasts before it is taken
- * again. Only a bound on how long an idle IO thread is held at a stretch: a
+ * again. Only a bound on how long a waiting thread is held at a stretch: a
  * change ends the wait at once, and leaving the composition interrupts it.
  */
 internal const val CHANGE_WAIT_NANOS = 1_000_000_000L
+
+/**
+ * Where the waits on [VideoPlayer.awaitChange] block.
+ *
+ * Each surface and each state helper holds a thread there for as long as it
+ * lives, so on [Dispatchers.IO] itself they would count against its 64: a
+ * few dozen player cells would fill it, and the application's own I/O would
+ * queue behind threads that are only waiting. A view of it takes threads
+ * from the same pool without counting against that limit, and bounds only
+ * this.
+ */
+internal val changeWaits = Dispatchers.IO.limitedParallelism(1024, "skinema-change-waits")
 
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
@@ -55,11 +67,20 @@ enum class VideoScale {
  *
  * The frame clock still has one job, and it is the one that matters when the
  * window is hidden. Each picture is taken from the mailbox only after the
- * window has drawn the one before it, and a hidden window draws nothing. So
- * the surface stops taking pictures by itself, and the player notices the
- * mailbox going unread and stops decoding for it, on the policy its
- * [dev.hivens.skinema.player.WhenUnwatched] names. A consumer that would
- * rather mark the moment exactly calls [VideoPlayer.setPresenting].
+ * window has drawn the one before it, so a window that stops drawing stops the
+ * surface taking pictures, and the player notices the mailbox going unread and
+ * stops decoding for it, on the policy its
+ * [dev.hivens.skinema.player.WhenUnwatched] names.
+ *
+ * Whether a window the viewer cannot see stops drawing is the platform's
+ * call, and not every platform stops. Measured, an XWayland window on a
+ * Hyprland workspace that is not on screen still draws about once a second.
+ * Read off Skiko's Metal renderer rather than measured, a macOS window behind
+ * others keeps drawing a few times a second. At those rates
+ * the surface reads often enough that the player does not notice, which the
+ * polling surface this replaced did not either. A consumer that knows when
+ * its picture is out of sight says so with [VideoPlayer.setPresenting], which
+ * is exact on every platform.
  *
  * The surface draws pixels and nothing else -- no spinners, no error
  * states. Watch [VideoPlayer.state] and react outside; before the first
@@ -180,12 +201,15 @@ fun VideoSurface(
         // just drawn. Without the rule, every empty take would wake this loop
         // into giving the next one.
         var permittedAt = Long.MIN_VALUE
-        // Blocking, so it waits on the IO pool rather than on this thread, and
-        // interruptible, so leaving the composition cancels the wait.
+        // Blocking, so it waits on its own threads rather than on this one, and
+        // interruptible, so leaving the composition cancels the wait. The
+        // reading is taken here rather than inside the coroutine, which starts
+        // whenever its dispatcher gets to it: a change landing before that
+        // would become its starting point and never be reported.
+        var seen = player.changeCount
         val forwarder = launch {
-            var seen = player.changeCount
             while (true) {
-                val now = runInterruptible(Dispatchers.IO) { player.awaitChange(seen, CHANGE_WAIT_NANOS) }
+                val now = runInterruptible(changeWaits) { player.awaitChange(seen, CHANGE_WAIT_NANOS) }
                 if (now != seen) {
                     seen = now
                     wakes.trySend(Unit)
@@ -263,16 +287,19 @@ fun VideoSurface(
                     // does not have to stay in native memory behind it.
                     if (nowFailed) frames.close()
                 }
-                // A closed player publishes nothing ever again. A paused one
-                // still can -- a seek landing, a frame step -- so it keeps its
-                // loop.
-                if (state is VideoPlayer.State.Closed) return@LaunchedEffect
+                // A closed or failed player publishes nothing ever again, and the
+                // draw that shows it is already asked for above, so the loop and
+                // the thread its wait holds can go. A paused one still can publish
+                // (a seek landing, a frame step), so it keeps its loop.
+                if (state is VideoPlayer.State.Closed || state is VideoPlayer.State.Failed) return@LaunchedEffect
                 if (invalidated) {
                     // The frame that shows what was just handed over. It costs
                     // no draw of its own, since the invalidation above has
                     // asked for that frame already, and it does not come while
-                    // the window is hidden: that wait is what stops the
-                    // surface taking pictures nobody can see.
+                    // the window is not drawing: that wait is what stops the
+                    // surface taking pictures nobody can see. How often a
+                    // window the viewer cannot see still draws is the
+                    // platform's call, and not every platform stops.
                     withFrameNanos { }
                     // Drawn, so the next take is worth making even with nothing
                     // new behind it. It is also what revives a player that

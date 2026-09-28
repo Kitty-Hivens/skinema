@@ -7,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import dev.hivens.skinema.player.VideoPlayer
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 
 /**
@@ -34,7 +33,7 @@ fun rememberPlayerState(player: VideoPlayer): VideoPlayer.State {
             val current = player.state
             if (state != current) state = current
             if (current is VideoPlayer.State.Failed || current is VideoPlayer.State.Closed) return@LaunchedEffect
-            seen = runInterruptible(Dispatchers.IO) { player.awaitChange(seen, CHANGE_WAIT_NANOS) }
+            seen = runInterruptible(changeWaits) { player.awaitChange(seen, CHANGE_WAIT_NANOS) }
         }
     }
     return state
