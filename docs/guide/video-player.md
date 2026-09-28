@@ -18,7 +18,7 @@ VideoPlayer(
     readAheadFrames: Int = 1,
     audioTrack: Int? = null,
     hardware: HwAccel = HwAccel.OFF,
-    unwatched: WhenUnwatched = WhenUnwatched.Freeze,
+    unwatched: WhenUnwatched = WhenUnwatched.FollowSound,
     startPaused: Boolean = false,
     volume: Float = 1f,
     audioChannels: ChannelPreference = ChannelPreference.Source,
@@ -114,7 +114,7 @@ val state: VideoPlayer.State   // @Volatile, read anywhere
 |--------------|-------------------------------------------------------------|
 | `Opening`    | Initial, and again while a `setSource` opens the next file. |
 | `Playing`    | Frames are advancing.                                       |
-| `Paused`     | Frozen; the last frame stays on screen. Also how a `Freeze` player reads while nobody takes the picture -- see below. |
+| `Paused`     | Frozen; the last frame stays on screen. Also how a player reads while it has paused itself for a picture nobody takes, see below. |
 | `Seeking`    | A landing is in flight (a loading affordance can show).     |
 | `Ended`      | EOF with nothing left to play -- see below.                 |
 | `Failed`     | `Failed(cause: Throwable)` -- open or mid-decode error.     |
@@ -139,34 +139,75 @@ fun positionNanos(): Long   // current media position; 0 until playback starts
 
 ```kotlin
 fun setPresenting(presenting: Boolean)
+fun reportVisible(visible: Boolean?)
 ```
 
 `pause` freezes on the current frame; `resume` continues without a
-jump. `setPresenting` says whether anyone is taking the picture -- a
-window minimised, a tab switched away from, a wallpaper behind a
-maximised app. A player nobody reads is not free: it decodes, converts
-and paces pictures into a mailbox nothing empties.
+jump. The other two say whether anyone is taking the picture: a window
+minimised, a tab switched away from, a wallpaper behind a maximised app.
+A player nobody reads is not free. It decodes, converts and paces
+pictures into a mailbox nothing empties.
 
 What stopping costs the timeline is the `unwatched` constructor
-parameter's to say. `WhenUnwatched.Freeze` (the default) stops time with
-the picture and carries on from there, which is what a background wants;
-`WhenUnwatched.KeepTime` lets time run on and rejoins the picture where
-it got to, which is what a live source wants.
+parameter's to say.
 
-`Freeze` stops time with a real pause, so `state` reads `Paused` for as
-long as it lasts -- a pause you never asked for, lifted by the next
-`acquireFrame`. One you *did* ask for is never lifted that way: it
-outlives the picture being wanted again. Calling `resume()` on a player
-that paused itself is the same thing in reverse -- it takes the automatic
-lift out of play and reports `Playing`, while nothing is decoded until
-frames are actually being taken again.
+| `WhenUnwatched` | While nobody watches | When the picture is wanted again |
+|---|---|---|
+| `FollowSound` (default) | A player you can hear plays on without its picture. A silent one, one at volume zero, or one whose track has ended pauses. | The picture catches up with the sound, or the pause lifts. |
+| `Freeze` | Time stops with the picture. | Carries on from where it stopped. |
+| `KeepTime` | Time runs on. | The picture catches up with the clock. |
 
-Saying nothing is allowed. A mailbox that was being read and stops being
-read is noticed on its own after a couple of seconds, and the next
-`acquireFrame` undoes it -- so a consumer that never thinks about this
-still stops burning a core behind a hidden window. Saying it once takes
-the automatic notice out of play: a player told to stop presenting is not
-revived by the polling its consumer does for some other reason.
+**Upgrading:** the default used to be `Freeze`. A player with sound on
+that paused when its window was hidden now plays its sound on. Pass
+`unwatched = WhenUnwatched.Freeze` to keep the old behaviour. A Compose
+consumer also no longer depends on the next `acquireFrame` to bring a
+player back: the surface's report does it (see below).
+
+`FollowSound` is what a browser does with a tab put behind another, and it
+decides once, when the picture stops being taken: unmuting a hidden
+player that paused leaves it paused until it is looked at again. Heard
+means the player's own volume is above zero. A stream muted in the system
+mixer still counts as heard (see [audio.md](audio.md)).
+
+Catching up moves the picture alone, and the sound is not touched, so
+someone who went on listening does not hear a stretch twice. A picture
+less than about two seconds behind decodes forward to the clock. One
+further behind jumps to the keyframe at or before the clock and decodes
+forward from there, showing a frame now and then until it reaches the
+playhead and never one older than the frame already on screen. A player
+you paused while its window was hidden shows the frame at the playhead
+when it comes back.
+
+A lap still turns while nobody watches: a looping file whose time runs out
+starts over, sound included, and one that does not loop ends. An ended one
+still shows the frame it had when it was hidden, since nothing decoded
+the end. A source that declares no duration cannot tell when its lap is
+over and turns it only once the picture is back.
+
+A pause the player imposed on itself reads `Paused`, a pause you never
+asked for, lifted when the picture is wanted again. One you *did* ask for
+is never lifted that way: it outlives the picture being wanted again.
+Calling `resume()` on a player that paused itself is the same thing in
+reverse. It takes the automatic lift out of play and reports `Playing`,
+while nothing is decoded until frames are actually being taken again.
+
+Whether anyone is watching is learnt three ways, strongest first.
+
+- `setPresenting` is the application's word, for a consumer that knows:
+  a tray icon, a hidden panel. Saying it once takes both others out of
+  play for good, so say both directions from then on.
+- `reportVisible` is for whatever draws the picture, which can see its
+  window. `VideoSurface` calls it, so a Compose consumer does not. While a
+  report stands the mailbox moves nothing, since a hidden surface still
+  reads now and then. Null withdraws it, which is what a surface leaving
+  the composition does, and the mailbox takes the question back. A player
+  with no picture (audio only) ignores reports: it has nothing to stop.
+- With neither, a mailbox that was being read and stops being read is
+  noticed on its own after a couple of seconds, and the next
+  `acquireFrame` undoes it. That covers a render loop of your own that
+  stops when its window does. It cannot see a window the platform keeps
+  drawing slowly while nobody can see it, which is why the surface
+  reports.
 
 `close()` tears the player down -- it stops the threads and frees native
 memory -- and it is bounded: one second for the whole teardown, not one
@@ -214,9 +255,8 @@ class FrameSlot {
 
 `VideoSurface` calls `acquireFrame` for you: once as it starts, then whenever
 the player has a new picture and the window has drawn the last one, and once
-more after each draw even with nothing new, which is the read that brings
-back a player that stopped for an unwatched window. Drive it yourself only
-when you render outside Compose (see [compose.md](compose.md)).
+more after each draw even with nothing new. Drive it yourself only when you
+render outside Compose (see [compose.md](compose.md)).
 
 ```kotlin
 val changeCount: Long

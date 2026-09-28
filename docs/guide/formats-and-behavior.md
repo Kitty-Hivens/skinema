@@ -58,29 +58,35 @@ newest frame rather than a backlog of stale ones.
 
 ### It stops for a consumer that stops looking
 
-A mailbox that was being read and then is not is noticed on its own --
-sixty pictures published into it and not taken, over at least two
-seconds -- and the player stops decoding and converting for it. Nothing
-has to be said where the platform stops drawing a window nobody sees:
-`VideoSurface` takes each picture only after the last one was drawn and so
-stops taking them, and the player follows. Not every platform does stop.
-An XWayland window on an unseen Hyprland workspace still draws about once a
-second, and a macOS window behind others a few times a second, which reads
-the mailbox often enough that the notice never fires. There, `setPresenting`
-is the way.
+A window nobody can see is noticed, and the player stops decoding and
+converting for it. `VideoSurface` tells by how long its window takes to
+answer for a frame: within a refresh or two on screen, about once a second
+for an XWayland window on an unseen Hyprland workspace or behind a
+fullscreen one (measured), up to 300 ms for a covered macOS window (read
+off Skiko's source, so expected rather than measured). A run of slow
+answers lasting two seconds is a hidden window, and the surface reports it
+through `reportVisible`. A minimised window is taken from the Compose
+lifecycle at once. A window Skiko keeps drawing at full speed behind
+another, as it most likely does on Windows, is not seen, and there
+`setPresenting` is the way.
+
+Outside Compose, a mailbox that was being read and then is not is noticed
+on its own: sixty pictures published into it and not taken, over at least
+two seconds. A player whose mailbox has never been read is not covered by
+that: it may be feeding something that is not a screen, so the notice only
+applies after a first read.
 
 What stopping costs the timeline is the `unwatched` constructor
-parameter's to say. `WhenUnwatched.Freeze` (the default) stops the clock
-with the pictures and reads `Paused` while it lasts, which is what a
-background wants; `WhenUnwatched.KeepTime` lets time run on and rejoins
-the picture wherever it got to, which is what a live source wants. The
-next `acquireFrame` undoes either. A consumer that would rather mark the
-moment exactly calls `setPresenting`, and saying it once takes the
-automatic notice out of play for good.
-
-A player whose mailbox has never been read is not covered: it may be
-feeding something that is not a screen, so the notice only applies after
-a first read.
+parameter's to say. `WhenUnwatched.FollowSound` (the default) does what a
+browser does with a tab put behind another: a player you can hear plays on
+without its picture, and a silent one, one at volume zero, or one whose
+track has ended, pauses and reads `Paused` while it lasts. It replaced
+`Freeze` as the default. `Freeze` always pauses, which is what a background
+wants, and `KeepTime` always runs on, which is what a live source wants. Where time ran on, the picture catches up with it on return and the
+sound is left where it is, and a lap still turns while nobody watches. A
+consumer that would rather mark the moment exactly calls `setPresenting`,
+and saying it once takes the surface's reports and the mailbox notice out of
+play for good.
 
 ### Seeks answer immediately
 

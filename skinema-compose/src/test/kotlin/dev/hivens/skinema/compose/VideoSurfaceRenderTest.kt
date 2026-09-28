@@ -452,10 +452,12 @@ class VideoSurfaceRenderTest {
 
     /**
      * The one thing the frame clock still decides. A window that stops drawing
-     * stops the surface taking pictures, the player notices the mailbox going
-     * unread, and drawing again brings it back. Waiting on the player instead
-     * of polling on every refresh must not have turned a hidden window into
-     * one that keeps a player decoding for nobody.
+     * leaves the surface's request for a frame unanswered, the surface reports
+     * the window out of sight, and drawing again brings it back. Waiting on the
+     * player instead of polling on every refresh must not have turned a hidden
+     * window into one that keeps a player decoding for nobody.
+     *
+     * The clip is silent, so the default policy pauses it.
      */
     @OptIn(ExperimentalComposeUiApi::class)
     @Test
@@ -499,6 +501,54 @@ class VideoSurfaceRenderTest {
                 // Shown again.
                 drawWhile({ player.state !is VideoPlayer.State.Playing }, 10_000)
                 assertIs<VideoPlayer.State.Playing>(player.state, "drawing again must bring the player back")
+            }
+        }
+    }
+
+    /**
+     * The case the mailbox notice could not see, and the reason the surface
+     * reports at all. Measured under XWayland on Hyprland, a window on a
+     * workspace that is not on screen does not stop drawing: it draws about
+     * once a second. The surface then read once a second, which to the player
+     * looked like a slow consumer, and a hidden window kept a 4K decode
+     * running for nobody. Drawn here on the same schedule.
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun `a window that draws once a second is taken for hidden, and drawing at full rate brings it back`() {
+        assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
+        val video = redClipAt(fps = 30, seconds = 20)
+        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+
+        VideoPlayer(video, loop = true).use { player ->
+            ImageComposeScene(64, 64, Density(1f)) {
+                VideoSurface(player, Modifier.size(64.dp))
+            }.use { scene ->
+                var frame = 0L
+                var painted = false
+                val paintDeadline = System.currentTimeMillis() + 20_000
+                while (!painted && System.currentTimeMillis() < paintDeadline) {
+                    painted = redAt(scene.render(frame), 32, 32)
+                    frame += 16_000_000L
+                    Thread.sleep(8)
+                }
+                assertTrue(painted, "playback must reach the screen first")
+
+                val hiddenDeadline = System.currentTimeMillis() + 15_000
+                while (player.state !is VideoPlayer.State.Paused && System.currentTimeMillis() < hiddenDeadline) {
+                    scene.render(frame)
+                    frame += 1_000_000_000L
+                    Thread.sleep(1_000)
+                }
+                assertIs<VideoPlayer.State.Paused>(player.state, "a window drawing once a second must be taken for hidden")
+
+                val shownDeadline = System.currentTimeMillis() + 10_000
+                while (player.state !is VideoPlayer.State.Playing && System.currentTimeMillis() < shownDeadline) {
+                    if (scene.asksForFrame()) scene.render(frame)
+                    frame += 16_000_000L
+                    Thread.sleep(8)
+                }
+                assertIs<VideoPlayer.State.Playing>(player.state, "drawing at full rate must bring the player back")
             }
         }
     }

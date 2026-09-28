@@ -66,7 +66,9 @@ own pts, so the UI no longer decides timing, and polling on every UI frame
 only redrew the window at the display's refresh rate for a file running at a
 fraction of it. The UI now waits on the player's change count and draws when
 something new was published. `withFrameNanos` is left with the job of
-holding the surface while its window is not drawing. See M21.)
+holding the surface while its window is not drawing. See M21. Since M22 it
+also times how long the window takes to draw, which is how the surface
+tells a hidden window.)
 
 Audio (designed now, built later): pacing depends only on the `MediaClock`
 interface. Silent playback runs on the wall-time `PlaybackClock`; when a
@@ -1291,7 +1293,9 @@ README once the library is usable.
   own change in core, `setPresenting` is the way for a consumer that knows.
   An earlier reading of that measurement took it for a window that never
   drew at all, and the first version of this entry said so. The redraw
-  counter it rested on showed one a second, not zero.
+  counter it rested on showed one a second, not zero. (Answered in M22: the
+  surface judges its window by how long a frame takes and reports it, and
+  the take after each draw is no longer what revives a surface's player.)
 
   Tested on both sides of the seam: the count's wakes (a frame, a state
   change, a refused switch, a subtitle track selected and dropped), timeout
@@ -1301,6 +1305,114 @@ README once the library is usable.
   lets the player notice and comes back when drawn. The frame checks apply
   pending snapshot changes first, so an invalidation made by writing state is
   seen too. The first three Compose tests fail against the polling surface.
+
+- **M22: a hidden window is noticed, and the sound decides what stops
+  (2026-09-28).** M21 left the case it named open: a window the platform
+  keeps drawing slowly while nobody can see it reads the mailbox often
+  enough that the unwatched notice never fires. Measured on the 4K AV1 demo
+  moved to a Hyprland workspace that is not on screen, the decoder ran on at
+  2 to 3 cores for a window drawing once a second.
+
+  What reaches a Compose window was measured before anything was designed,
+  with a probe printing every AWT window event, the lifecycle, `isShowing`,
+  focus and the X11 window state once a second, through six scenarios under
+  XWayland on Hyprland: on screen, the screen switched to another workspace,
+  the window moved to an unseen one, a fullscreen window over it, a hidden
+  special workspace, and back. `isShowing`, the lifecycle, iconify and
+  `_NET_WM_STATE` said nothing in any of them. Focus is worse than nothing: a
+  window moved to an unseen workspace keeps it, and a visible window on a
+  second monitor loses it. The one thing that changed every time was the
+  frame rate, from the display's to one or two a second. From the sources:
+  Compose's lifecycle reflects only minimising and focus, Skiko's Metal
+  renderer has occlusion from macOS but keeps it private and only slows to
+  a frame per 300 ms, and its Direct3D and Windows GL renderers ask only
+  `isShowing`, so a covered window on Windows most likely draws on at full
+  speed. Nothing there reaches us but the frame timing, and no Skiko change
+  is on the table.
+
+  So the surface times its own frame requests. On screen an answer takes a
+  refresh or two, hidden it takes about a second. An unbroken run of three
+  slow answers lasting two seconds is a hidden window, so is one request
+  left unanswered for four, and three quick answers in a row bring it back. Minimising comes from the lifecycle at once. While it thinks
+  the window hidden the surface asks for frames of its own, because a player
+  stopped for it publishes nothing and nothing else would ask, and a hidden
+  window answers those at its own slow rate. The first version never fired
+  on the real window: it restarted the count whenever a request followed an
+  answer by more than the slow bound, meaning to skip idle stretches, and
+  under XWayland the thread that answers sits in the buffer swap for the
+  same second the answer took. Idle is now as long as the verdict's own wait.
+  The headless tests could not have caught that, since nothing blocks there.
+
+  The verdict reaches the player through a new `reportVisible`, not through
+  `setPresenting`. The application's word has to outrank the renderer's (a
+  surface must not revive a player the application sent to the tray), and a
+  report has to switch the mailbox notice off while it stands, or the reads
+  a hidden surface still makes would revive the player it just reported.
+  Null withdraws it, which the surface does as it leaves the composition,
+  so a player nothing draws any more is noticed the old way.
+
+  What stops is now the sound's call, the way a browser treats a tab behind
+  another. `WhenUnwatched.FollowSound` is the new default: a player that can
+  be heard (a live line, volume above zero, track not finished) keeps its
+  sound and stops only the picture, and a silent one pauses. `Freeze` and
+  `KeepTime` stay as fixed answers. Two defects surfaced on the way, both in
+  `KeepTime`, which the new default now reaches. The picture rejoined the
+  clock with an inexact seek, which re-anchors the sound on the keyframe as
+  well, so a listener heard up to a keyframe interval again. The rejoin now
+  moves the decoder alone and lets the catch-up run do the rest. And the lap
+  never turned while nobody watched, since only the fill loop turns it and a
+  decoder nobody reads stands still: a looping file behind another window
+  went silent at its end with the state still Playing. It now turns off the
+  clock and the declared duration, the way a frameless lap does.
+
+  Measured on the same demo, silent 4K AV1 on the CPU, window 2548x1383:
+  visible 3.3 cores and 39 redraws a second, moved to the unseen workspace
+  0.01 cores and one redraw a second, moved back 3.4 cores and 39 again,
+  with the player pausing and resuming on its own. The audible path is
+  covered by a test on the real audio pipeline, not by a live run.
+
+  Tested: the rule on handed times, the measured second-apart pattern
+  included. A surface drawn once a second and one not drawn at all, both
+  taken for hidden and both revived. The report against reads and against
+  `setPresenting`, and its withdrawal. The policy on a silent, a muted and an
+  audible player. The rejoin leaving the clock and the sink alone. The lap
+  turning and ending while hidden. Each new core behaviour was mutated out
+  and its test failed, and the once-a-second surface test fails against the
+  M21 surface.
+
+  A read-only review in three parts (core, surface, documentation) found
+  what the tests had not asked. Two return paths were wrong. A seek made
+  while nobody watched leaves the sound's half queued, the clock reads
+  pre-seek until it runs, and the rejoin read the clock: the picture went
+  back ten seconds from the sound in the test built for it. And a player
+  paused while hidden came back on the frame it had when it was hidden,
+  because only a playing player rejoined. A third was a cost: every return
+  jumped to the keyframe before the clock, so a short absence on a file
+  with keyframes far apart went back up to a keyframe interval and decoded
+  it all again. The rejoin now uses the intended position while the sound
+  owes a seek, lands a paused player at the playhead, decodes forward when
+  the picture is less than two seconds behind, and never shows a frame
+  older than the one on screen when it does jump. On the surface side,
+  every window reported itself hidden for a moment at startup, because a
+  Compose window composes while its lifecycle is still CREATED, and one long
+  answer was enough to call a window hidden. It now says nothing before the
+  window has started once and wants a run of three slow answers. The test
+  for the floor first passed with the floor removed: a scripted decoder is
+  fast enough that the old frame was overwritten before a poll could see
+  it, so the test now holds the decode after the keyframe.
+
+  Measured again after those fixes, same demo and window: no report at
+  startup other than the visible one, the hidden report 5.2 s after the
+  window was moved to the unseen workspace (a run of three answers a second
+  apart, as expected), 0.01 cores while hidden, and the visible report 0.06
+  s after it was moved back, the player resuming on its own. The visible
+  phase read 4.6 cores this time against 3.3 before, on the same code path.
+  The machine's timing numbers drift over its uptime, and only the hidden
+  floor is the measurement here.
+
+  For consumers this is a change of behaviour and not only an addition: a
+  player with sound on that paused when its window was hidden now plays its
+  sound on. The guides say so and the release notes have to.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

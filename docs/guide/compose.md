@@ -25,24 +25,44 @@ overlay, a change of state -- and at no other time, waiting on
 file draws twenty-four times a second whatever the display's refresh rate,
 and a paused player draws nothing at all.
 
-It takes each picture only after the window has drawn the previous one, so a
-window that stops drawing stops the surface taking pictures. The player
-notices the mailbox going unread and stops decoding for it, on the policy its
-`WhenUnwatched` names.
+It also tells the player whether anyone can see its window, through
+`player.reportVisible`, and the player stops decoding for a hidden one on the
+policy its `WhenUnwatched` names. By default a player you can hear plays on
+without its picture, and a silent one pauses.
 
-That notice depends on the window actually stopping, and not every platform
-stops a window nobody can see. An XWayland window on a Hyprland workspace
-that is not on screen still draws about once a second (measured), and
-Skiko's macOS renderer keeps a window behind others drawing a few times a
-second. At those rates the surface reads often enough that the player keeps
-decoding for nobody, as it did with the surface that polled every frame. If
-you know when your picture is out of sight, say so with
-`player.setPresenting(false)` and `setPresenting(true)`, which is exact on
-every platform. Saying it once takes the automatic notice out of play for
-good, so say both directions from then on. It draws pixels and nothing
-else -- no spinner, no error glyph. Before the first frame and
-while the player is `Failed`, it draws nothing; put your own loading and
-fallback visuals around it, driven by `rememberPlayerState` (below).
+Nothing the toolkit reports says a window is hidden, short of minimising it,
+which the surface takes from the Compose lifecycle. The rest it reads off
+the frames. A window on screen answers for a frame within a refresh or two,
+and a hidden one answers slowly or not at all. Measured under XWayland on
+Hyprland, a window on a workspace that is not on screen, one behind a
+fullscreen window and one in a hidden special workspace all answer about
+once a second, while their lifecycle and their X11 state stay as they were
+(focus is no guide either: a window moved to an unseen workspace keeps it).
+The whole round trip, player stopping and coming back, was measured on the
+unseen workspace. Skiko's macOS renderer, by its source, waits up to 300 ms
+between frames of a covered window, so a covered macOS window is expected
+to read the same way, though that has not been measured.
+
+The rule: an unbroken run of at least three slow answers lasting two
+seconds is a hidden window, a single request left unanswered for four
+seconds is one too, and three quick answers in a row bring it back. One
+long answer on its own (a renderer setting up, a collection on the UI
+thread) is not enough. What it cannot tell from a hidden window is a
+visible one that stays slower than 200 ms a frame for seconds on end.
+
+What this cannot see is a window that keeps drawing at full speed behind
+another. Skiko's Windows renderers ask only whether the component is
+showing, going by their source, so a covered window there most likely draws
+on as usual and the player keeps decoding for it. If you know when your
+picture is out of sight, say so with `player.setPresenting(false)` and
+`setPresenting(true)`, which is exact on every platform and outranks what the
+surface reports. Saying it once takes both the surface's reports and the
+mailbox notice out of play for good, so say both directions from then on.
+
+It draws pixels and nothing else -- no spinner, no error glyph. Before the
+first frame and while the player is `Failed`, it draws nothing; put your own
+loading and fallback visuals around it, driven by `rememberPlayerState`
+(below).
 
 **One surface per player.** The mailbox hands each published frame to
 whichever reader polls first -- that single-reader rule is what makes the
@@ -50,7 +70,9 @@ handoff copy-free -- so two surfaces drawing one player take turns instead
 of both seeing everything: each gets part of the frames, neither gets them
 all, and the two show different pictures. Nothing fails, so it reads as
 choppy video rather than as a mistake; the second surface says so on
-stderr. Two views of one file means two players.
+stderr. Two views of one file means two players. The two surfaces also
+both report what they can see to the one player, so a surface in a hidden
+window can stop the player while the other surface is on screen.
 
 `VideoSurface` handles two things a raw frame draw would miss:
 
@@ -138,6 +160,13 @@ subtitle track is selected or dropped, when `state` changes, and when a
 `setSource` is refused. Read it
 before you look at the player and wait with that reading, and nothing that
 happens in between is missed.
+
+A loop like this that stops when its window stops drawing is noticed by the
+player on its own: a mailbox that was being read and is not any more. If your
+window keeps drawing while nobody can see it, and you can tell, say so with
+`player.reportVisible(visible)` the way `VideoSurface` does, or with
+`setPresenting` if the decision is the application's rather than the
+renderer's.
 
 ### skinema-skiko
 

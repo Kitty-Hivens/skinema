@@ -228,14 +228,23 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
   `VideoPlayer.State.Failed` -- show your fallback. No partial recovery,
   no garbage frames, no hangs.
 - **Drop late.** A slow consumer skips frames; the clock never lags.
-- **It stops for a consumer that stops looking.** A mailbox that was
-  being read and then is not -- a minimised window, a surface off
-  screen -- is noticed on its own, and the player stops decoding and
-  converting for it. `WhenUnwatched` decides whether the clock stops
-  with the pictures (`Freeze`, the default, which reads `Paused` for
-  as long as it lasts) or runs on (`KeepTime`). The next
-  `acquireFrame` undoes either; `setPresenting` marks the moment
-  exactly.
+- **It stops for a consumer that stops looking.** A window nobody can
+  see is noticed, and the player stops decoding and converting for it.
+  `VideoSurface` tells by how long its window takes to answer for a frame
+  and reports it through `reportVisible`. Measured under XWayland on
+  Hyprland, that catches a window left on a workspace that is not on
+  screen. Behind a fullscreen window it answers the same way, and a
+  covered macOS window is expected to, going by Skiko's source. Minimising
+  is taken from the lifecycle everywhere. A covered window on Windows most
+  likely keeps drawing at full speed and is not seen. Outside Compose, a
+  mailbox that was being read and then is not is noticed on its own. What
+  stops is the policy's to say, and the default
+  (`WhenUnwatched.FollowSound`, which replaced `Freeze` as the default)
+  does what a browser does with a tab put behind another: a player you can
+  hear plays on without its picture, which catches up with the sound when
+  it is wanted again, and a silent one or one at volume zero pauses.
+  `Freeze` and `KeepTime` fix one answer for every case, and
+  `setPresenting` marks the moment exactly.
 - **Seeks answer immediately.** An exact seek previews its keyframe
   while the frame-precise landing decodes behind it; `exact = false`
   lands on the keyframe outright -- picture and sound at once, position

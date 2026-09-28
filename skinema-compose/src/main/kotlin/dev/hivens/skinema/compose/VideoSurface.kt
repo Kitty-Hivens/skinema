@@ -14,11 +14,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeoutOrNull
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
@@ -67,20 +71,30 @@ enum class VideoScale {
  *
  * The frame clock still has one job, and it is the one that matters when the
  * window is hidden. Each picture is taken from the mailbox only after the
- * window has drawn the one before it, so a window that stops drawing stops the
- * surface taking pictures, and the player notices the mailbox going unread and
- * stops decoding for it, on the policy its
- * [dev.hivens.skinema.player.WhenUnwatched] names.
+ * window has drawn the one before it, and how long the window takes to draw
+ * is how the surface tells whether anyone can see it. It reports that to the
+ * player through [VideoPlayer.reportVisible], and the player stops decoding
+ * for a hidden window on the policy its
+ * [dev.hivens.skinema.player.WhenUnwatched] names: by default a player that
+ * can be heard plays on without its picture, and a silent one pauses.
  *
- * Whether a window the viewer cannot see stops drawing is the platform's
- * call, and not every platform stops. Measured, an XWayland window on a
- * Hyprland workspace that is not on screen still draws about once a second.
- * Read off Skiko's Metal renderer rather than measured, a macOS window behind
- * others keeps drawing a few times a second. At those rates
- * the surface reads often enough that the player does not notice, which the
- * polling surface this replaced did not either. A consumer that knows when
- * its picture is out of sight says so with [VideoPlayer.setPresenting], which
- * is exact on every platform.
+ * Nothing the toolkit reports says a window is hidden, short of minimising
+ * it, which the surface takes from the lifecycle. The rest is read off the
+ * frames. A window on screen answers for one within a refresh or two, and a
+ * hidden one either stops answering or answers slowly: measured, an XWayland
+ * window on a Hyprland workspace that is not on screen, or behind a
+ * fullscreen window, answers about once a second, and read off Skiko's Metal
+ * renderer, a covered macOS window waits up to 300 ms, which should read the
+ * same way but has not been measured. An unbroken run of slow answers
+ * lasting two seconds is a hidden window, a request left unanswered for four
+ * is one too, and a few quick answers in a row bring it back.
+ *
+ * What that cannot see is a window that keeps drawing at full speed behind
+ * another. Skiko's Windows renderers ask only whether the component is
+ * showing, going by their source, so a covered window there most likely
+ * draws on as usual. A consumer that knows when its picture is out of sight says so
+ * with [VideoPlayer.setPresenting], which is exact on every platform and
+ * outranks what the surface reports.
  *
  * The surface draws pixels and nothing else -- no spinners, no error
  * states. Watch [VideoPlayer.state] and react outside; before the first
@@ -93,7 +107,9 @@ enum class VideoScale {
  * of the frames, neither draws them all, and the two show different pictures.
  * Nothing fails, which is why it reads as choppy video rather than as a
  * mistake, so the second surface says so on stderr. Two views of one file
- * means two players.
+ * means two players. The two also report what they can see to the same
+ * player, and the one whose window is hidden can stop it while the other is
+ * on screen, so the mistake can freeze the picture as well as split it.
  */
 @Composable
 fun VideoSurface(
@@ -133,6 +149,8 @@ fun VideoSurface(
     // Conflated, because the loop looks at everything on each pass and two
     // wakes in a row mean no more than one.
     val wakes = remember(player) { Channel<Unit>(Channel.CONFLATED) }
+    val sight = remember(player) { SightTracker() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
 
     DisposableEffect(player) {
         if (SurfaceRegistry.add(player)) {
@@ -147,8 +165,8 @@ fun VideoSurface(
         // taken straight out of the host's own rendering. It runs here
         // instead, one picture per permit, and the loop below hands out a
         // permit only once the window has drawn the last picture. That keeps
-        // the player's notice of an unwatched mailbox tied to the window
-        // actually rendering rather than to a loop of this thread's own.
+        // what the surface takes tied to the window actually rendering rather
+        // than to a loop of this thread's own.
         val stop = AtomicBoolean(false)
         val rasteriser = Thread({
             while (!stop.get()) {
@@ -299,12 +317,15 @@ fun VideoSurface(
                     // the window is not drawing: that wait is what stops the
                     // surface taking pictures nobody can see. How often a
                     // window the viewer cannot see still draws is the
-                    // platform's call, and not every platform stops.
+                    // platform's call, and not every platform stops. How long
+                    // it takes is what tells the two apart.
+                    sight.asked(System.nanoTime())
                     withFrameNanos { }
+                    sight.answered(System.nanoTime())
                     // Drawn, so the next take is worth making even with nothing
-                    // new behind it. It is also what revives a player that
-                    // stopped while the window was hidden, since only a take
-                    // tells it the picture is wanted again.
+                    // new behind it. What revives a player that stopped for a
+                    // hidden window is the report below, not this take: while
+                    // a report stands, reads do not move the player.
                     permittedAt = Long.MIN_VALUE
                 }
                 // One picture in flight at a time: a second permit would only
@@ -317,6 +338,54 @@ fun VideoSurface(
             }
         } finally {
             forwarder.cancel()
+        }
+    }
+    // What the player is told about whether anyone can see this window. The
+    // first report goes out once the window has started, visible, which also
+    // revives a player an earlier surface left hidden. Leaving the composition
+    // withdraws it, so a player nothing draws any more is noticed the way the
+    // mailbox notices, rather than told it is watched by a surface that has
+    // gone.
+    LaunchedEffect(player, lifecycle) {
+        fun report() {
+            sight.verdict(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))?.let(player::reportVisible)
+        }
+        val lifecycleWatch = launch { lifecycle.currentStateFlow.collect { report() } }
+        try {
+            while (true) {
+                val now = System.nanoTime()
+                sight.check(now)
+                report()
+                // A closed or failed player takes no reports, so there is
+                // nothing left to find out. An ended one has nothing to decode
+                // either way, and a seek that revives it publishes, which the
+                // loop above times as usual: no frames are asked for on its
+                // behalf meanwhile.
+                val state = player.state
+                if (state is VideoPlayer.State.Closed || state is VideoPlayer.State.Failed) break
+                if (state !is VideoPlayer.State.Ended &&
+                    !sight.inSight &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                ) {
+                    // Hidden by its frames, so nothing may be asking for one:
+                    // a player stopped for a hidden window publishes nothing.
+                    // Asked for here instead, back to back, which a hidden
+                    // window answers at its own slow rate, and one shown again
+                    // answers at once. Bounded, so a window whose frame clock
+                    // has stopped still gets its request looked at. A minimised
+                    // window is left alone: the lifecycle says when it is back.
+                    sight.asked(now)
+                    if (withTimeoutOrNull(SIGHT_CHECK_MILLIS) { withFrameNanos { } } != null) {
+                        sight.answered(System.nanoTime())
+                    }
+                } else {
+                    delay(SIGHT_CHECK_MILLIS)
+                }
+            }
+        } finally {
+            lifecycleWatch.cancel()
+            sight.withdrawn()
+            player.reportVisible(null)
         }
     }
 
