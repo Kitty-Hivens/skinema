@@ -1401,6 +1401,15 @@ README once the library is usable.
   fast enough that the old frame was overwritten before a poll could see
   it, so the test now holds the decode after the keyframe.
 
+  Measured again after those fixes, same demo and window: no report at
+  startup other than the visible one, the hidden report 5.2 s after the
+  window was moved to the unseen workspace (a run of three answers a second
+  apart, as expected), 0.01 cores while hidden, and the visible report 0.06
+  s after it was moved back, the player resuming on its own. The visible
+  phase read 4.6 cores this time against 3.3 before, on the same code path;
+  the machine's timing numbers drift over its uptime and only the hidden
+  floor is the measurement here.
+
   For consumers this is a change of behaviour and not only an addition: a
   player with sound on that paused when its window was hidden now plays its
   sound on. The guides say so and the release notes have to.
