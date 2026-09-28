@@ -69,6 +69,16 @@ values are clamped, and `NaN` is refused outright rather than clamped --
 every comparison with it is false, so a clamp passes it straight to a gain
 control that accepts it and silences the line.
 
+The volume also decides what a player does when its window is hidden.
+Under the default `WhenUnwatched.FollowSound` a player at a volume above
+zero is one somebody can hear, so it keeps its sound and stops only its
+picture, and one at zero pauses. The question is asked at the moment the
+window goes, so a fade-in that starts from zero pauses if the window is
+hidden before the fade begins, and stays paused until it is looked at
+again. Only the player's own volume counts: a stream muted in the system
+mixer, or a sink of yours that throws the sound away, still reads as
+heard. See the `WhenUnwatched` section of [video-player.md](video-player.md).
+
 ## Multiple audio tracks
 
 A container with several audio streams exposes them, and you can switch

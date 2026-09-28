@@ -212,7 +212,21 @@ nothing is in flight:
 - a frame step, which anchors on the frame it stopped at so a resume
   continues from it;
 - a paused start, where the first frame is decoded, published forced and
-  the clock stopped on it.
+  the clock stopped on it;
+- a lap or the end while nobody watches the picture. The decoder is not
+  reading then, so no drain and no EOF are coming, and the decode thread
+  turns the lap off the clock and the file's declared duration once the
+  sound has nothing left to play, the way a frameless lap ends. A source
+  that declares no duration waits for the picture to come back.
+
+Bringing the picture back after it was not watched places nothing while
+the player is playing: the decoder moves alone (or not at all when it is
+less than `REJOIN_DECODE_NANOS` behind) and the catch-up run takes it to
+the clock, so a sound that played on is not moved. Where the audio side
+still owes a seek, the intended position stands in for the clock, which
+reads pre-seek until that seek is performed. A player paused while
+nobody watched is the exception: it lands at the playhead like a seek,
+sound included, since a paused line plays nothing twice.
 
 The audio thread re-anchors at its own landing, and the watchdog hands the
 clock to the wall when the device dies. Nothing parks waiting for another side to

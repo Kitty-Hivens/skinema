@@ -66,7 +66,9 @@ own pts, so the UI no longer decides timing, and polling on every UI frame
 only redrew the window at the display's refresh rate for a file running at a
 fraction of it. The UI now waits on the player's change count and draws when
 something new was published. `withFrameNanos` is left with the job of
-holding the surface while its window is not drawing. See M21.)
+holding the surface while its window is not drawing. See M21. Since M22 it
+also times how long the window takes to draw, which is how the surface
+tells a hidden window.)
 
 Audio (designed now, built later): pacing depends only on the `MediaClock`
 interface. Silent playback runs on the wall-time `PlaybackClock`; when a
@@ -1329,9 +1331,9 @@ README once the library is usable.
   is on the table.
 
   So the surface times its own frame requests. On screen an answer takes a
-  refresh or two, hidden it takes about a second, and two seconds of slow
-  answers without a break is a hidden window, and three quick ones in a row
-  bring it back. Minimising comes from the lifecycle at once. While it thinks
+  refresh or two, hidden it takes about a second. An unbroken run of three
+  slow answers lasting two seconds is a hidden window, so is one request
+  left unanswered for four, and three quick answers in a row bring it back. Minimising comes from the lifecycle at once. While it thinks
   the window hidden the surface asks for frames of its own, because a player
   stopped for it publishes nothing and nothing else would ask, and a hidden
   window answers those at its own slow rate. The first version never fired
@@ -1377,6 +1379,31 @@ README once the library is usable.
   turning and ending while hidden. Each new core behaviour was mutated out
   and its test failed, and the once-a-second surface test fails against the
   M21 surface.
+
+  A read-only review in three parts (core, surface, documentation) found
+  what the tests had not asked. Two return paths were wrong. A seek made
+  while nobody watched leaves the sound's half queued, the clock reads
+  pre-seek until it runs, and the rejoin read the clock: the picture went
+  back ten seconds from the sound in the test built for it. And a player
+  paused while hidden came back on the frame it had when it was hidden,
+  because only a playing player rejoined. A third was a cost: every return
+  jumped to the keyframe before the clock, so a short absence on a file
+  with keyframes far apart went back up to a keyframe interval and decoded
+  it all again. The rejoin now uses the intended position while the sound
+  owes a seek, lands a paused player at the playhead, decodes forward when
+  the picture is less than two seconds behind, and never shows a frame
+  older than the one on screen when it does jump. On the surface side,
+  every window reported itself hidden for a moment at startup, because a
+  Compose window composes while its lifecycle is still CREATED, and one long
+  answer was enough to call a window hidden. It now says nothing before the
+  window has started once and wants a run of three slow answers. The test
+  for the floor first passed with the floor removed: a scripted decoder is
+  fast enough that the old frame was overwritten before a poll could see
+  it, so the test now holds the decode after the keyframe.
+
+  For consumers this is a change of behaviour and not only an addition: a
+  player with sound on that paused when its window was hidden now plays its
+  sound on. The guides say so and the release notes have to.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

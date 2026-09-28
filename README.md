@@ -230,16 +230,21 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
 - **Drop late.** A slow consumer skips frames; the clock never lags.
 - **It stops for a consumer that stops looking.** A window nobody can
   see is noticed, and the player stops decoding and converting for it.
-  `VideoSurface` tells by how long its window takes to answer for a frame,
-  which catches a window left on another workspace or behind a fullscreen
-  one as well as a minimised one, and reports it through `reportVisible`.
-  Outside Compose, a mailbox that was being read and then is not is
-  noticed on its own. What stops is the policy's to say, and the default
-  (`WhenUnwatched.FollowSound`) does what a browser does with a tab put
-  behind another: a player you can hear plays on without its picture,
-  which catches up with the sound when it is wanted again, and a silent or
-  muted one pauses. `Freeze` and `KeepTime` fix one answer for every case,
-  and `setPresenting` marks the moment exactly.
+  `VideoSurface` tells by how long its window takes to answer for a frame
+  and reports it through `reportVisible`. Measured under XWayland on
+  Hyprland, that catches a window left on a workspace that is not on
+  screen. Behind a fullscreen window it answers the same way, and a
+  covered macOS window is expected to, going by Skiko's source. Minimising
+  is taken from the lifecycle everywhere. A covered window on Windows most
+  likely keeps drawing at full speed and is not seen. Outside Compose, a
+  mailbox that was being read and then is not is noticed on its own. What
+  stops is the policy's to say, and the default
+  (`WhenUnwatched.FollowSound`, which replaced `Freeze` as the default)
+  does what a browser does with a tab put behind another: a player you can
+  hear plays on without its picture, which catches up with the sound when
+  it is wanted again, and a silent one or one at volume zero pauses.
+  `Freeze` and `KeepTime` fix one answer for every case, and
+  `setPresenting` marks the moment exactly.
 - **Seeks answer immediately.** An exact seek previews its keyframe
   while the frame-precise landing decodes behind it; `exact = false`
   lands on the keyframe outright -- picture and sound at once, position
