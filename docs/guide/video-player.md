@@ -56,10 +56,14 @@ VideoPlayer(
 - `hardware` -- GPU decode policy. `HwAccel.OFF` (default) is pure
   software decode, the historical behaviour. `HwAccel.AUTO` uses the
   platform's GPU decoder when one is present and falls back to software
-  per file otherwise; `HwAccel.REQUIRE` fails the open (`Failed`) when
-  hardware decode cannot be set up. The RGBA frame contract is identical
+  per file otherwise; `HwAccel.REQUIRE` fails the player (`Failed`) when
+  hardware decode cannot be set up, at the open or at the first frame,
+  where a device that accepted the stream can still refuse it. Through
+  `setSource` that same refusal skips the file instead (see below). The RGBA frame contract is identical
   on every path -- frames still come back through system memory, so this
-  buys decode cost, not a zero-copy path.
+  buys decode cost, not a zero-copy path. One exception to "GPU when
+  present": a VP8/VP9 webm carrying alpha always decodes in software,
+  because no GPU decoder keeps the alpha channel, and `REQUIRE` fails it.
 - `unwatched` -- what the timeline does while nobody is taking the
   picture. See the `WhenUnwatched` discussion below.
 - `startPaused` -- open onto the first frame and stay on it. `state`
@@ -307,8 +311,11 @@ has not opened yet.
 A switch keeps the **shape** of the player. One that opened a file with a
 picture takes files with a picture; one playing sound alone takes what the
 audio side can open. A file of the wrong shape is refused, as is one that
-will not open at all: the file playing carries on untouched and the cause
-lands in `sourceFailure`. That is what a queue needs from one unreadable
+will not open at all and one that opens and cannot give its first picture
+(a stream the decoder cannot read, or a `REQUIRE` player whose GPU refuses
+it): the file playing carries on untouched and the cause lands in
+`sourceFailure`. The new file's first frame is decoded before anything is
+switched, so the sound and the picture of the old one play on until it has. That is what a queue needs from one unreadable
 item -- lose the item, not the player and everything queued behind it.
 
 A file with **no sound** is not a refusal. Its picture plays, the timeline

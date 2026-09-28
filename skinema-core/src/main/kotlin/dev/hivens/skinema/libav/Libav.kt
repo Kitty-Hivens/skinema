@@ -272,6 +272,7 @@ object Libav {
     private val hAvPacketAlloc = fn(LibavLibrary.AVCODEC, "av_packet_alloc", FunctionDescriptor.of(ADDRESS))
     private val hAvPacketUnref = fn(LibavLibrary.AVCODEC, "av_packet_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvPacketFree = fn(LibavLibrary.AVCODEC, "av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
+    private val hAvPacketClone = fn(LibavLibrary.AVCODEC, "av_packet_clone", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
@@ -528,7 +529,7 @@ object Libav {
 
     /**
      * The surface format the decoder that owns [ctx] opened a device for,
-     * parked in AVCodecContext.opaque by setupHwAccel. A NULL slot is a
+     * parked in AVCodecContext.opaque by VideoDecoder's wireHwDevice. A NULL slot is a
      * software decoder and yields AV_PIX_FMT_NONE, which leaves
      * [chooseHwFormat] returning the software entry.
      */
@@ -582,6 +583,9 @@ object Libav {
     fun avPacketAlloc(): MemorySegment = hAvPacketAlloc.invoke() as MemorySegment
     fun avPacketUnref(packet: MemorySegment) { hAvPacketUnref.invoke(packet) }
     fun avPacketFree(packetPtrPtr: MemorySegment) { hAvPacketFree.invoke(packetPtrPtr) }
+
+    /** A new packet referencing [packet]'s data (a refcount, not a copy), or NULL when it cannot allocate. */
+    fun avPacketClone(packet: MemorySegment): MemorySegment = hAvPacketClone.invoke(packet) as MemorySegment
 
     fun avcodecAllocContext3(codec: MemorySegment): MemorySegment = hAvcodecAllocContext3.invoke(codec) as MemorySegment
     fun avcodecFindDecoder(codecId: Int): MemorySegment = hAvcodecFindDecoder.invoke(codecId) as MemorySegment

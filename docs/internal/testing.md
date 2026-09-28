@@ -185,7 +185,11 @@ Useful flags and env:
 - `SKINEMA_TEST_HWACCEL=1`, `SKINEMA_REQUIRE_HWACCEL=1` -- run the
   hardware decode suites, and hold them mandatory rather than
   skippable. `SKINEMA_TEST_HWENC=1` does the same for hardware encode.
-  All off in CI, which has no GPU.
+  Off in CI, which has no GPU, except `SKINEMA_TEST_HWACCEL` on the macOS
+  row: VideoToolbox opens there and decodes in software, which exercises
+  the negotiation and the fallback without a GPU behind them. The software
+  fallback for a decoder with no software path of its own is covered on
+  every row without either switch (`SoftwareFallbackTest`).
 
 A note on CI flakes: `taskset -c 0 ./gradlew test --no-daemon` pins the
 build to one core and reproduces runner-starvation flakes locally that

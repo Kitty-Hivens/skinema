@@ -6,7 +6,11 @@ import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.FrameSource
+import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
@@ -96,6 +100,50 @@ class SourceSwitchTest {
 
             frames.set(framesFor(400))
             assertTrue(awaitTrue { one.maxStartedIndex.get() >= 4 }, "and it must carry on playing")
+        }
+    }
+
+    /**
+     * The refusal that comes after the open: a file that opens and then cannot
+     * give its first frame. It used to be decoded after the sound had switched
+     * and the old file had closed, so it failed the whole player, and the file
+     * it opened was never closed.
+     */
+    @Test
+    fun `a file that opens and refuses its first frame leaves the one playing alone`() {
+        val one = ScriptedFrameSource(frameCount = 60)
+        val two = ScriptedFrameSource(frameCount = 60, failAt = 0)
+        player(mapOf(first to one, second to two)).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+
+            p.setSource(second)
+            assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported, state=${p.state}")
+            assertIs<IllegalStateException>(p.sourceFailure, "with the cause the first frame gave")
+            assertEquals(first, p.source, "and the file playing must not change")
+            assertIs<VideoPlayer.State.Playing>(p.state, "nor may the player stop")
+            assertFalse(one.closed.get(), "the file playing must not be closed under it")
+            assertTrue(two.closed.get(), "the file that was refused must be closed, not leaked")
+
+            frames.set(framesFor(400))
+            assertTrue(awaitTrue { one.maxStartedIndex.get() >= 4 }, "and the first file must carry on playing")
+        }
+    }
+
+    /** The same for a paused player, which must stay paused on its own picture. */
+    @Test
+    fun `a paused player refused at the first frame stays paused on its own file`() {
+        val one = ScriptedFrameSource(frameCount = 60)
+        val two = ScriptedFrameSource(frameCount = 60, failAt = 0)
+        player(mapOf(first to one, second to two)).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            p.pause()
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "the pause must land")
+
+            p.setSource(second)
+            assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported")
+            assertEquals(first, p.source)
+            assertIs<VideoPlayer.State.Paused>(p.state, "the pause must survive a refused switch")
+            assertTrue(two.closed.get(), "the refused file must be closed")
         }
     }
 
@@ -334,6 +382,40 @@ class SourceSwitchAudioTest {
                 awaitTrue { sink.totalBytes > bytesWhileSilent },
                 "and its sound must reach the sink the silent file did not close",
             )
+        }
+    }
+
+    /**
+     * B3 on a real decoder rather than a script: an AV1 file that opens under
+     * REQUIRE and is refused at its first packet, which is what a GPU without
+     * AV1 decode does to it. Reached here without a device by opening FFmpeg's
+     * own AV1 decoder as a device would pick it, with none behind it.
+     */
+    @Test
+    fun `a file REQUIRE refuses at its first frame is skipped rather than failing the player`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeAv1Fixture()
+        val one = Fixtures.generate(
+            dir.resolve("one.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "3",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast",
+        )
+        val refused = Fixtures.av1(dir.resolve("refused.mp4"))
+        val player = VideoPlayer(
+            one, false, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        ) { path ->
+            if (path == refused) VideoDecoder.openWithoutDevice(path, HwAccel.REQUIRE, "av1") else FrameSources.open(path)
+        }
+        player.use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "the first file must play")
+
+            p.setSource(refused)
+            assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported, state=${p.state}")
+            assertIs<LibavException>(p.sourceFailure)
+            assertEquals(one, p.source, "the file playing must not change")
+            assertTrue(p.state !is VideoPlayer.State.Failed, "and the player must not fail: ${p.state}")
+            val before = p.positionNanos()
+            assertTrue(awaitTrue { p.positionNanos() > before + 200_000_000L }, "the first file must carry on")
         }
     }
 

@@ -47,7 +47,7 @@ override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
             0 -> return if (convert) convertCurrentFrame(target) else metadataOnlyFrame()
             LibavAbi.AVERROR_EAGAIN -> feedOnePacket()
             LibavAbi.AVERROR_EOF -> return null
-            else -> Libav.checkAv(ret, "avcodec_receive_frame")
+            else -> if (!fellBackToSoftware(ret)) Libav.checkAv(ret, "avcodec_receive_frame")
         }
     }
 }
@@ -55,7 +55,8 @@ override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
 
 `feedOnePacket` reads packets with `av_read_frame`, skips those not on
 the video stream, sends ours to the decoder, and on input EOF sends a
-NULL flush packet so the decoder drains. The whole format zoo collapses
+NULL flush packet so the decoder drains. Packets a software fallback still
+owes (see below) go out first, ahead of anything new from the demuxer. The whole format zoo collapses
 at one swscale chokepoint: decoded YUV becomes RGBA8888 in
 `convertCurrentFrame`. The swscale and destination buffers are reused
 across frames (allocating per frame would churn the GC), and the
@@ -65,8 +66,13 @@ slot with no copy.
 
 ### Decoder selection
 
-`pickDecoder` swaps in libvpx for VP8/VP9, because the native vp8/vp9
-decoders silently drop the webm alpha side-channel:
+Two questions, answered separately: which decoder software decode uses,
+and which decoders a device is offered.
+
+**Software.** `pickDecoder` swaps in libvpx for 8-bit VP8/VP9, because the
+native vp8/vp9 decoders silently drop the webm alpha side-channel, and the
+pixel format cannot tell an alpha stream from a plain one (both report
+`yuv420p`):
 
 ```kotlin
 val libvpxName = when (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)) {
@@ -76,11 +82,48 @@ val libvpxName = when (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)
 }
 ```
 
-AV1 decodes through dav1d (the native AV1 decoder is too slow for
-1080p). The codec context is opened with `threads = auto` via one
-`av_opt_set` downcall -- the default is single-threaded, which put a
-5.5s AV1 keyframe gap at ~1.5s of seek landing; threading cuts that
-roughly threefold.
+AV1 decodes through libdav1d, which FFmpeg itself prefers for AV1. The
+native `av1` decoder is not an alternative here: it has no software path
+at all and decodes only through a hwaccel (sent a packet without one, it
+answers `Function not implemented`).
+
+**Hardware.** A hwaccel is a hook inside FFmpeg's own decoders and never
+inside a wrapper around an external library, so libdav1d and libvpx carry
+no hardware config. `hardwareCandidates` therefore offers the device the
+software decoder first and FFmpeg's own decoder for the codec second,
+found by the codec's name (`av1`, `vp9`, `vp8`). Before this, the device
+was offered the software decoder alone, and under `AUTO` every AV1 and
+every 8-bit VP8/VP9 file decoded on the CPU.
+
+Two exceptions follow from the same facts:
+
+- A stream tagged `alpha_mode=1` (matroska's AlphaMode) is offered libvpx
+  alone. The native decoder would drop the alpha on the GPU exactly as on
+  the CPU, and an opaque picture is worse than a software decode. Under
+  `REQUIRE` such a stream has nothing for a device and fails.
+- A decoder picked for the device can refuse the stream after the device
+  opened, whenever its hwaccel cannot initialise: a GPU with no AV1 decode
+  at all (Intel before Gen12, AMD before RDNA2, a Windows machine on the
+  WARP adapter), or a profile or size the driver refuses. H.264 or VP9 then
+  carries on in software inside the same decoder, but the native AV1
+  decoder cannot, and its first packet fails with ENOSYS. Measured for
+  4:4:4, for a width past the driver's limit and after a seek: exactly one
+  packet consumed. `fellBackToSoftware` catches that case (a device-picked
+  decoder, no frame produced yet), builds and opens a context on the
+  software decoder before letting the old one go, releases the device, and
+  replays the packets the refused decoder was sent, which it has kept as
+  references since the demuxer was last positioned (at most
+  `HELD_PACKET_LIMIT`). Nothing is read twice, so a source that cannot seek
+  loses nothing. `REQUIRE` fails instead.
+
+The fallback is covered on every CI row by `SoftwareFallbackTest`, which
+opens the native AV1 decoder as a device would pick it, with no device
+behind it: that decoder refuses every packet without a hwaccel, which is
+the same refusal in the same place.
+
+The codec context is opened with `threads = auto` via one `av_opt_set`
+downcall -- the default is single-threaded, which put a 5.5s AV1 keyframe
+gap at ~1.5s of seek landing; threading cuts that roughly threefold.
 
 ### Hardware decode
 

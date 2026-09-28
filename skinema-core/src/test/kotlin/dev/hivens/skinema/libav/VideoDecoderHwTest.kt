@@ -259,6 +259,81 @@ class VideoDecoderHwTest {
         assertTrue(mean < 4.0, "mean channel difference must be small, got $mean (worst $worst)")
     }
 
+    /**
+     * AV1 reaches the device at all. It never did: software decode prefers
+     * libdav1d, which has no hardware config, and that preference was the only
+     * decoder the device was ever offered.
+     */
+    @Test
+    fun `AV1 decodes on the device through FFmpeg's own decoder`() {
+        assumeHwAcceptance()
+        Fixtures.assumeAv1Fixture()
+        val video = Fixtures.av1(dir.resolve("av1.mp4"), size = "128x128")
+        val software = ptsGrid(video, HwAccel.OFF)
+        VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "AUTO must decode AV1")
+            assertDecodedOnDevice(d, "AV1")
+            // No guard: holds with a device or without one, and after a
+            // refusal too, which lands on libdav1d with hardwareActive false.
+            assertEquals(d.hardwareActive(), d.usesDecoder("av1"), "frames on the device come from FFmpeg's own decoder, and only those")
+        }
+        assertEquals(software, ptsGrid(video, HwAccel.AUTO), "AV1 under AUTO must decode the software pts grid")
+    }
+
+    /**
+     * The one decoder here with no software path. FFmpeg's own AV1 decoder
+     * decodes only through a hwaccel, so a stream the device accepts and the
+     * driver cannot decode (4:4:4, which consumer AV1 hardware does not do)
+     * fails on its first packet instead of falling back the way H.264 does.
+     * AUTO has to move it to libdav1d, and REQUIRE has to refuse it.
+     */
+    @Test
+    fun `an AV1 stream the device refuses moves to libdav1d, or fails under REQUIRE`() {
+        assumeHwAcceptance()
+        Fixtures.assumeEncoder("libaom-av1")
+        val video = Fixtures.generate(
+            dir.resolve("av1-444.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "1",
+            "-pix_fmt", "yuv444p", "-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "40",
+        )
+        val software = ptsGrid(video, HwAccel.OFF)
+        VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            val grid = generateSequence { d.nextFrame()?.ptsNanos }.toList()
+            assertEquals(software, grid, "the fallback must still decode every frame")
+            assumeTrue(
+                d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE,
+                "no device opened for this stream, so nothing to fall back from",
+            )
+            assumeTrue(!d.usesDecoder("av1"), "this device decodes 4:4:4 AV1, so there is no refusal to observe")
+            assertTrue(d.usesDecoder("libdav1d"), "the refusal must land on the software decoder")
+            assertFalse(d.hardwareActive(), "a decoder moved to software is not on the GPU")
+        }
+        VideoDecoder.open(video, HwAccel.REQUIRE).use { d ->
+            assertFailsWith<LibavException>("REQUIRE must not decode this in software") { d.nextFrame() }
+        }
+    }
+
+    @Test
+    fun `8-bit VP9 decodes on the device through FFmpeg's own decoder`() {
+        assumeHwAcceptance()
+        Fixtures.assumeEncoder("libvpx-vp9")
+        val video = Fixtures.generate(
+            dir.resolve("vp9.webm"),
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "1",
+            "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+        )
+        VideoDecoder.open(video, HwAccel.AUTO).use { d ->
+            assertTrue(d.nextFrame() != null, "AUTO must decode VP9")
+            assertDecodedOnDevice(d, "VP9")
+            // No guard either way. A device opens only for FFmpeg's own decoder,
+            // which keeps it even when it then decodes in software. With no
+            // device the choice is the software one.
+            val deviceOpened = d.negotiatedSurfaceFormat() != LibavAbi.AV_PIX_FMT_NONE
+            assertTrue(d.usesDecoder(if (deviceOpened) "vp9" else "libvpx-vp9"), "deviceOpened=$deviceOpened")
+        }
+        assertEquals(ptsGrid(video, HwAccel.OFF), ptsGrid(video, HwAccel.AUTO), "VP9 under AUTO must decode the software pts grid")
+    }
+
     @Test
     fun `REQUIRE fails closed on a stream no device can decode`() {
         assumeHwAcceptance()
