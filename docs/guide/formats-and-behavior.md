@@ -61,9 +61,13 @@ newest frame rather than a backlog of stale ones.
 A mailbox that was being read and then is not is noticed on its own --
 sixty pictures published into it and not taken, over at least two
 seconds -- and the player stops decoding and converting for it. Nothing
-has to be said: a Compose window that goes off screen stops drawing,
+has to be said where the platform stops drawing a window nobody sees:
 `VideoSurface` takes each picture only after the last one was drawn and so
-stops taking them, and the player follows.
+stops taking them, and the player follows. Not every platform does stop.
+An XWayland window on an unseen Hyprland workspace still draws about once a
+second, and a macOS window behind others a few times a second, which reads
+the mailbox often enough that the notice never fires. There, `setPresenting`
+is the way.
 
 What stopping costs the timeline is the `unwatched` constructor
 parameter's to say. `WhenUnwatched.Freeze` (the default) stops the clock
@@ -76,9 +80,7 @@ automatic notice out of play for good.
 
 A player whose mailbox has never been read is not covered: it may be
 feeding something that is not a screen, so the notice only applies after
-a first read. That includes a window hidden from its very first frame,
-which never reads at all: a consumer that starts hidden says so with
-`setPresenting(false)`, and `setPresenting(true)` once it is shown.
+a first read.
 
 ### Seeks answer immediately
 

@@ -65,7 +65,7 @@ shown. The pacer is pure Kotlin and unit-tested.
 own pts, so the UI no longer decides timing, and polling on every UI frame
 only redrew the window at the display's refresh rate for a file running at a
 fraction of it. The UI now waits on the player's change count and draws when
-something new was published; `withFrameNanos` is left with the job of
+something new was published. `withFrameNanos` is left with the job of
 holding the surface while its window is not drawing. See M21.)
 
 Audio (designed now, built later): pacing depends only on the `MediaClock`
@@ -1248,39 +1248,59 @@ README once the library is usable.
   Core gained `changeCount` and a blocking `awaitChange(since, timeout)`, the
   idiom `FrameQueue` already uses between its own threads. The count moves on
   a frame published, a subtitle overlay published (a dying pipeline's clear
-  included), a subtitle track selected or dropped, and a state change. It is
-  still a poll, which keeps M1's decision: no coroutines in core and no calls
-  into a consumer's code from the player's threads. The Compose side waits on
-  it from the IO pool, interruptibly, and hands a picture over only when
-  something moved.
+  included), a subtitle track selected or dropped, a state change and a
+  refused `setSource`. It is still a poll rather than a notification
+  callback, which keeps M1's decision: no coroutines in core, and the player
+  calls a consumer's code only through what the consumer handed it (a sink, a
+  clock). `publishState` now checks and writes under the same monitor, which
+  also closes an older gap: the pacer's `Failed` could land between the
+  decode thread's check and its write and be written over.
+
+  The Compose side waits from a view of the IO pool with a limit of its own,
+  interruptibly. On `Dispatchers.IO` itself each surface and state helper
+  would hold one of its 64 threads for as long as it lives, and a few dozen
+  player cells would starve the application's own I/O. The surface's loop
+  ends on `Failed` as well as `Closed`, since neither publishes again.
 
   The frame clock keeps one job, and it is the delicate part. The surface
   takes a picture only after the window has drawn the previous one, waiting
   for that draw with `withFrameNanos` right after invalidating. The wait
   costs no frame of its own, since the invalidation asked for that frame
-  already. So a hidden window still stops the surface taking pictures and the
-  unwatched notice still fires. After each draw one take is allowed with nothing new
-  behind it, because a player frozen for an unwatched window only comes back
-  on a take.
+  already (checked against the Compose 1.12 sources: the awaiter and the draw
+  invalidation reach the same render). So a window that stops drawing stops
+  the surface taking pictures. After each draw one take is allowed with
+  nothing new behind it, because a player frozen for an unwatched window only
+  comes back on a take.
 
-  Measured on the Compose demo, 4K AV1 at 30 fps decoded on the CPU, window
-  2548x1383 on a 210 Hz display: 100 to 110 redraws a second became 39 to 40
-  (the thirty pictures plus the demo's own position text), the process went
-  from 4.4 to 3.2 cores, and the GPU's render engine from 22 to 13 percent.
-  One run in the first batch read one redraw a second with the decoder busy
-  and nothing rastered. It was the window, not the loop: moved onto a
-  workspace the screen was not showing, it never drew, so the surface never
-  read, and a player never read from is left alone by design. The old code
-  measures identically in that state. A window hidden from its first frame
-  is therefore a case the automatic notice cannot cover, and the guide says
-  to use `setPresenting` for it.
+  Measured on the Compose demo, window 2548x1383 on a 210 Hz display. 4K AV1
+  at 30 fps decoded on the CPU: 100 to 110 redraws a second became 39 to 40,
+  the process went from 4.4 to 3.2 cores, and the GPU's render engine from 22
+  to 13 percent. 1080p at 24 and at 60 fps: 33 and 69 redraws a second. So
+  the surface draws once per picture, and the constant nine a second on top
+  of every rate are the demo's own controls, its position text among them.
 
-  Tested on both sides of the seam: the count's wakes, timeout and interrupt
-  in core, and in Compose that a paused surface and the state helper ask for
-  no frames, that a playing surface asks for frames at the file's rate rather
-  than the caller's, and that a surface nobody draws still lets the player
-  notice and comes back when drawn. The first three fail against the polling
-  surface.
+  One thing this does not fix, and the old surface did not either. Whether a
+  window nobody can see stops drawing is the platform's call. Measured, an
+  XWayland window moved to a Hyprland workspace that is not on screen still
+  draws once a second: the surface then reads about once a second, under the
+  two-second silence the unwatched notice waits for, and the decoder runs on
+  for nobody. The old surface measured the same, one redraw a second and the
+  decoder busy. Skiko's Metal renderer, by its source, keeps drawing a window
+  behind others a few times a second, which has the same effect on macOS.
+  Until the notice is judged on something other than a silence, which is its
+  own change in core, `setPresenting` is the way for a consumer that knows.
+  An earlier reading of that measurement took it for a window that never
+  drew at all, and the first version of this entry said so. The redraw
+  counter it rested on showed one a second, not zero.
+
+  Tested on both sides of the seam: the count's wakes (a frame, a state
+  change, a refused switch, a subtitle track selected and dropped), timeout
+  and interrupt in core, and in Compose that a paused surface and the state
+  helper ask for no frames, that a playing surface asks for frames at the
+  file's rate rather than the caller's, and that a surface nobody draws still
+  lets the player notice and comes back when drawn. The frame checks apply
+  pending snapshot changes first, so an invalidation made by writing state is
+  seen too. The first three Compose tests fail against the polling surface.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

@@ -212,9 +212,11 @@ class FrameSlot {
 }
 ```
 
-`VideoSurface` calls `acquireFrame` for you, whenever the player has a new
-picture and the window has drawn the last one. Drive it yourself only when
-you render outside Compose (see [compose.md](compose.md)).
+`VideoSurface` calls `acquireFrame` for you: once as it starts, then whenever
+the player has a new picture and the window has drawn the last one, and once
+more after each draw even with nothing new, which is the read that brings
+back a player that stopped for an unwatched window. Drive it yourself only
+when you render outside Compose (see [compose.md](compose.md)).
 
 ```kotlin
 val changeCount: Long
@@ -223,13 +225,16 @@ fun awaitChange(since: Long, timeoutNanos: Long): Long
 
 What a consumer waits on instead of polling on every refresh of its
 display. The count moves when a frame or a subtitle overlay is published,
-when a subtitle track is selected or dropped, and when `state` changes;
-`awaitChange` blocks until it moves past `since` or the timeout runs out,
-and returns what it found. It returns at once when the reading is already
-stale, so read, look, then wait with the reading. It stays a poll, blocking
-rather than a callback: nothing here calls into your code from its own
-threads. An interrupt ends the wait with `InterruptedException`, which is
-how a coroutine wrapping it in `runInterruptible` is cancelled.
+when a subtitle track is selected or dropped, when `state` changes, and when
+a `setSource` is refused. The position, the track lists and the other
+metadata move without it. `awaitChange` blocks until the count differs from
+`since` or the timeout runs out (zero or less never blocks), and returns
+what it found. It returns at once when the reading is already stale, so
+read, look, then wait with the reading. It stays a poll rather than a
+notification callback: the player calls into your code only through what
+you hand it to call, a sink or a clock. An interrupt ends the wait with
+`InterruptedException`, which is how a coroutine wrapping it in
+`runInterruptible` is cancelled.
 
 ## Seeking
 

@@ -25,17 +25,22 @@ overlay, a change of state -- and at no other time, waiting on
 file draws twenty-four times a second whatever the display's refresh rate,
 and a paused player draws nothing at all.
 
-It takes each picture only after the window has drawn the previous one, and a
-hidden or detached window draws nothing, so the surface stops taking pictures
-by itself. The player notices the mailbox going unread and stops decoding for
-it, on the policy its `WhenUnwatched` names; say the moment exactly with
-`player.setPresenting(...)` if you would rather not wait for it to be
-noticed. A window that is hidden from its very first frame never reads at
-all, and a player never read from is not one that stopped being watched, so
-a consumer that starts hidden says `setPresenting(false)` and then
-`setPresenting(true)` when it is shown: saying it once takes the automatic
-notice out of play for good. It draws pixels and nothing else -- no
-spinner, no error glyph. Before the first frame and
+It takes each picture only after the window has drawn the previous one, so a
+window that stops drawing stops the surface taking pictures. The player
+notices the mailbox going unread and stops decoding for it, on the policy its
+`WhenUnwatched` names.
+
+That notice depends on the window actually stopping, and not every platform
+stops a window nobody can see. An XWayland window on a Hyprland workspace
+that is not on screen still draws about once a second (measured), and
+Skiko's macOS renderer keeps a window behind others drawing a few times a
+second. At those rates the surface reads often enough that the player keeps
+decoding for nobody, as it did with the surface that polled every frame. If
+you know when your picture is out of sight, say so with
+`player.setPresenting(false)` and `setPresenting(true)`, which is exact on
+every platform. Saying it once takes the automatic notice out of play for
+good, so say both directions from then on. It draws pixels and nothing
+else -- no spinner, no error glyph. Before the first frame and
 while the player is `Failed`, it draws nothing; put your own loading and
 fallback visuals around it, driven by `rememberPlayerState` (below).
 
@@ -129,7 +134,8 @@ while (running) {
 ```
 
 The count moves when a frame or a subtitle overlay is published, when a
-subtitle track is selected or dropped, and when `state` changes. Read it
+subtitle track is selected or dropped, when `state` changes, and when a
+`setSource` is refused. Read it
 before you look at the player and wait with that reading, and nothing that
 happens in between is missed.
 
