@@ -84,8 +84,10 @@ enum class VideoScale {
  * hidden one either stops answering or answers slowly: measured, an XWayland
  * window on a Hyprland workspace that is not on screen, or behind a
  * fullscreen window, answers about once a second, and read off Skiko's Metal
- * renderer, a covered macOS window waits up to 300 ms. Two seconds of slow
- * answers is a hidden window, and a few quick ones in a row bring it back.
+ * renderer, a covered macOS window waits up to 300 ms, which should read the
+ * same way but has not been measured. An unbroken run of slow answers
+ * lasting two seconds is a hidden window, a request left unanswered for four
+ * is one too, and a few quick answers in a row bring it back.
  *
  * What that cannot see is a window that keeps drawing at full speed behind
  * another. Skiko's Windows renderers ask only whether the component is
@@ -105,7 +107,9 @@ enum class VideoScale {
  * of the frames, neither draws them all, and the two show different pictures.
  * Nothing fails, which is why it reads as choppy video rather than as a
  * mistake, so the second surface says so on stderr. Two views of one file
- * means two players.
+ * means two players. The two also report what they can see to the same
+ * player, and the one whose window is hidden can stop it while the other is
+ * on screen, so the mistake can freeze the picture as well as split it.
  */
 @Composable
 fun VideoSurface(
@@ -319,9 +323,9 @@ fun VideoSurface(
                     withFrameNanos { }
                     sight.answered(System.nanoTime())
                     // Drawn, so the next take is worth making even with nothing
-                    // new behind it. It is also what revives a player that
-                    // stopped while the window was hidden, since only a take
-                    // tells it the picture is wanted again.
+                    // new behind it. What revives a player that stopped for a
+                    // hidden window is the report below, not this take: while
+                    // a report stands, reads do not move the player.
                     permittedAt = Long.MIN_VALUE
                 }
                 // One picture in flight at a time: a second permit would only
@@ -337,10 +341,11 @@ fun VideoSurface(
         }
     }
     // What the player is told about whether anyone can see this window. The
-    // first report goes out at once, visible, which also revives a player an
-    // earlier surface left hidden. Leaving the composition withdraws it, so a
-    // player nothing draws any more is noticed the way the mailbox notices,
-    // rather than told it is watched by a surface that has gone.
+    // first report goes out once the window has started, visible, which also
+    // revives a player an earlier surface left hidden. Leaving the composition
+    // withdraws it, so a player nothing draws any more is noticed the way the
+    // mailbox notices, rather than told it is watched by a surface that has
+    // gone.
     LaunchedEffect(player, lifecycle) {
         fun report() {
             sight.verdict(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))?.let(player::reportVisible)
@@ -351,7 +356,17 @@ fun VideoSurface(
                 val now = System.nanoTime()
                 sight.check(now)
                 report()
-                if (!sight.inSight && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                // A closed or failed player takes no reports, so there is
+                // nothing left to find out. An ended one has nothing to decode
+                // either way, and a seek that revives it publishes, which the
+                // loop above times as usual: no frames are asked for on its
+                // behalf meanwhile.
+                val state = player.state
+                if (state is VideoPlayer.State.Closed || state is VideoPlayer.State.Failed) break
+                if (state !is VideoPlayer.State.Ended &&
+                    !sight.inSight &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                ) {
                     // Hidden by its frames, so nothing may be asking for one:
                     // a player stopped for a hidden window publishes nothing.
                     // Asked for here instead, back to back, which a hidden

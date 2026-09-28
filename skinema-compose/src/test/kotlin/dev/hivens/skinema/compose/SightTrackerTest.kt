@@ -33,12 +33,13 @@ class SightTrackerTest {
 
     /** The measured case: an unseen workspace draws once a second, and the requests go back to back. */
     @Test
-    fun `two seconds of once-a-second answers is a hidden window`() {
+    fun `a run of once-a-second answers is a hidden window`() {
         val sight = SightTracker()
         var t = sight.frame(0L, 1_000 * ms)
-        assertTrue(sight.inSight, "one slow answer is a hiccup")
         t = sight.frame(t + 5 * ms, 1_000 * ms)
-        assertFalse(sight.inSight, "slow answers without a break for two seconds")
+        assertTrue(sight.inSight, "two slow answers are not yet a run")
+        sight.frame(t + 5 * ms, 1_000 * ms)
+        assertFalse(sight.inSight, "three slow answers without a break, over three seconds")
     }
 
     /**
@@ -52,15 +53,34 @@ class SightTrackerTest {
         val sight = SightTracker()
         var t = sight.frame(0L, 1_000 * ms)
         t = sight.frame(t + 1_000 * ms, 1_000 * ms)
-        assertFalse(sight.inSight, "answers of a second, a second apart, for three seconds")
+        sight.frame(t + 1_000 * ms, 1_000 * ms)
+        assertFalse(sight.inSight, "answers of a second, a second apart, for five seconds")
+    }
+
+    /** One long answer is a window setting up its renderer or a collection on its thread, not a hidden window. */
+    @Test
+    fun `one long answer is not a hidden window`() {
+        val sight = SightTracker()
+        sight.frame(0L, 2_500 * ms)
+        assertTrue(sight.inSight)
+    }
+
+    @Test
+    fun `two slow answers with a short pause between them are not a hidden window`() {
+        val sight = SightTracker()
+        val t = sight.frame(0L, 900 * ms)
+        sight.frame(t + 1_500 * ms, 900 * ms)
+        assertTrue(sight.inSight)
     }
 
     @Test
     fun `a quick answer in between starts the count again`() {
         val sight = SightTracker()
-        var t = sight.frame(0L, 1_500 * ms)
+        var t = sight.frame(0L, 1_000 * ms)
+        t = sight.frame(t, 1_000 * ms)
         t = sight.frame(t, 5 * ms)
-        t = sight.frame(t, 1_500 * ms)
+        t = sight.frame(t, 1_000 * ms)
+        sight.frame(t, 1_000 * ms)
         assertTrue(sight.inSight, "the slowness was not continuous")
     }
 
@@ -71,20 +91,32 @@ class SightTrackerTest {
     @Test
     fun `an idle stretch between requests starts the count again`() {
         val sight = SightTracker()
-        var t = sight.frame(0L, 1_500 * ms)
+        var t = sight.frame(0L, 1_000 * ms)
+        t = sight.frame(t, 1_000 * ms)
         t += 10_000 * ms
-        sight.frame(t, 1_500 * ms)
+        sight.frame(t, 1_000 * ms)
         assertTrue(sight.inSight)
+    }
+
+    /** A request still waiting counts as one more slow answer. */
+    @Test
+    fun `a waiting request completes a run`() {
+        val sight = SightTracker()
+        var t = sight.frame(0L, 1_000 * ms)
+        t = sight.frame(t, 1_000 * ms)
+        sight.asked(t)
+        sight.check(t + 300 * ms)
+        assertFalse(sight.inSight)
     }
 
     /** A frame clock that stopped altogether never answers, so the waiting request is what gets judged. */
     @Test
-    fun `a request nobody answers is judged while it waits`() {
+    fun `a request nobody answers for four seconds is a hidden window`() {
         val sight = SightTracker()
         sight.asked(0L)
-        sight.check(1_000 * ms)
-        assertTrue(sight.inSight)
         sight.check(2_000 * ms)
+        assertTrue(sight.inSight, "one request, however slow, is not yet a run")
+        sight.check(4_000 * ms)
         assertFalse(sight.inSight)
     }
 
@@ -92,7 +124,8 @@ class SightTrackerTest {
     fun `three quick answers in a row bring a hidden window back`() {
         val sight = SightTracker()
         var t = sight.frame(0L, 1_000 * ms)
-        t = sight.frame(t, 1_100 * ms)
+        t = sight.frame(t, 1_000 * ms)
+        t = sight.frame(t, 1_000 * ms)
         assertFalse(sight.inSight)
         t = sight.frame(t, 5 * ms)
         t = sight.frame(t, 5 * ms)
@@ -105,17 +138,14 @@ class SightTrackerTest {
         assertTrue(sight.inSight)
     }
 
-    /** Two requesters waiting on the same frame: the earlier one is what the answer is measured from. */
+    /** Two requesters waiting on the same frame: the earlier one is what the wait is measured from. */
     @Test
     fun `a second request while one waits keeps the earlier time`() {
         val sight = SightTracker()
         sight.asked(0L)
-        sight.asked(900 * ms)
-        sight.answered(1_000 * ms)
-        sight.asked(1_000 * ms)
-        sight.asked(1_900 * ms)
-        sight.answered(2_000 * ms)
-        assertFalse(sight.inSight)
+        sight.asked(3_900 * ms)
+        sight.check(4_000 * ms)
+        assertFalse(sight.inSight, "four seconds from the first request, not a tenth of one from the second")
     }
 
     @Test
@@ -127,5 +157,18 @@ class SightTrackerTest {
         assertNull(sight.verdict(started = false))
         sight.withdrawn()
         assertEquals(false, sight.verdict(started = false))
+    }
+
+    /**
+     * A Compose window composes its content while its lifecycle is still
+     * CREATED and starts a moment later. That first moment is not a
+     * minimised window, and saying so paused a silent player at every start.
+     */
+    @Test
+    fun `nothing is said before the window has started once`() {
+        val sight = SightTracker()
+        assertNull(sight.verdict(started = false))
+        assertEquals(true, sight.verdict(started = true))
+        assertEquals(false, sight.verdict(started = false), "after that, stopping is news")
     }
 }
