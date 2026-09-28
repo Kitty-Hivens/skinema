@@ -57,6 +57,12 @@ internal class SubtitlePipeline(
     val track: SubtitleTrack,
     private val storageSize: Pair<Int, Int>?,
     private val maxScheduledBitmapBytes: Long = MAX_SCHEDULED_BITMAP_BYTES,
+    /**
+     * Called on this pipeline's thread after every overlay it publishes, the
+     * clear a dead or closing track leaves included. The player turns it into
+     * [dev.hivens.skinema.player.VideoPlayer.changeCount].
+     */
+    private val onPublish: () -> Unit = {},
 ) {
 
     /**
@@ -825,6 +831,7 @@ internal class SubtitlePipeline(
         slot.canvasHeight = canvasHeight
         slot.generation = ++generation
         buffer.publish()
+        onPublish()
     }
 
     /** How long this cue is meant to be up; see [declaredDurationMs]. */
@@ -965,6 +972,7 @@ internal class SubtitlePipeline(
         slot.canvasHeight = canvasHeight
         slot.generation = ++generation
         buffer.publish()
+        onPublish()
     }
 
     private fun closeNatives() {
