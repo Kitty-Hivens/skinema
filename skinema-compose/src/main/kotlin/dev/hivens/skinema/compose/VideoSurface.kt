@@ -15,6 +15,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.skiko.SubtitleOverlayImage
 import dev.hivens.skinema.skiko.VideoFrameImage
@@ -27,6 +31,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
 
+/**
+ * How long one wait on [VideoPlayer.awaitChange] lasts before it is taken
+ * again. Only a bound on how long an idle IO thread is held at a stretch: a
+ * change ends the wait at once, and leaving the composition interrupts it.
+ */
+internal const val CHANGE_WAIT_NANOS = 1_000_000_000L
+
 /** How the video maps onto the surface's bounds. */
 enum class VideoScale {
     /** Fill the bounds completely, cropping overflow -- backgrounds. */
@@ -37,11 +48,17 @@ enum class VideoScale {
 }
 
 /**
- * Draws [player]'s frames, repainting on the Compose frame clock: each
- * UI frame polls [VideoPlayer.acquireFrame], so a hidden window stops
- * polling for free -- Compose runs it no frame clock. The player notices the
+ * Draws [player]'s frames, repainting when the player has something new and
+ * at no other time: a 24 fps file draws twenty-four times a second on any
+ * display, where polling on every refresh drew ten times for each of those
+ * on a 240 Hz one. What wakes it is [VideoPlayer.awaitChange].
+ *
+ * The frame clock still has one job, and it is the one that matters when the
+ * window is hidden. Each picture is taken from the mailbox only after the
+ * window has drawn the one before it, and a hidden window draws nothing. So
+ * the surface stops taking pictures by itself, and the player notices the
  * mailbox going unread and stops decoding for it, on the policy its
- * [dev.hivens.skinema.player.WhenUnwatched] names; a consumer that would
+ * [dev.hivens.skinema.player.WhenUnwatched] names. A consumer that would
  * rather mark the moment exactly calls [VideoPlayer.setPresenting].
  *
  * The surface draws pixels and nothing else -- no spinners, no error
@@ -83,14 +100,18 @@ fun VideoSurface(
     // this surface promises to drop would stay on screen until something
     // else recomposed it.
     var failed by remember(player) { mutableStateOf(false) }
-    // The raster's own side of the frame clock. A permit per composition
-    // frame, a stamp back when a frame has been made into an image, and the
+    // The raster's side of the seam. A permit per picture to take, a stamp back
+    // when one has been made into an image, whether one is in flight, and the
     // throw that stops it -- Compose state is written on the composition
     // thread only, so what crosses the seam is all plain.
     val ticks = remember(player) { Semaphore(0) }
     val rasterStamp = remember(player) { AtomicLong(0L) }
     val rasterFailure = remember(player) { AtomicReference<Throwable?>(null) }
-    var drawnStamp by remember(player) { mutableLongStateOf(0L) }
+    val rasterInFlight = remember(player) { AtomicBoolean(false) }
+    // What wakes the loop below: the player changing, and a raster finishing.
+    // Conflated, because the loop looks at everything on each pass and two
+    // wakes in a row mean no more than one.
+    val wakes = remember(player) { Channel<Unit>(Channel.CONFLATED) }
 
     DisposableEffect(player) {
         if (SurfaceRegistry.add(player)) {
@@ -103,10 +124,10 @@ fun VideoSurface(
         // Eight megabytes at 1080p, four times that at 4K, every frame: the
         // raster copy is real work, and done on the composition thread it is
         // taken straight out of the host's own rendering. It runs here
-        // instead, one frame per permit, so the frame clock still decides
-        // when -- which keeps the player's notice of an unwatched mailbox
-        // tied to the window actually rendering rather than to a loop of
-        // this thread's own.
+        // instead, one picture per permit, and the loop below hands out a
+        // permit only once the window has drawn the last picture. That keeps
+        // the player's notice of an unwatched mailbox tied to the window
+        // actually rendering rather than to a loop of this thread's own.
         val stop = AtomicBoolean(false)
         val rasteriser = Thread({
             while (!stop.get()) {
@@ -118,15 +139,21 @@ fun VideoSurface(
                 if (stop.get()) return@Thread
                 // Nothing here bounds the images: VideoFrameImage keeps one
                 // superseded frame, the drawing thread's own, and frees the
-                // rest as it publishes. What paces this thread is the permit,
-                // and the permits come from the composition's frame clock.
+                // rest as it publishes. What paces this thread is the permit.
                 try {
-                    val slot = player.acquireFrame() ?: continue
-                    frames.update(slot.width, slot.height, slot.rgba) ?: continue
-                    rasterStamp.incrementAndGet()
+                    val slot = player.acquireFrame()
+                    if (slot != null && frames.update(slot.width, slot.height, slot.rgba) != null) {
+                        rasterStamp.incrementAndGet()
+                    }
                 } catch (t: Throwable) {
                     rasterFailure.set(t)
                     return@Thread
+                } finally {
+                    // Always, the empty take included: a frame published while
+                    // this one was in flight is waiting for the next permit,
+                    // and only the loop can give it.
+                    rasterInFlight.set(false)
+                    wakes.trySend(Unit)
                 }
             }
         }, "skinema-raster").apply {
@@ -146,76 +173,123 @@ fun VideoSurface(
     }
     LaunchedEffect(player) {
         var subtitled = player.activeSubtitleTrack != null
-        while (true) {
-            withFrameNanos { }
-            val state = player.state
-            // One frame in flight at a time: a second permit would only let
-            // the raster thread run ahead of the draw it feeds.
-            if (ticks.availablePermits() == 0) ticks.release()
-            val rastered = rasterStamp.get()
-            if (rastered != drawnStamp) {
-                drawnStamp = rastered
-                frameStamp++
-            }
-            try {
-                rasterFailure.get()?.let { throw it }
-                player.acquireSubtitles()?.let { overlay ->
-                    subtitles.update(
-                        overlay.patches.map {
-                            SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
-                        },
-                    )
-                    subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
-                    frameStamp++
+        // The raster the draw scope was last handed.
+        var presentedRaster = 0L
+        // The change count a permit was last given against. A permit is only
+        // worth giving when the player has moved since, or when the window has
+        // just drawn. Without the rule, every empty take would wake this loop
+        // into giving the next one.
+        var permittedAt = Long.MIN_VALUE
+        // Blocking, so it waits on the IO pool rather than on this thread, and
+        // interruptible, so leaving the composition cancels the wait.
+        val forwarder = launch {
+            var seen = player.changeCount
+            while (true) {
+                val now = runInterruptible(Dispatchers.IO) { player.awaitChange(seen, CHANGE_WAIT_NANOS) }
+                if (now != seen) {
+                    seen = now
+                    wakes.trySend(Unit)
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (t: Throwable) {
-                // Both updates raster-copy into native memory -- 8 MB a frame
-                // at 1080p, four times that at 4K -- and Skia answers a
-                // refusal by throwing. Left to travel, that throw goes into
-                // the Recomposer's effect job and cancels every LaunchedEffect
-                // in the composition, not only this surface's, while the
-                // player it came from still reports itself Playing. Stop
-                // drawing the way a failed player does and leave the rest of
-                // the UI alone.
-                // Said out loud rather than traced behind a flag: the
-                // player's own state is not Failed here, so nothing else in
-                // the API can tell the consumer why the picture stopped, and
-                // an uncaught throw would have printed anyway.
-                System.err.println("skinema: the video surface could not raster a frame: $t")
-                failed = true
-                frames.close()
-                subtitles.close()
-                return@LaunchedEffect
             }
-            // A track turned off publishes nothing, so nothing invalidates
-            // the draw and the last cue stays painted -- on a paused player
-            // indefinitely, which is exactly where a viewer toggles them.
-            val nowSubtitled = player.activeSubtitleTrack != null
-            if (nowSubtitled != subtitled) {
-                subtitled = nowSubtitled
-                // Cleared rather than closed. Both drop the pixels, and only
-                // one of them keeps the holder's borrow rule: close() frees
-                // the generation the drawing thread read last as well, which
-                // is a teardown's privilege and not a deselect's. The two
-                // close() calls that remain are teardowns -- the dispose below
-                // joins the raster thread first, and the failure path stops
-                // drawing.
-                if (!nowSubtitled) subtitles.update(emptyList())
-                frameStamp++
+        }
+        wakes.trySend(Unit)
+        try {
+            while (true) {
+                wakes.receive()
+                val state = player.state
+                val changes = player.changeCount
+                var invalidated = false
+                val rastered = rasterStamp.get()
+                if (rastered != presentedRaster) {
+                    presentedRaster = rastered
+                    frameStamp++
+                    invalidated = true
+                }
+                try {
+                    rasterFailure.get()?.let { throw it }
+                    player.acquireSubtitles()?.let { overlay ->
+                        subtitles.update(
+                            overlay.patches.map {
+                                SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
+                            },
+                        )
+                        subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
+                        frameStamp++
+                        invalidated = true
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (t: Throwable) {
+                    // Both updates raster-copy into native memory -- 8 MB a frame
+                    // at 1080p, four times that at 4K -- and Skia answers a
+                    // refusal by throwing. Left to travel, that throw goes into
+                    // the Recomposer's effect job and cancels every LaunchedEffect
+                    // in the composition, not only this surface's, while the
+                    // player it came from still reports itself Playing. Stop
+                    // drawing the way a failed player does and leave the rest of
+                    // the UI alone.
+                    // Said out loud rather than traced behind a flag: the
+                    // player's own state is not Failed here, so nothing else in
+                    // the API can tell the consumer why the picture stopped, and
+                    // an uncaught throw would have printed anyway.
+                    System.err.println("skinema: the video surface could not raster a frame: $t")
+                    failed = true
+                    frames.close()
+                    subtitles.close()
+                    return@LaunchedEffect
+                }
+                // A track turned off publishes nothing, so nothing invalidates
+                // the draw and the last cue stays painted -- on a paused player
+                // indefinitely, which is exactly where a viewer toggles them.
+                val nowSubtitled = player.activeSubtitleTrack != null
+                if (nowSubtitled != subtitled) {
+                    subtitled = nowSubtitled
+                    // Cleared rather than closed. Both drop the pixels, and only
+                    // one of them keeps the holder's borrow rule: close() frees
+                    // the generation the drawing thread read last as well, which
+                    // is a teardown's privilege and not a deselect's. The two
+                    // close() calls that remain are teardowns -- the dispose below
+                    // joins the raster thread first, and the failure path stops
+                    // drawing.
+                    if (!nowSubtitled) subtitles.update(emptyList())
+                    frameStamp++
+                    invalidated = true
+                }
+                val nowFailed = state is VideoPlayer.State.Failed
+                if (nowFailed != failed) {
+                    failed = nowFailed
+                    invalidated = true
+                    // The draw stops at the failure; the frame it was holding
+                    // does not have to stay in native memory behind it.
+                    if (nowFailed) frames.close()
+                }
+                // A closed player publishes nothing ever again. A paused one
+                // still can -- a seek landing, a frame step -- so it keeps its
+                // loop.
+                if (state is VideoPlayer.State.Closed) return@LaunchedEffect
+                if (invalidated) {
+                    // The frame that shows what was just handed over. It costs
+                    // no draw of its own, since the invalidation above has
+                    // asked for that frame already, and it does not come while
+                    // the window is hidden: that wait is what stops the
+                    // surface taking pictures nobody can see.
+                    withFrameNanos { }
+                    // Drawn, so the next take is worth making even with nothing
+                    // new behind it. It is also what revives a player that
+                    // stopped while the window was hidden, since only a take
+                    // tells it the picture is wanted again.
+                    permittedAt = Long.MIN_VALUE
+                }
+                // One picture in flight at a time: a second permit would only
+                // let the raster thread run ahead of the draw it feeds.
+                if (!rasterInFlight.get() && changes != permittedAt) {
+                    permittedAt = changes
+                    rasterInFlight.set(true)
+                    ticks.release()
+                }
             }
-            val nowFailed = state is VideoPlayer.State.Failed
-            if (nowFailed != failed) {
-                failed = nowFailed
-                // The draw stops at the failure; the frame it was holding
-                // does not have to stay in native memory behind it.
-                if (nowFailed) frames.close()
-            }
-            // A closed player publishes nothing ever again, so the frame
-            // clock has nothing left to poll for. A paused one still can --
-            // a seek landing, a frame step -- so it keeps its loop.
-            if (state is VideoPlayer.State.Closed) return@LaunchedEffect
+        } finally {
+            forwarder.cancel()
         }
     }
 
