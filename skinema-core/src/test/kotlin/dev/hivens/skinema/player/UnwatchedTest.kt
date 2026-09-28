@@ -150,8 +150,8 @@ class UnwatchedTest {
 
     /**
      * The consumer that says nothing, which is the ordinary one: a surface
-     * polls while its window is on screen and simply stops when it is not.
-     * The reading itself is the only signal there is.
+     * reads while its window draws and simply stops when it does not. The
+     * reading itself is the only signal there is.
      */
     @Test
     fun `a mailbox that stops being read is noticed on its own`() {

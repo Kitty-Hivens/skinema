@@ -18,8 +18,8 @@ import kotlin.test.assertTrue
 /**
  * [VideoPlayer.awaitChange]: what a consumer waits on instead of polling the
  * player on every refresh of its display. Each thing a picture depends on has
- * to move the count, or a consumer that waits on it keeps a stale picture up;
- * and nothing else may, or it redraws for nothing.
+ * to move the count, or a consumer that waits on it keeps a stale picture up.
+ * And nothing else may, or it redraws for nothing.
  */
 class ChangeCountTest {
 
@@ -65,12 +65,36 @@ class ChangeCountTest {
     @Test
     fun `a state change ends the wait`() {
         player(ScriptedFrameSource(frameCount = 60)).use { p ->
-            assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "playback must start")
+            // Past the first frame, whose publish would otherwise end the wait
+            // below before the pause does. The clock stands still here, so
+            // nothing else publishes.
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing && p.acquireFrame() != null }, "playback must start")
+            Thread.sleep(100)
             val before = p.changeCount
             p.pause()
             val after = p.awaitChange(before, 5_000_000_000L)
             assertTrue(after > before, "the pause must move the count")
-            assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "and the state must say so")
+            // Read at once rather than awaited: the state is written before the
+            // count moves, so a wake that did not come from the pause shows here.
+            assertIs<VideoPlayer.State.Paused>(p.state, "the change that ended the wait must be the pause")
+        }
+    }
+
+    /** A queue reads a refused switch off sourceFailure, and a refusal changes no state. */
+    @Test
+    fun `a refused switch ends the wait`() {
+        val refused = ScriptedFrameSource(frameCount = 60, failAt = 0)
+        val player = VideoPlayer(
+            Path.of("first"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        ) { asked -> if (asked == Path.of("second")) refused else ScriptedFrameSource(frameCount = 60) }
+        player.use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            Thread.sleep(100)
+            val before = p.changeCount
+            p.setSource(Path.of("second"))
+            val after = p.awaitChange(before, 5_000_000_000L)
+            assertTrue(after > before, "the refusal must move the count")
+            assertTrue(p.sourceFailure != null, "and the refusal must be readable when it does")
         }
     }
 
@@ -132,8 +156,13 @@ class ChangeCountTest {
 
     /**
      * Subtitles reach the picture without a frame: a cue appears on a paused
-     * player, and turning the track off publishes nothing at all. Both have to
+     * player, and a track turned off has to take its cue with it. Both have to
      * move the count, or a surface waiting on it keeps the old cue up.
+     *
+     * This holds the outcome. It cannot hold which of two notices delivers it:
+     * the player notes the selection and the drop itself, and each pipeline
+     * also publishes a clear from its own thread as it starts and as it goes,
+     * which moves the count as well. The player's own notice is the prompt one.
      */
     @Test
     fun `selecting and dropping a subtitle track move the count on a paused player`() {
@@ -160,8 +189,8 @@ class ChangeCountTest {
             val beforeDrop = p.changeCount
             p.selectSubtitleTrack(null)
             val afterDrop = p.awaitChange(beforeDrop, 5_000_000_000L)
-            assertTrue(afterDrop > beforeDrop, "dropping the track must move the count though nothing is published")
-            assertEquals(null, p.activeSubtitleTrack)
+            assertTrue(afterDrop > beforeDrop, "dropping the track must move the count")
+            assertEquals(null, p.activeSubtitleTrack, "and the drop must be visible when it does")
         }
     }
 }
