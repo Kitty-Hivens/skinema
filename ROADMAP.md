@@ -47,7 +47,7 @@ skinema-core      FFM bindings + demux/decode loop + pacing primitives
                   emits VideoFrame(buffer RGBA, width, height, ptsNanos)
                   zero UI dependencies -- usable from any frontend
 skinema-skiko     VideoFrame -> org.jetbrains.skia.Image (one memcpy)
-skinema-compose   VideoSurface composable, frame clock pacing
+skinema-compose   VideoSurface composable, redraws on the player's changes
 ```
 
 Compose Desktop renders through Skiko (Skia); targeting skia `Image` as the
@@ -60,6 +60,13 @@ Timing model: FFmpeg owns no clock. The decode thread produces frames with
 their pts; the UI side asks "which frame should be visible now" against a
 monotonic clock (Compose: `withFrameNanos`). Late frames are dropped, never
 shown. The pacer is pure Kotlin and unit-tested.
+
+(Corrected 2026-09-28. Since M6 the pacer thread publishes each frame at its
+own pts, so the UI no longer decides timing, and polling on every UI frame
+only redrew the window at the display's refresh rate for a file running at a
+fraction of it. The UI now waits on the player's change count and draws when
+something new was published. `withFrameNanos` is left with the job of
+holding the surface while its window is not drawing. See M21.)
 
 Audio (designed now, built later): pacing depends only on the `MediaClock`
 interface. Silent playback runs on the wall-time `PlaybackClock`; when a
@@ -1227,6 +1234,73 @@ README once the library is usable.
   macos-arm64, reporting a working deduplication as broken. Gated on subtitles
   now, and asserting liveness out loud so a dead pipeline says so rather than
   making someone read a CI log.
+
+- **M21 -- the window redraws when there is something new (2026-09-28).**
+  `VideoSurface` and `rememberPlayerState` each polled the player on every
+  Compose frame, and a `withFrameNanos` loop is a frame asked for on every
+  refresh. So the window redrew at the display's rate whatever the file's: a
+  24 fps clip on a 240 Hz screen drew ten times per picture, and the state
+  helper alone kept a paused player's window redrawing, for a spinner. The
+  poll was left from the timing model this section's header describes, where
+  the UI decided which frame was due. Since M6 the pacer decides, and the UI
+  only has to hear that it did.
+
+  Core gained `changeCount` and a blocking `awaitChange(since, timeout)`, the
+  idiom `FrameQueue` already uses between its own threads. The count moves on
+  a frame published, a subtitle overlay published (a dying pipeline's clear
+  included), a subtitle track selected or dropped, a state change and a
+  refused `setSource`. It is still a poll rather than a notification
+  callback, which keeps M1's decision: no coroutines in core, and the player
+  calls a consumer's code only through what the consumer handed it (a sink, a
+  clock). `publishState` now checks and writes under the same monitor, which
+  also closes an older gap: the pacer's `Failed` could land between the
+  decode thread's check and its write and be written over.
+
+  The Compose side waits from a view of the IO pool with a limit of its own,
+  interruptibly. On `Dispatchers.IO` itself each surface and state helper
+  would hold one of its 64 threads for as long as it lives, and a few dozen
+  player cells would starve the application's own I/O. The surface's loop
+  ends on `Failed` as well as `Closed`, since neither publishes again.
+
+  The frame clock keeps one job, and it is the delicate part. The surface
+  takes a picture only after the window has drawn the previous one, waiting
+  for that draw with `withFrameNanos` right after invalidating. The wait
+  costs no frame of its own, since the invalidation asked for that frame
+  already (checked against the Compose 1.12 sources: the awaiter and the draw
+  invalidation reach the same render). So a window that stops drawing stops
+  the surface taking pictures. After each draw one take is allowed with
+  nothing new behind it, because a player frozen for an unwatched window only
+  comes back on a take.
+
+  Measured on the Compose demo, window 2548x1383 on a 210 Hz display. 4K AV1
+  at 30 fps decoded on the CPU: 100 to 110 redraws a second became 39 to 40,
+  the process went from 4.4 to 3.2 cores, and the GPU's render engine from 22
+  to 13 percent. 1080p at 24 and at 60 fps: 33 and 69 redraws a second. So
+  the surface draws once per picture, and the constant nine a second on top
+  of every rate are the demo's own controls, its position text among them.
+
+  One thing this does not fix, and the old surface did not either. Whether a
+  window nobody can see stops drawing is the platform's call. Measured, an
+  XWayland window moved to a Hyprland workspace that is not on screen still
+  draws once a second: the surface then reads about once a second, under the
+  two-second silence the unwatched notice waits for, and the decoder runs on
+  for nobody. The old surface measured the same, one redraw a second and the
+  decoder busy. Skiko's Metal renderer, by its source, keeps drawing a window
+  behind others a few times a second, which has the same effect on macOS.
+  Until the notice is judged on something other than a silence, which is its
+  own change in core, `setPresenting` is the way for a consumer that knows.
+  An earlier reading of that measurement took it for a window that never
+  drew at all, and the first version of this entry said so. The redraw
+  counter it rested on showed one a second, not zero.
+
+  Tested on both sides of the seam: the count's wakes (a frame, a state
+  change, a refused switch, a subtitle track selected and dropped), timeout
+  and interrupt in core, and in Compose that a paused surface and the state
+  helper ask for no frames, that a playing surface asks for frames at the
+  file's rate rather than the caller's, and that a surface nobody draws still
+  lets the player notice and comes back when drawn. The frame checks apply
+  pending snapshot changes first, so an invalidation made by writing state is
+  seen too. The first three Compose tests fail against the polling surface.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

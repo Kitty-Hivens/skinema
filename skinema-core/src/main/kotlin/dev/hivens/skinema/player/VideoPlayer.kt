@@ -36,8 +36,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Core stays dependency-free by design (ROADMAP.md section 3): no
  * coroutines, no UI types. The consumer polls [acquireFrame] on its own
- * cadence (a Compose frame clock, a render loop) -- null means "nothing
- * newer than what you already hold" -- and reads [state] for lifecycle.
+ * cadence (a render loop, or [awaitChange] to wake only when something
+ * moved), where null means "nothing newer than what you already hold", and
+ * reads [state] for lifecycle.
  *
  * Everything libav happens on the decode thread, open and close
  * included: the decoder's arena is confined to it (the pacer touches
@@ -288,8 +289,17 @@ class VideoPlayer internal constructor(
      * inventory depth is where to look first.
      */
     private fun publishState(next: State) {
-        if (stateField is State.Failed && next !is State.Failed) return
-        stateField = next
+        // Under the change monitor, so the check and the write are one step.
+        // The pacer publishes Failed from its own thread, and between the
+        // decode thread's check and its write it could land and be written
+        // over, which is the loss this function exists to refuse.
+        synchronized(changeMonitor) {
+            if (stateField is State.Failed && next !is State.Failed) return
+            if (stateField == next) return
+            stateField = next
+            changes++
+            changeMonitor.notifyAll()
+        }
     }
 
     /**
@@ -569,6 +579,66 @@ class VideoPlayer internal constructor(
         unreadPublishes = 0
         if (!presenting && !presentingSaid) submit(Command.SetPresenting(true))
         return buffer?.acquire()
+    }
+
+    // Guards [changes] for the waiters in [awaitChange]. Held only for a bump
+    // or a wait, never around anything that calls out.
+    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
+    private val changeMonitor = Object()
+
+    @Volatile
+    private var changes = 0L
+
+    /**
+     * How many times something a picture depends on has changed: a frame
+     * published into the mailbox, a subtitle overlay published, a subtitle
+     * track selected or dropped, [state] moving, a [setSource] refused. Only
+     * ever grows.
+     *
+     * The read half of [awaitChange], and the way to know that anything above
+     * is worth looking at without looking at it on every frame of a display
+     * that refreshes far faster than any file plays. The position, the track
+     * lists and the other metadata move without it: poll those on whatever
+     * cadence the consumer shows them at.
+     */
+    val changeCount: Long get() = changes
+
+    /**
+     * Blocks until [changeCount] differs from [since], or for about
+     * [timeoutNanos], and returns the count it found. Returns at once when the
+     * count already differs, so a caller that reads the count, looks at the
+     * player and then waits with that reading misses nothing that happened in
+     * between. A timeout of zero or less never blocks.
+     *
+     * This is how a consumer draws when there is something new and not on
+     * every refresh of its display. A 24 fps file on a 240 Hz screen changes
+     * twenty-four times a second, and a consumer that polls [acquireFrame] per
+     * refresh redraws ten times for each of them. It stays a poll, blocking
+     * rather than a notification callback, so the M1 shape of this API holds:
+     * the player calls into a consumer's code only through what the consumer
+     * handed it to be called (a sink, a clock), never to announce anything.
+     *
+     * May return early without a change (a spurious wake), which reads as a
+     * timeout: compare the result with [since]. The wait is on Object.wait,
+     * which rounds a sub-millisecond remainder up by a millisecond. Throws
+     * [InterruptedException] when the waiting thread is interrupted, which is
+     * how a coroutine that wraps this in `runInterruptible` is cancelled.
+     */
+    @Throws(InterruptedException::class)
+    fun awaitChange(since: Long, timeoutNanos: Long): Long {
+        synchronized(changeMonitor) {
+            if (changes != since || timeoutNanos <= 0L) return changes
+            changeMonitor.wait(timeoutNanos / 1_000_000L, (timeoutNanos % 1_000_000L).toInt())
+            return changes
+        }
+    }
+
+    /** Moves [changeCount] and wakes whoever waits on it. */
+    private fun noteChange() {
+        synchronized(changeMonitor) {
+            changes++
+            changeMonitor.notifyAll()
+        }
     }
 
     /**
@@ -1197,6 +1267,10 @@ class VideoPlayer internal constructor(
             frameSourceFactory(wanted)
         } catch (t: Throwable) {
             sourceFailure = t
+            // A refusal changes no state, and a queue reads it off
+            // [sourceFailure]: without this, one waiting on the change count
+            // would not hear it.
+            noteChange()
             return old
         }
         // Null is a file with no pictures in it, which is not a refusal: the
@@ -1206,6 +1280,7 @@ class VideoPlayer internal constructor(
         } catch (t: Throwable) {
             runCatching { next.close() }
             sourceFailure = t
+            noteChange()
             return old
         }
         // Where the player was is where it goes back to. One standing at the
@@ -2102,8 +2177,11 @@ class VideoPlayer internal constructor(
      * Notices a mailbox that stopped being read.
      *
      * The consumer that says nothing is the ordinary one: a Compose surface
-     * polls every frame while its window is on screen and simply stops when it
-     * is not, and nothing in that tells the player.
+     * takes a picture each time its window has drawn the last one and simply
+     * stops when the window stops drawing, and nothing in that tells the
+     * player. A window the platform keeps drawing while nobody can see it (an
+     * unseen workspace under XWayland draws about once a second) keeps reading
+     * often enough that this never fires, which is what [setPresenting] is for.
      *
      * Three things have to hold, and each is a way of being wrong that was
      * tried. The mailbox must have been read at least once, or a player
@@ -2143,8 +2221,13 @@ class VideoPlayer internal constructor(
     private fun applySubtitleSelection(id: Int?, decoder: FrameSource?) {
         val current = subtitlePipeline
         if (id == null) {
-            current?.announceClose()
+            if (current == null) return
+            current.announceClose()
             subtitlePipeline = null
+            // [activeSubtitleTrack] is null from this line. The leaving
+            // pipeline's own clear says so too, but from its thread and a tick
+            // later, and a consumer drawing its last overlay should hear it now.
+            noteChange()
             return
         }
         if (current != null && !current.isDead && current.track.id == id) return
@@ -2158,6 +2241,7 @@ class VideoPlayer internal constructor(
             clock = clock,
             track = track,
             storageSize = decoder?.videoSize(),
+            onPublish = ::noteChange,
         )
         // Opening a track sets the canvas from the video's storage size, so
         // a size the consumer announced earlier has to be re-stated here --
@@ -2174,6 +2258,9 @@ class VideoPlayer internal constructor(
         // consumer somewhere to put it, and re-stating a value that already
         // arrived costs nothing.
         subtitlePipeline = fresh
+        // The pipeline's own first publish can land before the line above, and
+        // a consumer woken by it would read the track that is leaving.
+        noteChange()
         if (announcedWidth > 0 && announcedHeight > 0) fresh.setCanvasSize(announcedWidth, announcedHeight)
     }
 
@@ -2537,6 +2624,9 @@ class VideoPlayer internal constructor(
             publishing = false
         }
         if (target !== current) buffer = target
+        // After the mailbox is in place, so a consumer woken here finds the
+        // frame through [acquireFrame] rather than the mailbox it replaced.
+        noteChange()
         commands.put(Command.RoomFreed)
         return true
     }
