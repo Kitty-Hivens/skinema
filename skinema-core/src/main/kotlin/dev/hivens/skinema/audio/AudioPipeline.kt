@@ -252,9 +252,14 @@ internal class AudioPipeline(
      * full volume. Kept on this side rather than left to the sink because the
      * sink is a seam a consumer implements, and remembering a value across a
      * reopen it does not control is not a rule worth handing them.
+     *
+     * Readable because it is also the answer to whether anyone can hear this
+     * side: a player choosing between stopping its sound and keeping it for a
+     * listener asks here.
      */
     @Volatile
-    private var volume: Float = initialVolume
+    var volume: Float = initialVolume
+        private set
 
     /**
      * Guards [volume] and every [PcmSink.setVolume] this pipeline makes.

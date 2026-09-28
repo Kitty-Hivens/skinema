@@ -128,11 +128,17 @@ class VideoPlayer internal constructor(
          * for a launcher minimised to the tray is a core spent on a window
          * that is not on screen.
          *
-         * It applies both ways round. A consumer that knows says so with
-         * [setPresenting]; one that says nothing is noticed anyway, once the
-         * mailbox it HAD been reading goes unread.
+         * [WhenUnwatched.FollowSound] (the default) keeps a player that can be
+         * heard playing and stops one that cannot, which is what a browser does
+         * with a tab put behind another.
+         *
+         * Whether the picture is being taken is learnt three ways, strongest
+         * first. A consumer that knows says so with [setPresenting]. Whatever
+         * draws the picture reports what it can see with [reportVisible], as
+         * the Compose surface does. A player told neither notices on its own,
+         * once the mailbox it HAD been reading goes unread.
          */
-        unwatched: WhenUnwatched = WhenUnwatched.Freeze,
+        unwatched: WhenUnwatched = WhenUnwatched.FollowSound,
         /**
          * Open onto the first frame and stay on it: [state] settles
          * [State.Paused] rather than [State.Playing], and [resume] is what
@@ -230,6 +236,7 @@ class VideoPlayer internal constructor(
         data object StepForward : Command
         data object StepBackward : Command
         data class SetPresenting(val presenting: Boolean) : Command
+        data class ReportVisible(val visible: Boolean?) : Command
         data class SetSource(val path: Path) : Command
         data object Close : Command
 
@@ -577,7 +584,7 @@ class VideoPlayer internal constructor(
         // polling is what this notices.
         lastAcquireNanos = System.nanoTime()
         unreadPublishes = 0
-        if (!presenting && !presentingSaid) submit(Command.SetPresenting(true))
+        if (!presenting && !presentingSaid && !visibilityReported) submit(Command.SetPresenting(true))
         return buffer?.acquire()
     }
 
@@ -655,14 +662,49 @@ class VideoPlayer internal constructor(
      * core behind a hidden window, and one that wants the transition exact
      * says so here.
      *
-     * Saying it once takes the automatic notice out of play for good. The two
-     * would otherwise argue: a player told to stop presenting, whose consumer
-     * goes on polling the mailbox for a position readout, would be revived by
-     * the polling against what it was told.
+     * Saying it once takes the automatic notice out of play for good, and
+     * [reportVisible] with it. The two would otherwise argue: a player told to
+     * stop presenting, whose consumer goes on polling the mailbox for a
+     * position readout, would be revived by the polling against what it was
+     * told, and a surface reporting its window visible would undo an
+     * application that had just gone to the tray.
      */
     fun setPresenting(presenting: Boolean) {
         presentingSaid = true
         submit(Command.SetPresenting(presenting))
+    }
+
+    /**
+     * What whatever draws the picture can see: whether the window it draws
+     * into is in front of anyone. Null withdraws the report.
+     *
+     * This is the seam for a surface, which knows more than the mailbox shows
+     * and less than the application does. The mailbox notice cannot see a
+     * window the platform keeps drawing while nobody can see it: an XWayland
+     * window on a workspace that is not on screen still draws about once a
+     * second, and a surface reading once a second is indistinguishable from a
+     * slow consumer. The surface itself can tell, by how long its window takes
+     * to answer for a frame. The Compose surface reports here, so a consumer
+     * using it does not.
+     *
+     * A report replaces the mailbox notice rather than adding to it: from the
+     * first one on, neither an unread mailbox nor a read one moves the player,
+     * or a surface that stops asking for pictures while hidden would be
+     * argued with by the reads it makes to find out whether it still is.
+     * Withdrawing it hands the question back to the mailbox, which is what a
+     * surface leaving the screen does, so a player it drew and nothing else
+     * reads is noticed the old way.
+     *
+     * [setPresenting] outranks it. Once an application has said, reports are
+     * ignored for good.
+     */
+    fun reportVisible(visible: Boolean?) {
+        if (presentingSaid) return
+        // Here as well as on the decode thread, for the reason [setPresenting]
+        // sets its flag here: a read landing between this call and the handler
+        // would otherwise queue a revive behind the report and undo it.
+        visibilityReported = visible != null
+        submit(Command.ReportVisible(visible))
     }
 
     /** Freezes playback; the surface keeps showing the last frame. */
@@ -672,8 +714,8 @@ class VideoPlayer internal constructor(
      * Continues from where [pause] froze, without a frame jump.
      *
      * Not the way back from a pause the player imposed on itself because
-     * nobody was taking the picture ([WhenUnwatched.Freeze]) -- the next
-     * [acquireFrame] lifts that one. Calling this instead takes the automatic
+     * nobody was taking the picture ([WhenUnwatched.Freeze]) -- the picture
+     * being wanted again lifts that one. Calling this instead takes the automatic
      * lift out of play and publishes [State.Playing], while nothing is decoded
      * until frames are being taken again: what stopped is the pictures, and
      * nothing here starts them for a mailbox no one is emptying.
@@ -1537,6 +1579,7 @@ class VideoPlayer internal constructor(
             if (pendingSourceSwitch != null) return
 
             noteUnwatched()
+            if (state is State.Playing && !presenting) turnLapUnwatched(decoder)
             if (state !is State.Playing || !presenting) {
                 // Paused, ended, or drawing for nobody: idle until the next
                 // command. Under KeepTime the clock runs on through this, so
@@ -1725,6 +1768,20 @@ class VideoPlayer internal constructor(
             true
         }
         is Command.SetPresenting -> applyPresenting(cmd.presenting, decoder)
+        is Command.ReportVisible -> when {
+            // Asked again here, because the application's word can have
+            // arrived between the report's own check and its turn in the queue.
+            presentingSaid -> true
+            cmd.visible == null -> {
+                // Handed back to the mailbox with a clean slate, so what the
+                // notice counts starts now rather than at whatever the reads
+                // left behind while the report stood.
+                lastAcquireNanos = System.nanoTime()
+                unreadPublishes = 0
+                true
+            }
+            else -> applyPresenting(cmd.visible, decoder)
+        }
         is Command.SetSource -> {
             // Recorded here and acted on at the top of the loop. This handler
             // is also reached from inside a seek landing and from the wait at
@@ -1790,6 +1847,11 @@ class VideoPlayer internal constructor(
     // not be stood down behind that instruction's back.
     @Volatile
     private var presentingSaid = false
+
+    // Whether a report from whatever draws the picture stands. While it does,
+    // the mailbox says nothing either way. See [reportVisible].
+    @Volatile
+    private var visibilityReported = false
 
     // When the mailbox was last read, and zero while it never has been. A
     // player nobody has EVER read frames from is not one that stopped being
@@ -2149,9 +2211,14 @@ class VideoPlayer internal constructor(
         if (now == presenting) return true
         presenting = now
         if (!now) {
-            // What stopping costs the timeline is the policy's to say; that
-            // the pictures stop is not a policy, it is the point.
-            if (unwatched == WhenUnwatched.Freeze && state is State.Playing) {
+            // What stopping costs the timeline is the policy's to say. That the
+            // pictures stop is not a policy, it is the point.
+            val freeze = when (unwatched) {
+                WhenUnwatched.Freeze -> true
+                WhenUnwatched.KeepTime -> false
+                WhenUnwatched.FollowSound -> !audible
+            }
+            if (freeze && state is State.Playing) {
                 pausedByUnwatch = true
                 pauseNow()
             }
@@ -2162,26 +2229,87 @@ class VideoPlayer internal constructor(
             resumeNow(decoder)
             return true
         }
-        // KeepTime, coming back: the file ran on without the viewer while the
-        // decoder stood where it was left, so the gap between them is exactly
-        // what nobody watched. Rejoin the clock on a keyframe -- decoding the
-        // gap to catch up would spend on pictures that are already too late to
-        // show, which is the cost this whole mechanism exists to stop.
-        if (state is State.Playing && decoder != null) {
-            return handleSeek(clock.mediaNanos(), exact = false, decoder)
-        }
+        // Time ran on, coming back: the file went on without the viewer while
+        // the decoder stood where it was left, so the gap between them is
+        // exactly what nobody watched.
+        if (state is State.Playing && decoder != null) rejoinClock(decoder)
         return true
+    }
+
+    /**
+     * Whether anyone can hear this player: sound going out through a device,
+     * at a volume above zero, with some of the track still left to play.
+     */
+    private val audible: Boolean
+        get() {
+            val pipe = audioPipeline ?: return false
+            return audioDeviceOpened && pipe.alive && pipe.hasSoundLeft && pipe.volume > 0f
+        }
+
+    /**
+     * Brings the picture back to a clock that ran on without it, and leaves
+     * the sound where it is.
+     *
+     * It used to be a seek, an inexact one to skip the gap, and a seek moves
+     * everything: the sound was cropped back to the keyframe the picture
+     * landed on. On a file with keyframes seconds apart, someone who had gone
+     * on listening heard those seconds again the moment the window came back.
+     *
+     * So only the decoder moves. It jumps to the keyframe at or before the
+     * clock and the fill loop decodes forward from there, and the frames
+     * behind the clock are the catch-up run that loop already handles: dropped
+     * without being converted, one published now and then so the catch-up
+     * reads as motion. Decoding the whole gap would spend on pictures that are
+     * already too late to show, which is the cost this mechanism exists to
+     * stop. The clock is not touched and no landing is announced, so nothing
+     * on the sound's side waits for one.
+     *
+     * Closed captions come off the frames, so their half-built row belongs to
+     * wherever the decoder was, and it is dropped with the jump. A text or
+     * bitmap track reads its own file against the clock and has nothing to
+     * rejoin.
+     */
+    private fun rejoinClock(decoder: FrameSource) {
+        val at = clock.mediaNanos()
+        queue.clear()
+        eofPending = false
+        intendedPositionNanos = at
+        decoder.seekTo(at)
+        subtitlePipeline?.takeIf { it.track.id == SubtitleTrack.CLOSED_CAPTION_ID }?.seek(at)
+    }
+
+    /**
+     * Turns the lap for a player whose time runs on while nobody watches.
+     *
+     * The fill loop turns a lap when the decoder runs out, and a decoder
+     * nobody is reading stands still, so it never does. The sound plays to the
+     * end of its track and stops there, the clock goes on at wall speed past
+     * the end of the file, and a looping player in a hidden window went silent
+     * with its state still reporting Playing.
+     *
+     * The end is read off the clock and the file's declared duration, the way
+     * a frameless lap ends, and only once there is no sound left to play: a
+     * track that outlasts the picture is still being listened to.
+     */
+    private fun turnLapUnwatched(decoder: FrameSource) {
+        val end = durationNanos ?: return
+        if (audioPipeline?.hasSoundLeft == true) return
+        if (clock.mediaNanos() < end) return
+        eofPending = false
+        if (loop) restartLap(decoder, resume = true) else enterEnded()
     }
 
     /**
      * Notices a mailbox that stopped being read.
      *
-     * The consumer that says nothing is the ordinary one: a Compose surface
-     * takes a picture each time its window has drawn the last one and simply
-     * stops when the window stops drawing, and nothing in that tells the
-     * player. A window the platform keeps drawing while nobody can see it (an
-     * unseen workspace under XWayland draws about once a second) keeps reading
-     * often enough that this never fires, which is what [setPresenting] is for.
+     * The consumer that says nothing is the ordinary one outside Compose: a
+     * render loop of its own that takes a picture when its window draws and
+     * simply stops when the window stops drawing, and nothing in that tells
+     * the player. A window the platform keeps drawing while nobody can see it
+     * (an unseen workspace under XWayland draws about once a second) keeps
+     * reading often enough that this never fires. Whatever draws can tell
+     * better and says so through [reportVisible], and a report stands this
+     * notice down for as long as it stands.
      *
      * Three things have to hold, and each is a way of being wrong that was
      * tried. The mailbox must have been read at least once, or a player
@@ -2194,7 +2322,7 @@ class VideoPlayer internal constructor(
      * a burst of sixty frames is a chase, not a consumer leaving.
      */
     private fun noteUnwatched() {
-        if (presentingSaid || !presenting || frameless) return
+        if (presentingSaid || visibilityReported || !presenting || frameless) return
         val last = lastAcquireNanos
         if (last == 0L) return
         if (unreadPublishes < UNREAD_PUBLISHES_BEFORE_UNWATCHED) return
