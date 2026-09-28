@@ -19,13 +19,23 @@ fun VideoSurface(
 VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)
 ```
 
-It polls `acquireFrame` on every Compose frame (`withFrameNanos`), so a
-hidden or detached window stops polling for free -- Compose runs no
-frame clock for it. The player notices the mailbox going unread and stops
-decoding for it, on the policy its `WhenUnwatched` names; say the moment
-exactly with `player.setPresenting(...)` if you would rather not wait for
-it to be noticed. It draws pixels and
-nothing else -- no spinner, no error glyph. Before the first frame and
+It redraws when the player has something new -- a frame, a subtitle
+overlay, a change of state -- and at no other time, waiting on
+`player.awaitChange` rather than polling on every Compose frame. So a 24 fps
+file draws twenty-four times a second whatever the display's refresh rate,
+and a paused player draws nothing at all.
+
+It takes each picture only after the window has drawn the previous one, and a
+hidden or detached window draws nothing, so the surface stops taking pictures
+by itself. The player notices the mailbox going unread and stops decoding for
+it, on the policy its `WhenUnwatched` names; say the moment exactly with
+`player.setPresenting(...)` if you would rather not wait for it to be
+noticed. A window that is hidden from its very first frame never reads at
+all, and a player never read from is not one that stopped being watched, so
+a consumer that starts hidden says `setPresenting(false)` and then
+`setPresenting(true)` when it is shown: saying it once takes the automatic
+notice out of play for good. It draws pixels and nothing else -- no
+spinner, no error glyph. Before the first frame and
 while the player is `Failed`, it draws nothing; put your own loading and
 fallback visuals around it, driven by `rememberPlayerState` (below).
 
@@ -73,8 +83,9 @@ fun rememberPlayerState(player: VideoPlayer): VideoPlayer.State
 ```
 
 `VideoPlayer.state` is a plain volatile with no listeners, invisible to
-composition. `rememberPlayerState` polls it on the frame clock (one
-volatile read per UI frame) and recomposes only when it changes. Use it
+composition. `rememberPlayerState` waits on `player.awaitChange` and
+recomposes only when the state changes; it asks for no frames of its own,
+so a spinner's worth of state does not keep the window redrawing. Use it
 to gate your overlays:
 
 ```kotlin
@@ -105,6 +116,22 @@ player.acquireFrame()?.let { frame ->
 previous texture. If your content can be rotated (phone footage), apply
 `player.rotationDegrees` yourself; `VideoSurface` is the only thing that
 does it automatically.
+
+To redraw only when there is something new rather than on every refresh
+of your display, wait on the player's change count between draws:
+
+```kotlin
+var seen = player.changeCount
+while (running) {
+    player.acquireFrame()?.let { upload(it.rgba, it.width, it.height); redraw() }
+    seen = player.awaitChange(seen, 1_000_000_000L)  // blocks, returns early on any change
+}
+```
+
+The count moves when a frame or a subtitle overlay is published, when a
+subtitle track is selected or dropped, and when `state` changes. Read it
+before you look at the player and wait with that reading, and nothing that
+happens in between is missed.
 
 ### skinema-skiko
 
