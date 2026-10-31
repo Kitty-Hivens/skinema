@@ -358,8 +358,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -iEv 'mingw|msys' | paste -sd ':' -)"
           fi
-          # Desktop only: the Android target has a job of its own, and the arm
-          # runner images carry no Android SDK to configure it with.
+          # Desktop only: the Android target has a job of its own (android,
+          # below), and the arm runner images carry no Android SDK to
+          # configure it with.
           ./gradlew build -Pskinema.android=false
 
       # The XML the counter reads, kept for the runs where the count itself
@@ -378,5 +379,86 @@ jobs:
           path: |
             **/build/test-results/test/*.xml
             **/build/test-results/jvmTest/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The Android target: both libraries compiled for it, the demo app built,
+  # and the device suites run on an emulator, since MediaCodec, the GL
+  # bridge and ExoPlayer exist on a device and nowhere else. One current API
+  # level, x86_64 under KVM. The emulator decodes in software only, which the
+  # suites allow for where hardware matters. Timing on it is looser than on
+  # a phone, so a test failing here alone is read for that before anything
+  # is changed.
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The device suites skip nothing today. A skip is an assumption a test
+      # could not meet, and reads as green, so the ceiling holds it at what a
+      # run measures.
+      MAX_SKIPPED: 0
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The fixtures are generated on the host by the CLI, as the desktop's
+      # are: x264, libvpx, libwebp and libaom, which Ubuntu's build carries.
+      - name: Install ffmpeg CLI (fixtures)
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 install -y ffmpeg
+
+      # Without KVM the emulator falls back to software emulation and takes
+      # minutes to boot instead of seconds.
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Compile for Android and build the demo
+        run: ./gradlew :skinema-core:compileAndroidMain :skinema-compose:compileAndroidMain :skinema-demo-android:assembleDebug
+
+      - name: Device suites on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: ./gradlew :skinema-core:connectedAndroidDeviceTest :skinema-compose:connectedAndroidDeviceTest
+
+      - name: Count what was skipped
+        run: |
+          python3 - <<'EOF'
+          import glob, os, re, sys
+          ran = skipped = 0
+          for f in glob.glob('*/build/outputs/androidTest-results/connected/**/TEST-*.xml', recursive=True):
+              head = open(f).read(2000)
+              m = re.search(r'tests="(\d+)"[^>]*skipped="(\d+)"', head)
+              if m:
+                  ran += int(m[1]); skipped += int(m[2])
+          ceiling = int(os.environ['MAX_SKIPPED'])
+          print(f"{ran} device tests, {skipped} skipped, ceiling {ceiling}")
+          if ran == 0 or skipped > ceiling:
+              sys.exit("no device tests ran" if ran == 0 else "more device tests skipped than the ceiling allows")
+          EOF
+
+      - name: Keep the device reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-test-results
+          path: |
+            */build/outputs/androidTest-results/connected/
+            */build/reports/androidTests/connected/
           if-no-files-found: warn
           retention-days: 14

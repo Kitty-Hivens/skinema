@@ -1459,8 +1459,9 @@ README once the library is usable.
   the platform variant from module metadata. They do not stay for a Maven,
   sbt or Bazel build: those read the root POM, which for a multiplatform
   module carries no classes, and have to name `skinema-core-jvm` (and
-  `skinema-compose-jvm`) instead. That is a break for those builds and the
-  release notes and README have to say so. `skinema-skiko` stays desktop
+  `skinema-compose-jvm`) instead. That is a break for those builds, so the
+  release that carries the Android target bumps the minor digit rather than
+  the patch, and the release notes and README have to say so. `skinema-skiko` stays desktop
   only, and `skinema-natives` is not touched: Android needs no bundle.
 
   **What a parameter cannot mean on Android, it says.** A consumer clock
@@ -1805,6 +1806,14 @@ README once the library is usable.
   switches it to a sound file its shape takes. Left open: the first frame after a switch
   between sizes is drawn at the old size for one frame, since ExoPlayer
   releases it before it reports the new size, and HDR through the bridge.
+
+  CI runs the Android target in a job of its own: both libraries compiled
+  for it, the demo built, and both device suites on an x86_64 emulator at
+  API 34 under KVM, one level rather than a matrix. The emulator has the
+  software codecs alone, so the one assertion that expected a hardware
+  decoder now asserts what the device has: AUTO on hardware where there is
+  one, software where there is none. Skips are held to a ceiling as on the
+  desktop rows, zero today.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

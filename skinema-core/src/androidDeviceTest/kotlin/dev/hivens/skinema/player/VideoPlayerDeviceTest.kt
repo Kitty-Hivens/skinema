@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.hasHardwareDecoder
 import java.nio.file.Path
 import kotlin.math.abs
 import kotlin.test.AfterTest
@@ -385,7 +386,9 @@ class VideoPlayerDeviceTest {
         assertFalse(soft.hardwareActive)
         val auto = player("red-h264.mp4", hardware = HwAccel.AUTO)
         awaitFrame(auto)
-        assertTrue(auto.hardwareActive, "a phone decodes H.264 on its hardware")
+        // AUTO takes the hardware decoder where there is one (every phone,
+        // for H.264) and says software where there is none (an emulator).
+        assertEquals(hasHardwareDecoder("video/avc"), auto.hardwareActive, "AUTO and what this device has")
         // AV1 in hardware is still rare on phones: REQUIRE either decodes it
         // there or fails by name, and never plays on without a picture.
         val required = player("blue-av1.mp4", hardware = HwAccel.REQUIRE)

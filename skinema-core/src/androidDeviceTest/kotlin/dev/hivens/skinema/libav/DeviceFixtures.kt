@@ -1,5 +1,6 @@
 package dev.hivens.skinema.libav
 
+import android.media.MediaCodecList
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.io.RandomAccessFile
@@ -53,6 +54,16 @@ internal object DeviceFixtures {
         }
     }
 }
+
+/**
+ * Whether this device decodes [mime] in hardware. A phone does for the common
+ * codecs, and an emulator has the software codecs alone, so a test that
+ * expects the hardware asks first rather than assume which it runs on.
+ */
+internal fun hasHardwareDecoder(mime: String): Boolean =
+    MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+        !info.isEncoder && info.isHardwareAccelerated && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+    }
 
 /** The RGBA of the pixel at the centre of [frame]. */
 internal fun centre(frame: VideoDecoder.RgbaFrame): IntArray {
