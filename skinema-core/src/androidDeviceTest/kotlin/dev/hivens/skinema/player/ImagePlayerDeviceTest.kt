@@ -2,6 +2,8 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.onEmulator
+import org.junit.Assume.assumeFalse
 import kotlin.math.abs
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -77,6 +79,7 @@ class ImagePlayerDeviceTest {
 
     @Test
     fun anAnimationPlaysItsFramesInOrderAtTheirTimes() {
+        assumeFalse("every frame at its time is a phone's GPU, not an emulated one", onEmulator())
         val p = player("rgb.gif")
         val seen = mutableListOf<Pair<Long, Char?>>()
         val start = System.nanoTime()
@@ -235,19 +238,22 @@ class ImagePlayerDeviceTest {
 
     @Test
     fun atTwiceTheRateEveryFrameShowsAtHalfItsTime() {
+        assumeFalse("every frame at its time is a phone's GPU, not an emulated one", onEmulator())
         val p = player("anim.gif", startPaused = true)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        // The poster frame taken first, so it cannot be counted as played: a
+        // paused start publishes it once and the resume does not again.
+        assertEquals(0L, awaitFrame(p).ptsNanos)
         p.setRate(2f)
-        p.acquireFrame()
-        // When each frame was first seen, against when the first one was.
+        // When each frame after the first was first seen, against the resume.
         val arrived = sortedMapOf<Long, Long>()
+        val start = System.nanoTime()
         p.resume()
         awaitTrue(what = "Ended") {
             p.acquireFrame()?.let { arrived.putIfAbsent(it.ptsNanos, System.nanoTime()) }
             p.state == VideoPlayer.State.Ended
         }
-        assertEquals(10, arrived.size, "every frame at 2x: ${arrived.keys}")
-        val start = arrived.getValue(0L)
+        assertEquals((1..9).map { it * 100_000_000L }, arrived.keys.toList(), "every frame at 2x")
         for ((pts, at) in arrived) {
             val late = (at - start) - pts / 2
             assertTrue(abs(late) < 35_000_000L, "frame $pts came ${late / 1_000_000} ms off its time at 2x")

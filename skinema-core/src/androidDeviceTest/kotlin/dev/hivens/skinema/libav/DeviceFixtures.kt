@@ -1,6 +1,7 @@
 package dev.hivens.skinema.libav
 
 import android.media.MediaCodecList
+import android.os.Build
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.io.RandomAccessFile
@@ -64,6 +65,15 @@ internal fun hasHardwareDecoder(mime: String): Boolean =
     MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
         !info.isEncoder && info.isHardwareAccelerated && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
     }
+
+/**
+ * Whether this runs on the emulator, whose GPU is emulated in software. The
+ * first draws there take long enough that the bridge's newest-picture-wins
+ * rule drops a frame a phone shows, so a test holding every frame to its time
+ * asks this first and does not run there.
+ */
+internal fun onEmulator(): Boolean =
+    Build.HARDWARE in setOf("ranchu", "goldfish") || Build.FINGERPRINT.startsWith("generic")
 
 /** The RGBA of the pixel at the centre of [frame]. */
 internal fun centre(frame: VideoDecoder.RgbaFrame): IntArray {

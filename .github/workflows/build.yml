@@ -393,10 +393,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      # The device suites skip nothing today. A skip is an assumption a test
-      # could not meet, and reads as green, so the ceiling holds it at what a
-      # run measures.
-      MAX_SKIPPED: 0
+      # A skip is an assumption a test could not meet, and reads as green, so
+      # the ceiling holds it at what a run measures. Two here: the image
+      # player's two tests that hold every frame to its time, which the
+      # emulated GPU cannot meet (its first draws are slow enough that the
+      # newest picture replaces one a phone shows). On a phone nothing skips.
+      MAX_SKIPPED: 2
     steps:
       - uses: actions/checkout@v7
 

@@ -1813,7 +1813,14 @@ README once the library is usable.
   software codecs alone, so the one assertion that expected a hardware
   decoder now asserts what the device has: AUTO on hardware where there is
   one, software where there is none. Skips are held to a ceiling as on the
-  desktop rows, zero today.
+  desktop rows. Two skip there: the image player's tests that hold every
+  frame to its time, since the emulated GPU's first draws are slow enough
+  that the newest picture replaces one a phone shows. The first emulator run
+  also showed one of them racy everywhere: it drained the mailbox without
+  waiting for the poster frame, so whether frame 0 counted as played
+  depended on which came first, which is what made it fail now and then on
+  the phone too. It takes the poster first now and times the rest from the
+  resume.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
