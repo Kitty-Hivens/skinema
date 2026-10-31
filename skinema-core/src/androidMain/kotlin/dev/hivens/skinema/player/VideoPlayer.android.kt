@@ -673,17 +673,24 @@ actual class VideoPlayer actual constructor(
             return
         }
         val file = source
+        // For when the decode below cannot answer. An exact seek lands on the
+        // first frame at or after its target, so a target a millisecond back,
+        // or half a frame back, lands on the frame already shown. A frame and
+        // a half back sits before the previous frame and after the one before
+        // that, so at a steady rate the seek lands on the previous frame.
+        val frameNanos = player?.videoFormat?.frameRate?.takeIf { it > 0f }?.let { (1_000_000_000.0 / it).toLong() } ?: FALLBACK_FRAME_NANOS
+        val find = previousFrameFinder
         // Which frame precedes the one on screen is only knowable by decoding
         // toward it, as on the desktop: run the platform decoder over the
         // stretch before it, off the player thread, and land an exact seek on
         // the answer.
         decodeWork.execute {
-            val previous = runCatching { previousFramePts(file, shown) }
+            val previous = runCatching { find(file, shown) }
                 .onFailure { Debug.trace("step backward discovery", it) }
                 .getOrNull()
             post {
                 if (!stepBusy) return@post
-                seekTo(previous ?: (shown - NANOS_PER_MILLI).coerceAtLeast(0), exact = true)
+                seekTo(previous ?: (shown - frameNanos * 3 / 2).coerceAtLeast(0), exact = true)
                 handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
             }
         }
@@ -712,6 +719,10 @@ actual class VideoPlayer actual constructor(
         stepBusy = false
         stepping = false
     }
+
+    /** How a step back finds the frame before the one shown; a test replaces it to make the discovery fail. */
+    @Volatile
+    internal var previousFrameFinder: (Path, Long) -> Long? = ::previousFramePts
 
     private fun previousFramePts(file: Path, shown: Long): Long? {
         if (shown <= 0L) return 0L
@@ -1508,6 +1519,9 @@ actual class VideoPlayer actual constructor(
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /** A frame's length when the track declares no rate: 30 fps, the common case. */
+        const val FALLBACK_FRAME_NANOS = 33_333_333L
 
         /** How long a step waits for its frame before the next step goes anyway. */
         const val STEP_SETTLE_MILLIS = 400L

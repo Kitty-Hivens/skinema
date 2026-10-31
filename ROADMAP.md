@@ -1822,6 +1822,17 @@ README once the library is usable.
   the phone too. It takes the poster first now and times the rest from the
   resume.
 
+  A later emulator run had a step back put up no frame at all, and the path
+  it points at was wrong regardless of what set it off there. When the
+  decode that finds the previous frame fails, the step fell back to an
+  exact seek a millisecond before the frame shown, and an exact seek lands
+  on the first frame at or after its target, which is the frame shown: the
+  step stood still and said nothing. The fallback now aims a frame and a
+  half back, by the track's rate, which lands on the previous frame at a
+  steady rate. Half a frame back, the first fix tried, lands on the shown
+  frame for the same reason, and the test that forces the discovery to fail
+  catches both.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

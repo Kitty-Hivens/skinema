@@ -323,6 +323,22 @@ class VideoPlayerDeviceTest {
     }
 
     @Test
+    fun aStepBackWhoseDiscoveryFailsStillLandsOnThePreviousFrame() {
+        val p = player("long-with-sound.mp4", startPaused = true)
+        // The decode that finds the previous frame can fail (a codec the
+        // device will not open a second of, a file gone): the step then falls
+        // back to the track's rate, and still moves.
+        p.previousFrameFinder = { _, _ -> error("no decoder for the discovery") }
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        p.seek(1_500_000_000L)
+        val at = awaitFrame(p) { abs(it.ptsNanos - 1_500_000_000L) < 40_000_000 }
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        p.stepBackward()
+        val back = awaitFrame(p) { it.ptsNanos < at.ptsNanos }
+        assertTrue(abs(at.ptsNanos - back.ptsNanos - 33_333_333) < 2_000_000, "one frame back: ${at.ptsNanos - back.ptsNanos}")
+    }
+
+    @Test
     fun quickStepsAreTakenOneFrameEachInTheOrderAsked() {
         val p = player("long-with-sound.mp4", startPaused = true)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
