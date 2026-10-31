@@ -15,52 +15,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Video encode parameters. [codecName] is an FFmpeg encoder name
- * ("libx264", "libx265", "libsvtav1", "libvpx-vp9", ...); [options] are
- * its private options ("crf", "preset", ...). The container muxer is
- * inferred from the output file's extension.
- *
- * A hardware encoder ("h264_vaapi", "hevc_vaapi", ...) is detected from
- * its codec descriptor and driven on the GPU: [MediaWriter] opens a
- * hardware device, builds a surface pool, and uploads each frame before
- * encoding. [device] names the device to open (a VAAPI render node such as
- * "/dev/dri/renderD128"); null lets the driver pick its default. It is
- * ignored for a software encoder. Hardware encode is fail-closed -- if the
- * device or an upload is refused the writer throws, it does not silently
- * fall back to software.
- */
-class VideoEncodeConfig(
-    val codecName: String,
-    val width: Int,
-    val height: Int,
-    /** Nominal frame rate -- the encoder's rate-control hint, not a hard cadence. */
-    val fps: Int,
-    /** Target bitrate in bits/s; 0 leaves the encoder on its own quality default (crf). */
-    val bitRate: Long = 0,
-    val options: Map<String, String> = emptyMap(),
-    /** Hardware device to open for a GPU encoder (e.g. a VAAPI render node); null = driver default. */
-    val device: String? = null,
-)
-
-/**
- * Audio encode parameters. [codecName] is an FFmpeg encoder name ("aac",
- * "libopus", "flac", ...). Input is interleaved S16LE STEREO at
- * [sampleRate] -- the [dev.hivens.skinema.libav.AudioDecoder] output shape
- * -- encoded at the same rate; no resampling, only a conversion into the
- * sample format and channel layout the encoder advertises. Stereo is kept
- * wherever the encoder takes it, so the ordinary case converts the format
- * alone; an encoder that takes only mono (or only surround) is given what it
- * takes, mixed by swresample. [options] are the encoder's private options.
- */
-class AudioEncodeConfig(
-    val codecName: String,
-    val sampleRate: Int,
-    /** Target bitrate in bits/s; 0 leaves the encoder on its own default. */
-    val bitRate: Long = 0,
-    val options: Map<String, String> = emptyMap(),
-)
-
-/**
  * Encodes pushed RGBA8888 frames (and optional S16LE stereo PCM) to a
  * muxed file -- the inverse of the decode pipeline, the same FFM
  * discipline (one confined [Arena] owned by the calling thread). Video is
@@ -80,7 +34,7 @@ class AudioEncodeConfig(
  * audio-only containers are for -- and the overload that takes both writes
  * both. There is no way to ask for a writer with neither.
  */
-class MediaWriter private constructor(
+actual class MediaWriter private constructor(
     private val arena: Arena,
     private val fmtCtx: MemorySegment,
     private val packet: MemorySegment,
@@ -110,7 +64,7 @@ class MediaWriter private constructor(
      * like every other thing this class cannot do, rather than as a null
      * dereference from somewhere further in.
      */
-    fun writeFrame(rgba: ByteArray, ptsNanos: Long) {
+    actual fun writeFrame(rgba: ByteArray, ptsNanos: Long) {
         check(!closed) { "writeFrame after close()" }
         check(!finished) { "writeFrame after finish()" }
         val v = video ?: throw LibavException("this MediaWriter has no video stream")
@@ -124,7 +78,7 @@ class MediaWriter private constructor(
      * from the first sample; pushed in order. No-op-safe only when an
      * [AudioEncodeConfig] was given to [open] -- otherwise throws.
      */
-    fun writeAudio(pcm: ByteArray) {
+    actual fun writeAudio(pcm: ByteArray) {
         check(!closed) { "writeAudio after close()" }
         check(!finished) { "writeAudio after finish()" }
         val a = audio ?: throw LibavException("this MediaWriter has no audio stream")
@@ -139,7 +93,7 @@ class MediaWriter private constructor(
     }
 
     /** Drains both encoders and writes the container trailer. Call once, before [close]. */
-    fun finish() {
+    actual fun finish() {
         check(!closed) { "finish after close()" }
         if (finished) return
         video?.let { v ->
@@ -255,7 +209,7 @@ class MediaWriter private constructor(
         packet.set(JAVA_LONG, offset, v * streamTbDen / (codecTbDen.toLong() * streamTbNum))
     }
 
-    override fun close() {
+    actual override fun close() {
         if (closed) return
         closed = true
         // A writer closed without finish() -- the `use` block that threw, the
@@ -491,7 +445,7 @@ class MediaWriter private constructor(
         }
     }
 
-    companion object {
+    actual companion object {
 
         // The video codec time_base: 1/1_000_000, microseconds (VFR-friendly).
         private const val MICROS_DEN = 1_000_000
@@ -538,7 +492,7 @@ class MediaWriter private constructor(
          * [finish]. Throws -- leaving nothing allocated -- when a muxer,
          * encoder or any setup step is refused.
          */
-        fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig? = null): MediaWriter =
+        actual fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig?): MediaWriter =
             openInternal(path, video, audio)
 
         /**
@@ -552,7 +506,7 @@ class MediaWriter private constructor(
          * else is the same writer -- [writeAudio], [finish], [close] -- and
          * [writeFrame] refuses by name.
          */
-        fun open(path: Path, audio: AudioEncodeConfig): MediaWriter =
+        actual fun open(path: Path, audio: AudioEncodeConfig): MediaWriter =
             openInternal(path, null, audio)
 
         private fun openInternal(path: Path, video: VideoEncodeConfig?, audio: AudioEncodeConfig?): MediaWriter {

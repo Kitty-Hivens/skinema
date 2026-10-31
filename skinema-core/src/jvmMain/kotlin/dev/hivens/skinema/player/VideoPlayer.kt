@@ -48,7 +48,7 @@ import kotlin.math.abs
  * the fail-closed path (ROADMAP.md section 2) a consumer answers with a
  * static fallback.
  */
-class VideoPlayer internal constructor(
+actual class VideoPlayer internal constructor(
     path: Path,
     loop: Boolean,
     audio: Boolean,
@@ -67,9 +67,9 @@ class VideoPlayer internal constructor(
     private val frameSourceFactory: (Path) -> FrameSource,
 ) : AutoCloseable {
 
-    constructor(
+    actual constructor(
         path: Path,
-        loop: Boolean = true,
+        loop: Boolean,
         /**
          * Decode and play the file's audio stream. The audio sink then
          * masters the player's clock (ROADMAP.md section 3); files without
@@ -77,9 +77,9 @@ class VideoPlayer internal constructor(
          * to silent wall-clock playback. Audio-only files play frameless:
          * [acquireFrame] stays null while [state] runs the usual lifecycle.
          */
-        audio: Boolean = false,
+        audio: Boolean,
         /** Overrides the clock entirely; with audio on, prefer not to. */
-        explicitClock: MediaClock? = null,
+        explicitClock: MediaClock?,
         /**
          * Where the sound goes. An implementation of [PcmSink] takes the
          * player's S16LE stereo PCM instead of the platform line, which is how
@@ -95,7 +95,7 @@ class VideoPlayer internal constructor(
          * nothing ever opens it. That is not an error, and the sink is left
          * untouched rather than opened and closed.
          */
-        sink: PcmSink? = null,
+        sink: PcmSink?,
         /**
          * How many decoded frames the player holds ahead of the clock,
          * 1..8. At 1 (the default) decode runs a single frame ahead --
@@ -104,13 +104,13 @@ class VideoPlayer internal constructor(
          * of depth costs one full RGBA frame of memory (8.3 MB at 1080p)
          * on top of the mailbox's three slots.
          */
-        readAheadFrames: Int = 1,
+        readAheadFrames: Int,
         /**
          * Stream index of the audio track to open (one of [audioTracks]);
          * null takes the demuxer's best pick. Switch later with
          * [selectAudioTrack].
          */
-        audioTrack: Int? = null,
+        audioTrack: Int?,
         /**
          * Hardware-decode policy. [HwAccel.OFF] (default) is pure software
          * decode -- the historical behaviour and the only CI-tested path.
@@ -121,7 +121,7 @@ class VideoPlayer internal constructor(
          * [setSource] for the same reason. The RGBA frame contract is
          * identical on every path.
          */
-        hardware: HwAccel = HwAccel.OFF,
+        hardware: HwAccel,
         /**
          * What the timeline does while nobody is taking frames -- see
          * [WhenUnwatched]. A player nobody reads is not free: it decodes,
@@ -139,7 +139,7 @@ class VideoPlayer internal constructor(
          * the Compose surface does. A player told neither notices on its own,
          * once the mailbox it HAD been reading goes unread.
          */
-        unwatched: WhenUnwatched = WhenUnwatched.FollowSound,
+        unwatched: WhenUnwatched,
         /**
          * Open onto the first frame and stay on it: [state] settles
          * [State.Paused] rather than [State.Playing], and [resume] is what
@@ -153,7 +153,7 @@ class VideoPlayer internal constructor(
          * The pause belongs to the caller from the start, so it is the kind
          * [WhenUnwatched] never lifts: only [resume] ends it.
          */
-        startPaused: Boolean = false,
+        startPaused: Boolean,
         /**
          * Linear 0..1 volume from the first sample onward, rather than from
          * whenever a [setVolume] call gets through -- a player that has to
@@ -166,7 +166,7 @@ class VideoPlayer internal constructor(
          * volume and leaves the default standing, as [setVolume] does with
          * one. Nothing at all without `audio = true`.
          */
-        volume: Float = 1f,
+        volume: Float,
         /**
          * How many channels to ask the output device for.
          *
@@ -183,20 +183,20 @@ class VideoPlayer internal constructor(
          * Either way the fold is swresample's, and either way what the device
          * actually took is [activeAudioFormat] rather than this.
          */
-        audioChannels: ChannelPreference = ChannelPreference.Source,
+        audioChannels: ChannelPreference,
     ) : this(
         path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
         startPaused, volume, audioChannels,
         { FrameSources.open(it, hardware) },
     )
 
-    sealed interface State {
-        data object Opening : State
-        data object Playing : State
-        data object Paused : State
+    actual sealed interface State {
+        actual data object Opening : State
+        actual data object Playing : State
+        actual data object Paused : State
 
         /** Non-looping playback ran out of frames; a seek revives it. */
-        data object Ended : State
+        actual data object Ended : State
 
         /**
          * A seek is landing: the demuxer jumped to a keyframe and is
@@ -204,11 +204,11 @@ class VideoPlayer internal constructor(
          * a consumer may show a loading affordance. Resolves back to
          * Playing / Paused / Ended when the target frame lands.
          */
-        data object Seeking : State
+        actual data object Seeking : State
 
         /** Open or decode failed; playback stopped for good. Fall back. */
-        data class Failed(val cause: Throwable) : State
-        data object Closed : State
+        actual data class Failed actual constructor(actual val cause: Throwable) : State
+        actual data object Closed : State
     }
 
     /**
@@ -216,14 +216,14 @@ class VideoPlayer internal constructor(
      * next [acquireFrame] call; the player never writes into it during
      * that window.
      */
-    class FrameSlot internal constructor(size: Int = 0) {
-        var width = 0
+    actual class FrameSlot internal constructor(size: Int) {
+        actual var width = 0
             internal set
-        var height = 0
+        actual var height = 0
             internal set
-        var ptsNanos = 0L
+        actual var ptsNanos = 0L
             internal set
-        var rgba = ByteArray(size)
+        actual var rgba = ByteArray(size)
             internal set
     }
 
@@ -277,7 +277,7 @@ class VideoPlayer internal constructor(
      * What the player is doing. Written from the decode thread and from the
      * pacer, read from anywhere.
      */
-    val state: State get() = stateField
+    actual val state: State get() = stateField
 
     /**
      * The one way state is written, and the reason it is a function.
@@ -326,7 +326,7 @@ class VideoPlayer internal constructor(
      * With [positionNanos] this is the timeline.
      */
     @Volatile
-    var durationNanos: Long? = null
+    actual var durationNanos: Long? = null
         private set
 
     /**
@@ -339,7 +339,7 @@ class VideoPlayer internal constructor(
      * the list stayed the first file's until something else republished it,
      * and nothing did.
      */
-    val audioTracks: List<AudioTrack>
+    actual val audioTracks: List<AudioTrack>
         get() = if (audioDeviceOpened) audioPipeline?.tracks.orEmpty() else emptyList()
 
     // Whether the audio side ever came up with a device. Settled once, when the
@@ -349,7 +349,7 @@ class VideoPlayer internal constructor(
     private var audioDeviceOpened = false
 
     /** Stream index of the track playing; null when no live audio. */
-    val activeAudioTrack: Int?
+    actual val activeAudioTrack: Int?
         get() = if (audioTracks.isEmpty()) null else audioPipeline?.activeAudioTrack
 
     /**
@@ -361,17 +361,17 @@ class VideoPlayer internal constructor(
      * 5.1 float file on a stereo device reports stereo, and reporting the
      * request instead would make that fold invisible.
      */
-    val activeAudioFormat: PcmFormat?
+    actual val activeAudioFormat: PcmFormat?
         get() = if (audioDeviceOpened) audioPipeline?.activeFormat else null
 
     /** Format-level tags (title, artist, ...); empty when none or Opening. */
     @Volatile
-    var tags: Map<String, String> = emptyMap()
+    actual var tags: Map<String, String> = emptyMap()
         private set
 
     /** Container chapters -- timeline markers; empty when none or Opening. */
     @Volatile
-    var chapters: List<Chapter> = emptyList()
+    actual var chapters: List<Chapter> = emptyList()
         private set
 
     /**
@@ -380,7 +380,7 @@ class VideoPlayer internal constructor(
      * playback typically shows this where frames would be.
      */
     @Volatile
-    var coverArt: ByteArray? = null
+    actual var coverArt: ByteArray? = null
         private set
 
     /**
@@ -390,7 +390,7 @@ class VideoPlayer internal constructor(
      * itself must do the same.
      */
     @Volatile
-    var rotationDegrees: Int = 0
+    actual var rotationDegrees: Int = 0
         private set
 
     /**
@@ -406,7 +406,7 @@ class VideoPlayer internal constructor(
      * false again once decoding starts.
      */
     @Volatile
-    var hardwareActive: Boolean = false
+    actual var hardwareActive: Boolean = false
         private set
 
     /**
@@ -417,7 +417,7 @@ class VideoPlayer internal constructor(
      * [selectSubtitleTrack].
      */
     @Volatile
-    var subtitleTracks: List<SubtitleTrack> = emptyList()
+    actual var subtitleTracks: List<SubtitleTrack> = emptyList()
         private set
 
     // Guards subtitleTracks writes: the decode thread publishes the
@@ -589,7 +589,7 @@ class VideoPlayer internal constructor(
      * The freshest published frame, or null when nothing new arrived since
      * the previous call (keep showing what you have).
      */
-    fun acquireFrame(): FrameSlot? {
+    actual fun acquireFrame(): FrameSlot? {
         // The read IS the signal, so it is taken before the frame: a consumer
         // that polls and gets null is still watching, and one that stopped
         // polling is what this notices.
@@ -619,7 +619,7 @@ class VideoPlayer internal constructor(
      * lists and the other metadata move without it: poll those on whatever
      * cadence the consumer shows them at.
      */
-    val changeCount: Long get() = changes
+    actual val changeCount: Long get() = changes
 
     /**
      * Blocks until [changeCount] differs from [since], or for about
@@ -643,7 +643,7 @@ class VideoPlayer internal constructor(
      * how a coroutine that wraps this in `runInterruptible` is cancelled.
      */
     @Throws(InterruptedException::class)
-    fun awaitChange(since: Long, timeoutNanos: Long): Long {
+    actual fun awaitChange(since: Long, timeoutNanos: Long): Long {
         synchronized(changeMonitor) {
             if (changes != since || timeoutNanos <= 0L) return changes
             changeMonitor.wait(timeoutNanos / 1_000_000L, (timeoutNanos % 1_000_000L).toInt())
@@ -681,7 +681,7 @@ class VideoPlayer internal constructor(
      * told, and a surface reporting its window visible would undo an
      * application that had just gone to the tray.
      */
-    fun setPresenting(presenting: Boolean) {
+    actual fun setPresenting(presenting: Boolean) {
         presentingSaid = true
         submit(Command.SetPresenting(presenting))
     }
@@ -712,7 +712,7 @@ class VideoPlayer internal constructor(
      * pictures to stop, and a window put behind another is no reason to stop
      * its sound.
      */
-    fun reportVisible(visible: Boolean?) {
+    actual fun reportVisible(visible: Boolean?) {
         if (presentingSaid) return
         // Here as well as on the decode thread, for the reason [setPresenting]
         // sets its flag here: a read landing between this call and the handler
@@ -722,7 +722,7 @@ class VideoPlayer internal constructor(
     }
 
     /** Freezes playback; the surface keeps showing the last frame. */
-    fun pause() = submit(Command.Pause)
+    actual fun pause() = submit(Command.Pause)
 
     /**
      * Continues from where [pause] froze, without a frame jump.
@@ -735,7 +735,7 @@ class VideoPlayer internal constructor(
      * until frames are being taken again: what stopped is the pictures, and
      * nothing here starts them for a mailbox no one is emptying.
      */
-    fun resume() = submit(Command.Resume)
+    actual fun resume() = submit(Command.Resume)
 
     /**
      * Jumps to [ptsNanos]; revives an [State.Ended] player.
@@ -749,7 +749,7 @@ class VideoPlayer internal constructor(
      * file's keyframe spacing. The right trade for skip buttons; keep
      * exact for timeline scrubbing.
      */
-    fun seek(ptsNanos: Long, exact: Boolean = true) =
+    actual fun seek(ptsNanos: Long, exact: Boolean) =
         submit(Command.Seek(ptsNanos.coerceAtLeast(0), exact))
 
     /**
@@ -761,7 +761,7 @@ class VideoPlayer internal constructor(
      * loop's bookkeeping. [exact] as in [seek]; inexact presses
      * accumulate against the position actually landed.
      */
-    fun seekBy(deltaNanos: Long, exact: Boolean = true) =
+    actual fun seekBy(deltaNanos: Long, exact: Boolean) =
         submit(Command.SeekBy(deltaNanos, exact))
 
     /**
@@ -770,7 +770,7 @@ class VideoPlayer internal constructor(
      * the end of the stream the last frame stays. Time (sound included)
      * re-anchors to the stepped frame, so [resume] continues from it.
      */
-    fun stepForward() = submit(Command.StepForward)
+    actual fun stepForward() = submit(Command.StepForward)
 
     /**
      * Steps back to the previous frame, paused on it. The previous
@@ -780,7 +780,7 @@ class VideoPlayer internal constructor(
      * advertised through [State.Seeking] on sparse ones. Repeated
      * backsteps reuse the discovered run and pay one run, not two.
      */
-    fun stepBackward() = submit(Command.StepBackward)
+    actual fun stepBackward() = submit(Command.StepBackward)
 
     /**
      * Linear 0..1 volume; no-op for silent playback.
@@ -797,14 +797,14 @@ class VideoPlayer internal constructor(
      * then scales every sample by NaN -- silence, until some later call
      * happens to set a real number.
      */
-    fun setVolume(volume: Float) {
+    actual fun setVolume(volume: Float) {
         if (volume.isNaN()) return
         audioPipeline?.setVolume(volume.coerceIn(0f, 1f))
     }
 
     /** Playback speed; 1.0 until [setRate] changes it. */
     @Volatile
-    var rate: Float = 1f
+    actual var rate: Float = 1f
         private set
 
     /**
@@ -815,7 +815,7 @@ class VideoPlayer internal constructor(
      * switches. A player on an explicit consumer clock owns its own time
      * and ignores this.
      */
-    fun setRate(rate: Float) {
+    actual fun setRate(rate: Float) {
         // NaN is not a rate, and coerceIn does not stop it: every comparison
         // with NaN is false, so both bounds fall through and the clamp this
         // method documents returns NaN unchanged. It then reaches the tempo
@@ -854,7 +854,7 @@ class VideoPlayer internal constructor(
      * always was.
      */
     @Volatile
-    var loop: Boolean = loop
+    actual var loop: Boolean = loop
 
     /**
      * The file playing now: the one the constructor was given, until a
@@ -867,7 +867,7 @@ class VideoPlayer internal constructor(
      * one that was asked for.
      */
     @Volatile
-    var source: Path = path
+    actual var source: Path = path
         private set
 
     /**
@@ -880,7 +880,7 @@ class VideoPlayer internal constructor(
      * is kept here so a consumer can say which item was dropped and why.
      */
     @Volatile
-    var sourceFailure: Throwable? = null
+    actual var sourceFailure: Throwable? = null
         private set
 
     /**
@@ -913,7 +913,7 @@ class VideoPlayer internal constructor(
      * runs on the wall clock, which is what a silent file means anywhere else
      * in this player.
      */
-    fun setSource(path: Path) = submit(Command.SetSource(path))
+    actual fun setSource(path: Path) = submit(Command.SetSource(path))
 
     /**
      * Switches the sound to another of [audioTracks], in place: the
@@ -921,7 +921,7 @@ class VideoPlayer internal constructor(
      * track that cannot open or that ends before the playhead is
      * refused and the current one plays on.
      */
-    fun selectAudioTrack(streamIndex: Int) {
+    actual fun selectAudioTrack(streamIndex: Int) {
         audioPipeline?.selectTrack(streamIndex)
     }
 
@@ -933,7 +933,7 @@ class VideoPlayer internal constructor(
      * players take none -- text rendering wants video geometry that
      * does not exist there.
      */
-    fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
+    actual fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
         if (frameless) return emptyList()
         val probed = probeSubtitleFile(file) { externalSubtitleIds.decrementAndGet() }
         if (probed.isEmpty()) return emptyList()
@@ -949,10 +949,10 @@ class VideoPlayer internal constructor(
      * that fails to open degrades to no subtitles -- playback never
      * notices either way.
      */
-    fun selectSubtitleTrack(id: Int?) = submit(Command.SelectSubtitles(id))
+    actual fun selectSubtitleTrack(id: Int?) = submit(Command.SelectSubtitles(id))
 
     /** Id of the subtitle track on screen; null when off or failed. */
-    val activeSubtitleTrack: Int?
+    actual val activeSubtitleTrack: Int?
         get() = subtitlePipeline?.takeIf { !it.isDead }?.track?.id
 
     /**
@@ -961,7 +961,7 @@ class VideoPlayer internal constructor(
      * Gate drawing on [activeSubtitleTrack]: after a deselect the last
      * acquired overlay is stale, not cleared.
      */
-    fun acquireSubtitles(): SubtitleOverlay? = subtitlePipeline?.acquire()
+    actual fun acquireSubtitles(): SubtitleOverlay? = subtitlePipeline?.acquire()
 
     /**
      * Announces the size subtitles should rasterize at -- the video's
@@ -977,7 +977,7 @@ class VideoPlayer internal constructor(
      * the pump, which reads a non-empty queue as work pending, refilled a
      * packet at a time and never reached its own render cadence.
      */
-    fun setSubtitleCanvasSize(width: Int, height: Int) {
+    actual fun setSubtitleCanvasSize(width: Int, height: Int) {
         // Refused here rather than trusted, because this is the public edge and
         // the value does not stop at this library: it reaches libass as a frame
         // size, and it is published to the consumer as the space the overlay's
@@ -1032,7 +1032,7 @@ class VideoPlayer internal constructor(
      * tying a second reported value to an untrustworthy first one is how one
      * format's fix becomes another format's defect.
      */
-    fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
+    actual fun positionNanos(): Long = if (::clock.isInitialized) clock.mediaNanos() else 0L
 
     /**
      * Set the moment close is asked for, and read wherever the decode thread
@@ -1081,7 +1081,7 @@ class VideoPlayer internal constructor(
      * than waited on. [state] settles [State.Closed] when the teardown
      * finishes.
      */
-    fun closeAsync() {
+    actual fun closeAsync() {
         closing = true
         if (closeDeadlineNanos == 0L) closeDeadlineNanos = System.nanoTime() + CLOSE_BUDGET_NANOS
         commands.put(Command.Close)
@@ -1092,7 +1092,7 @@ class VideoPlayer internal constructor(
         subtitlePipeline?.announceClose()
     }
 
-    override fun close() {
+    actual override fun close() {
         closeAsync()
         joinWithin(thread, closeDeadlineNanos)
     }

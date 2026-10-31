@@ -1481,6 +1481,19 @@ README once the library is usable.
   itself: its shared code playing backgrounds, banners and music through
   this API on a phone, with its own Media3 wiring deleted.
 
+  The shared API is in place with the desktop as its only `actual`, and the
+  suite runs the same tests it ran before. Two things the expect form costs
+  are worth knowing before the Android side is written. `State.Failed`
+  cannot be declared a data class in the expect: a data class needs
+  property parameters and an expected constructor may not have them. So the
+  expect declares a plain class and the desktop actual stays a data class,
+  which keeps its equality and its `toString`. Every actual has to make the
+  same choice, or `Failed` compares differently per platform. And the full
+  contract KDoc stays on the desktop actuals for now, with a short summary
+  on each expect. It is written against FFmpeg (JavaSound, libass,
+  swresample), and rewriting it for two engines is worth doing once, when
+  the Android behaviour it has to describe exists.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

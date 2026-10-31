@@ -20,51 +20,51 @@ import java.util.concurrent.atomic.AtomicBoolean
  * thread owns the session, and a file without an audio stream is a normal
  * condition ([openOrNull] returns null), not an error.
  */
-class AudioDecoder private constructor(
+actual class AudioDecoder private constructor(
     private val arena: Arena,
     private val fmtCtx: MemorySegment,
     private val codecCtx: MemorySegment,
     private val packet: MemorySegment,
     private val frame: MemorySegment,
     /** The stream actually opened -- the best-stream pick or the request. */
-    val streamIndex: Int,
+    actual val streamIndex: Int,
     private val timeBaseNum: Int,
     private val timeBaseDen: Int,
     private val startTimeNanos: Long,
     /** Same contract as [FrameSource.durationNanos]; audio-only files need it too. */
-    val durationNanos: Long?,
+    actual val durationNanos: Long?,
     /** Every audio stream the container carries, [streamIndex] included. */
-    val tracks: List<AudioTrack>,
+    actual val tracks: List<AudioTrack>,
     /** Format-level tags; the frameless player serves them from here. */
-    val tags: Map<String, String>,
+    actual val tags: Map<String, String>,
     /** Container chapters, same contract as the video side's. */
-    val chapters: List<Chapter>,
+    actual val chapters: List<Chapter>,
     /** Encoded cover-art bytes; the frameless player's picture. */
-    val coverArt: ByteArray?,
+    actual val coverArt: ByteArray?,
     // The custom byte source backing this decoder (freed at close, after the
     // format context); null for a file-Path decoder.
     private val avioSource: AvioSource? = null,
 ) : AutoCloseable {
 
-    class PcmChunk internal constructor(
+    actual class PcmChunk internal constructor(
         /**
          * Interleaved PCM in [format]; only the first [byteCount] bytes are
          * meaningful, and the array is reused -- valid until the next
          * [nextChunk] call.
          */
-        val pcm: ByteArray,
-        val byteCount: Int,
+        actual val pcm: ByteArray,
+        actual val byteCount: Int,
         /** Presentation time of the chunk's first sample. */
-        val ptsNanos: Long,
+        actual val ptsNanos: Long,
         /**
          * The shape of the bytes above. Until a caller asks for something else
          * through [convertLastAs], this is the file's own shape: the decoder
          * narrows nothing on its own.
          */
-        val format: PcmFormat,
+        actual val format: PcmFormat,
     ) {
         /** Shorthand: the rate is the one number every caller needs. */
-        val sampleRate: Int get() = format.sampleRate
+        actual val sampleRate: Int get() = format.sampleRate
     }
 
     private var draining = false
@@ -117,7 +117,7 @@ class AudioDecoder private constructor(
     private var builtFor: PcmFormat? = null
 
     /** Decodes and converts the next chunk; null at end of stream. */
-    fun nextChunk(): PcmChunk? {
+    actual fun nextChunk(): PcmChunk? {
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> return convertCurrentFrame()
@@ -129,7 +129,7 @@ class AudioDecoder private constructor(
     }
 
     /** Same contract as [VideoDecoder.seekTo]; also reopens a drained stream. */
-    fun seekTo(ptsNanos: Long) {
+    actual fun seekTo(ptsNanos: Long) {
         // Re-apply the container start_time the timeline was normalized
         // against (see formatStartTimeNanos) before seeking the demuxer.
         val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
@@ -181,7 +181,7 @@ class AudioDecoder private constructor(
      * what it got. The frame is still the one that was decoded, so nothing is
      * re-read and no sample is lost that the narrowing did not cost.
      */
-    fun convertLastAs(format: PcmFormat): PcmChunk {
+    actual fun convertLastAs(format: PcmFormat): PcmChunk {
         checkNotNull(lastSourceFormat) { "no frame has been decoded to convert" }
         outFormat = format
         return convertHeldFrame(format)
@@ -316,7 +316,7 @@ class AudioDecoder private constructor(
     // because every call site inside the pipeline wraps it in runCatching.
     private val closed = AtomicBoolean(false)
 
-    override fun close() {
+    actual override fun close() {
         if (!closed.compareAndSet(false, true)) return
         val ptrPtr = arena.allocate(ADDRESS)
         if (swrCtx != MemorySegment.NULL) {
@@ -339,7 +339,7 @@ class AudioDecoder private constructor(
         arena.close()
     }
 
-    companion object {
+    actual companion object {
 
         /**
          * The interleaved encoding a sample format maps to. Planar and packed
@@ -375,7 +375,7 @@ class AudioDecoder private constructor(
          * no audio at all; an index that exists but is not an audio
          * stream is a caller error and throws.
          */
-        fun openOrNull(path: Path, streamIndex: Int? = null): AudioDecoder? {
+        actual fun openOrNull(path: Path, streamIndex: Int?): AudioDecoder? {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, path)
             return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, path.toString())
@@ -387,7 +387,7 @@ class AudioDecoder private constructor(
          * feed). Same null-on-no-audio contract; skinema does no I/O of its
          * own, the demuxer pulls bytes through [source].
          */
-        fun openOrNull(source: MediaSource, streamIndex: Int? = null): AudioDecoder? {
+        actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
             return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "custom source")

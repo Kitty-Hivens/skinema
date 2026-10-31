@@ -16,7 +16,20 @@ kotlin {
         }
     }
 
+    compilerOptions {
+        // VideoPlayer, VideoDecoder, AudioDecoder and MediaWriter are expect
+        // classes, each actualized by its platform's engine (ROADMAP M23).
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     sourceSets {
+        // The API every platform shares. Only JVM-family targets ever depend
+        // on it, so it keeps JDK types such as Path and AutoCloseable rather
+        // than retreating to what common Kotlin offers.
+        val jvmSharedMain by creating {
+            dependsOn(commonMain.get())
+        }
+        jvmMain.get().dependsOn(jvmSharedMain)
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
         }

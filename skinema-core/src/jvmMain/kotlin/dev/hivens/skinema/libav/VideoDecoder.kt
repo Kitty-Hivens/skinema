@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * memory here. The backing Arena is confined -- the thread that called
  * [open] owns the session, which is the design intent (one decode thread).
  */
-class VideoDecoder private constructor(
+actual class VideoDecoder private constructor(
     private val arena: Arena,
     private var fmtCtx: MemorySegment,
     // Replaced once at most, when a decoder chosen for the device refuses the
@@ -28,9 +28,9 @@ class VideoDecoder private constructor(
     private var codecCtx: MemorySegment,
     private val packet: MemorySegment,
     private val frame: MemorySegment,
-    val streamIndex: Int,
-    val timeBaseNum: Int,
-    val timeBaseDen: Int,
+    actual val streamIndex: Int,
+    actual val timeBaseNum: Int,
+    actual val timeBaseDen: Int,
     private val startTimeNanos: Long,
     private val duration: Long?,
     private val tags: Map<String, String>,
@@ -66,18 +66,18 @@ class VideoDecoder private constructor(
     // decode revealed. Animated WebP declares none -- FFmpeg reports N/A --
     // so the only honest number comes from having played it once, which a
     // looping player pays for anyway.
-    override fun durationNanos(): Long? = duration ?: observedDuration
+    actual override fun durationNanos(): Long? = duration ?: observedDuration
 
     @Volatile
     private var observedDuration: Long? = null
     private var lastFrameEndNanos = 0L
-    override fun tags(): Map<String, String> = tags
-    override fun chapters(): List<Chapter> = chapters
-    override fun coverArt(): ByteArray? = coverArt
-    override fun rotationDegrees(): Int = rotationDegrees
-    override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
-    override fun videoSize(): Pair<Int, Int>? = videoSize
-    override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE && !hwFellBack
+    actual override fun tags(): Map<String, String> = tags
+    actual override fun chapters(): List<Chapter> = chapters
+    actual override fun coverArt(): ByteArray? = coverArt
+    actual override fun rotationDegrees(): Int = rotationDegrees
+    actual override fun subtitleTracks(): List<SubtitleTrack> = subtitleTracks
+    actual override fun videoSize(): Pair<Int, Int>? = videoSize
+    actual override fun hardwareActive(): Boolean = hwPixFmt != LibavAbi.AV_PIX_FMT_NONE && !hwFellBack
 
     /**
      * Whether a decoder that opened a device ended up decoding without it.
@@ -236,17 +236,17 @@ class VideoDecoder private constructor(
         return true
     }
 
-    class RgbaFrame internal constructor(
-        val width: Int,
-        val height: Int,
+    actual class RgbaFrame internal constructor(
+        actual val width: Int,
+        actual val height: Int,
         /** Presentation time in nanoseconds from stream start. */
-        val ptsNanos: Long,
+        actual val ptsNanos: Long,
         /**
          * RGBA8888, row-major, tightly packed (stride = width * 4). The
          * array is reused: contents are valid only until the next
          * [nextFrame] call. Consumers that keep a frame must copy.
          */
-        val rgba: ByteArray,
+        actual val rgba: ByteArray,
     )
 
     private var draining = false
@@ -309,7 +309,7 @@ class VideoDecoder private constructor(
      * the pixels (the caller's buffer pool); otherwise an internal reused
      * buffer backs the result.
      */
-    override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
+    actual override fun nextFrame(target: ByteArray?, convert: Boolean): RgbaFrame? {
         while (true) {
             when (val ret = Libav.avcodecReceiveFrame(codecCtx, frame)) {
                 0 -> {
@@ -333,7 +333,7 @@ class VideoDecoder private constructor(
         }
     }
 
-    override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
+    actual override fun convertLast(target: ByteArray?): RgbaFrame = convertCurrentFrame(target)
 
     /**
      * The frame's A53 payload, copied out because the frame owns it and the
@@ -344,7 +344,7 @@ class VideoDecoder private constructor(
      * that is not a cost worth a flag. The copy only happens when a file
      * actually carries captions, and then it is tens of bytes.
      */
-    override fun captionBytes(): ByteArray? {
+    actual override fun captionBytes(): ByteArray? {
         val sd = Libav.avFrameGetSideData(frame, LibavAbi.AV_FRAME_DATA_A53_CC)
         if (sd == MemorySegment.NULL) return null
         val view = sd.reinterpret(LibavAbi.FrameSideData.SIZEOF)
@@ -387,7 +387,7 @@ class VideoDecoder private constructor(
      * pts reaches it (what VideoPlayer does). Also reopens a drained
      * stream, which is how looping works.
      */
-    override fun seekTo(ptsNanos: Long) {
+    actual override fun seekTo(ptsNanos: Long) {
         // Re-apply the container start_time the timeline was normalized
         // against before handing the target to the demuxer.
         seekToUnit(nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen))
@@ -400,7 +400,7 @@ class VideoDecoder private constructor(
      * and AVSEEK_FLAG_BACKWARD then lands on the keyframe standing on it,
      * which for a step backward is the frame it is trying to get behind.
      */
-    override fun seekBefore(ptsNanos: Long) {
+    actual override fun seekBefore(ptsNanos: Long) {
         val unit = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen) - 1
         seekToUnit(unit.coerceAtLeast(0))
     }
@@ -830,7 +830,7 @@ class VideoDecoder private constructor(
      */
     private val closed = AtomicBoolean(false)
 
-    override fun close() {
+    actual override fun close() {
         if (!closed.compareAndSet(false, true)) return
         dropPacketsInFlight()
         swsArena.close()
@@ -862,7 +862,7 @@ class VideoDecoder private constructor(
         arena.close()
     }
 
-    companion object {
+    actual companion object {
 
         private val NO_PIXELS = ByteArray(0)
 
@@ -1093,7 +1093,7 @@ class VideoDecoder private constructor(
         }
 
         /** Opens [path] and prepares a decoder for its best video stream. */
-        fun open(path: Path, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
+        actual fun open(path: Path, hardware: HwAccel): VideoDecoder {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, path)
             return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, path.toString(), path.toString())
@@ -1105,7 +1105,7 @@ class VideoDecoder private constructor(
          * the demuxer pulls bytes through [source]'s callbacks, so
          * --disable-network is untouched.
          */
-        fun open(source: MediaSource, hardware: HwAccel = HwAccel.OFF): VideoDecoder {
+        actual fun open(source: MediaSource, hardware: HwAccel): VideoDecoder {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
             return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "custom source")
