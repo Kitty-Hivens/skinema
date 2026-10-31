@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.multiplatform) apply false
+    alias(libs.plugins.android.kmp.library) apply false
     alias(libs.plugins.maven.publish) apply false
     alias(libs.plugins.kover)
 }
@@ -153,7 +154,10 @@ subprojects {
         // build here, ship, and fail at the consumer on the very version the
         // documentation tells them is enough. The Java half already does this
         // through options.release.
-        compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
+        //
+        // Not on the Android compilations, whose class library is the
+        // platform's android.jar rather than a JDK release.
+        if (!name.contains("Android")) compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
     }
 }
 

@@ -1494,6 +1494,36 @@ README once the library is usable.
   swresample), and rewriting it for two engines is worth doing once, when
   the Android behaviour it has to describe exists.
 
+  The Android decoders are in. `VideoDecoder` is the platform extractor and
+  a MediaCodec decoder in buffer mode, with the RGBA conversion done on the
+  CPU from the flexible YUV image the codec hands out. Done there rather
+  than on the GPU because the colour handling is then ours: the declared
+  matrix and range, BT.709 for HD that declares nothing, and HDR in P010
+  through the same `ToneMapper` the desktop uses (moved to shared code
+  unchanged), with no graphics context needed, so it runs on any thread and
+  in a test. The player will not decode through it; it renders through
+  Media3. `AudioDecoder` is the same pair for sound, and `convertLastAs`
+  converts in Kotlin, since the platform decoders produce 16-bit or float and
+  nothing in between. What these cannot give against the desktop's: closed
+  captions (the codec in buffer mode hands out no A53 payload), chapters (the
+  extractor reads none), and a `MediaSource` that cannot seek (the extractor
+  reads by offset). `HwAccel` keeps its three meanings, so OFF is software
+  decode on a phone too, which is the expensive answer there.
+
+  The suite for them runs on a device: MediaCodec exists nowhere else.
+  Fixtures are generated on the host by the ffmpeg CLI, as the desktop's
+  are, and packaged into the test APK. Eighteen tests pass on a moto g84
+  (Android 16). Mutation-checked, and one mutation survived for a reason
+  worth keeping: forcing the untagged-HD fallback to BT.601 changed nothing,
+  because Codec2 decoders fill in an untagged stream's colour aspects
+  themselves, by resolution, with the same rule. The fallback is reached only
+  on a decoder that reports nothing, so the rule is held by a test of its
+  own rather than through a decode.
+
+  The Android target configures only where an SDK exists, so every desktop
+  run in CI passes `-Pskinema.android=false`: the Alpine container, the
+  natives runners and the arm images carry none.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

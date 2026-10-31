@@ -341,7 +341,7 @@ jobs:
               apk add --no-cache bash openjdk25 ffmpeg font-dejavu fontconfig libva libstdc++ >/dev/null
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
               export SKINEMA_LIBAV_DIR=/src/libav-bundle
-              ./gradlew :skinema-core:jvmTest
+              ./gradlew :skinema-core:jvmTest -Pskinema.android=false
             '
 
       - name: Build and test
@@ -358,7 +358,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -iEv 'mingw|msys' | paste -sd ':' -)"
           fi
-          ./gradlew build
+          # Desktop only: the Android target has a job of its own, and the arm
+          # runner images carry no Android SDK to configure it with.
+          ./gradlew build -Pskinema.android=false
 
       # The XML the counter reads, kept for the runs where the count itself
       # raises a question -- which suites skipped, and why. Uploaded even on

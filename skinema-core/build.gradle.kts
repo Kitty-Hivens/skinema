@@ -1,8 +1,73 @@
+import com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget
+import org.gradle.process.ExecOperations
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.maven.publish)
+}
+
+// The Android target needs an Android SDK to configure at all, and several
+// places that build this project have none: the Alpine container the musl
+// rows test in, the natives runners, the arm runner images. They pass
+// -Pskinema.android=false and test the desktop alone. Opting out by name
+// rather than by noticing a missing SDK, so a machine that was meant to
+// build Android and cannot says so instead of quietly building less.
+val androidTarget = providers.gradleProperty("skinema.android").map { it != "false" }.getOrElse(true)
+if (androidTarget) apply(plugin = "com.android.kotlin.multiplatform.library")
+
+/**
+ * The Android suite's media, generated on the host by the ffmpeg CLI as the
+ * desktop suite generates its own, and packaged into the test APK as
+ * resources. Generated rather than committed for the reason the desktop
+ * fixtures are: a test asserts on meaning (frame count, pts grid, a colour
+ * within tolerance), and a file built from a stated recipe says what it
+ * means. A host without the CLI fails here by name rather than skipping.
+ */
+abstract class AndroidFixtures : DefaultTask() {
+    @get:Inject
+    abstract val exec: ExecOperations
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val dir = outputDir.get().asFile.resolve("fixtures").apply { mkdirs() }
+        fun ffmpeg(name: String, vararg args: String) {
+            exec.exec {
+                commandLine(listOf("ffmpeg", "-hide_banner", "-loglevel", "error", "-y") + args + dir.resolve(name).path)
+            }
+        }
+        val red = arrayOf("-f", "lavfi", "-i", "color=c=red:s=320x240:r=30:d=1")
+        ffmpeg("red-h264.mp4", *red, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "10", "-bf", "0")
+        ffmpeg(
+            "green-vp9.webm", "-f", "lavfi", "-i", "color=c=0x00FF00:s=320x240:r=15:d=1",
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-g", "5",
+        )
+        // HD converted with the BT.709 matrix, once tagged and once not: the
+        // untagged file is the geometry rule's case.
+        val blueHd = arrayOf(
+            "-f", "lavfi", "-i", "color=c=0x2050C0:s=1280x720:r=30:d=0.2",
+            "-vf", "scale=out_color_matrix=bt709:out_range=tv", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        )
+        ffmpeg("blue-hd-tagged.mp4", *blueHd, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709")
+        ffmpeg("blue-hd-untagged.mp4", *blueHd)
+        ffmpeg("sine-aac.m4a", "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=1", "-c:a", "aac")
+        ffmpeg(
+            "tone-flac24.flac", "-f", "lavfi", "-i", "sine=f=440:sample_rate=44100:d=1",
+            "-ac", "2", "-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24",
+        )
+        ffmpeg(
+            "red-with-sound.mp4", *red, "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+        )
+    }
+}
+
+val androidFixtures = tasks.register<AndroidFixtures>("androidFixtures") {
+    outputDir.set(layout.buildDirectory.dir("generated/androidFixtures"))
 }
 
 kotlin {
@@ -13,6 +78,24 @@ kotlin {
     jvm {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_22)
+        }
+    }
+
+    if (androidTarget) {
+        extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
+            namespace = "dev.hivens.skinema"
+            compileSdk = 37
+            // ImageReader with usage flags, Bitmap.wrapHardwareBuffer and the
+            // platform Opus encoder all arrive at 29, and nothing needs more.
+            minSdk = 29
+            compilerOptions {
+                jvmTarget.set(JvmTarget.JVM_17)
+            }
+            // The decoders are MediaCodec, which only a device or an emulator
+            // has, so the Android suite runs there rather than on the host.
+            withDeviceTest {
+                instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+            }
         }
     }
 
@@ -30,6 +113,23 @@ kotlin {
             dependsOn(commonMain.get())
         }
         jvmMain.get().dependsOn(jvmSharedMain)
+        if (androidTarget) {
+            getByName("androidMain") {
+                dependsOn(jvmSharedMain)
+                dependencies {
+                    implementation(libs.media3.exoplayer)
+                    implementation(libs.media3.effect)
+                }
+            }
+            getByName("androidDeviceTest") {
+                resources.srcDir(androidFixtures)
+                dependencies {
+                    implementation(libs.kotlin.test.junit)
+                    implementation(libs.androidx.test.runner)
+                    implementation(libs.androidx.test.junit)
+                }
+            }
+        }
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
         }
