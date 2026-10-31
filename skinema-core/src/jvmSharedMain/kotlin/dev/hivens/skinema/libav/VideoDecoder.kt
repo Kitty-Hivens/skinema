@@ -4,11 +4,19 @@ import java.nio.file.Path
 
 /**
  * One open video file, pull-style via [nextFrame]: the best video stream,
- * decoded and converted to RGBA8888. Blocking calls, owned by the thread
- * that opened it. The RGBA is the same whichever decoder produced it.
+ * decoded and converted to RGBA8888. Blocking calls, owned by the thread that
+ * opened it. The colour handling is the same on both platforms (the declared
+ * matrix and range, BT.709 for HD that declares nothing, HDR tone-mapped to
+ * SDR by the same curve), and the RGBA is the same whichever decoder produced
+ * it. A file with no picture throws [NoVideoStreamException]; any other
+ * refusal throws [LibavException].
  *
- * Each platform decodes through its own engine, and its contract is
- * documented on that platform's implementation.
+ * On the desktop this is FFmpeg, with the hardware decode [HwAccel] asks for.
+ * On Android it is the platform extractor and a MediaCodec decoder, converted
+ * on the CPU; timestamps are the extractor's microseconds, so the time base
+ * is 1/1000000. Android gives no closed captions ([captionBytes] is null) and
+ * no chapters, and a [MediaSource] there must be able to seek, because the
+ * platform extractor reads by offset.
  */
 expect class VideoDecoder : FrameSource {
 

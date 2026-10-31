@@ -7,10 +7,14 @@ import java.nio.file.Path
  * The audio half of a file, pull-style via [nextChunk]: decoded PCM in the
  * file's own shape until [convertLastAs] asks for another. The thread that
  * opened it owns it, and a file without an audio stream is a normal
- * condition ([openOrNull] returns null), not an error.
+ * condition ([openOrNull] returns null), not an error. The rate is always the
+ * stream's own; nothing here resamples.
  *
- * Each platform decodes through its own engine, and its contract is
- * documented on that platform's implementation.
+ * On the desktop this is FFmpeg, and the shape is whatever the decoder emits,
+ * 24-bit content arriving as 32-bit integer. On Android it is the platform
+ * extractor and a MediaCodec decoder, which produce 16-bit integer or float,
+ * so 24-bit content arrives as float; conversion is done in Kotlin. Android
+ * reads no chapters.
  */
 expect class AudioDecoder : AutoCloseable {
 

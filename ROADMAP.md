@@ -1489,10 +1489,15 @@ README once the library is usable.
   expect declares a plain class and the desktop actual stays a data class,
   which keeps its equality and its `toString`. Every actual has to make the
   same choice, or `Failed` compares differently per platform. And the full
-  contract KDoc stays on the desktop actuals for now, with a short summary
-  on each expect. It is written against FFmpeg (JavaSound, libass,
-  swresample), and rewriting it for two engines is worth doing once, when
-  the Android behaviour it has to describe exists.
+  contract KDoc stayed on the desktop actuals at first, with a short summary
+  on each expect, because it was written against FFmpeg (JavaSound, libass,
+  swresample) and rewriting it for two engines was worth doing once, when the
+  Android behaviour it had to describe existed. Once the Android player,
+  decoders and subtitles had landed it was done: the contract of
+  `VideoPlayer`, `VideoDecoder` and `AudioDecoder` lives on the expect, worded
+  for both platforms with each difference marked where it applies, which is
+  what a consumer's shared code reads; the actuals keep what is about their
+  own implementation. `MediaWriter` follows once its Android side exists.
 
   The Android decoders are in. `VideoDecoder` is the platform extractor and
   a MediaCodec decoder in buffer mode, with the RGBA conversion done on the
