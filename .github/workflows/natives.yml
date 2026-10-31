@@ -70,7 +70,7 @@ jobs:
           # musl image, and putting the whole job in a container breaks the
           # JavaScript actions, whose node is glibc-linked. Only the build and
           # its acceptance run go in; checkout and setup stay on the host.
-          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [linux-musl-x64]=ubuntu-latest [linux-musl-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-14 [macos-x64]=macos-14 )
+          declare -A OS=( [linux-x64]=ubuntu-latest [linux-arm64]=ubuntu-24.04-arm [linux-musl-x64]=ubuntu-latest [linux-musl-arm64]=ubuntu-24.04-arm [windows-x64]=windows-latest [windows-arm64]=windows-11-arm [macos-arm64]=macos-15 [macos-x64]=macos-15 )
           declare -A CROSS=( [macos-x64]=mac-x64 )
           declare -A LIBC=( [linux-musl-x64]=musl [linux-musl-arm64]=musl )
           items=()
