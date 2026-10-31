@@ -20,6 +20,9 @@ import androidx.media3.common.Timeline
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.text.Cue
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
@@ -35,6 +38,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import dev.hivens.skinema.Debug
 import dev.hivens.skinema.android.AppContext
+import dev.hivens.skinema.android.CueRasterizer
 import dev.hivens.skinema.android.ContainerInfo
 import dev.hivens.skinema.android.FrameBridge
 import dev.hivens.skinema.android.Input
@@ -52,8 +56,12 @@ import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.subtitles.SubtitleOverlay
+import java.nio.file.Files
+import java.util.Locale
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executors
 import android.media.AudioFormat as PlatformAudioFormat
 
@@ -239,6 +247,7 @@ actual class VideoPlayer actual constructor(
     private var everReady = false
     private var seekPending = false
     private var intendedNanos = 0L
+    @Volatile
     private var hasVideo = false
     private var userPaused = startPaused
     private var autoPaused = false
@@ -611,6 +620,15 @@ actual class VideoPlayer actual constructor(
                 seekPending = false
                 lastPublishedPts = 0L
                 sampleClock(0L, System.nanoTime(), false)
+                // Subtitles go off with the file they belonged to, as on the desktop.
+                externals.clear()
+                selectedSubtitleId = null
+                pendingSubtitleId = null
+                currentCues = emptyList()
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                publishCues()
                 p.setMediaItem(mediaItem(path))
                 p.prepare()
                 if (p.playbackState == Player.STATE_ENDED || !userPaused) p.play()
@@ -627,17 +645,132 @@ actual class VideoPlayer actual constructor(
             .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0)).build()
     }
 
-    /** Subtitles on Android are not implemented yet: no tracks are added. */
-    actual fun addExternalSubtitles(file: Path): List<SubtitleTrack> = emptyList()
+    // -- Subtitles ----------------------------------------------------------------------
 
-    /** Subtitles on Android are not implemented yet: nothing is selected. */
-    actual fun selectSubtitleTrack(id: Int?) {}
+    private class External(val path: Path, val mime: String, val track: SubtitleTrack)
 
-    actual val activeSubtitleTrack: Int? get() = null
+    private val externals = CopyOnWriteArrayList<External>()
+    private val externalIds = AtomicInteger(0)
+    private var embeddedSubtitles: List<SubtitleTrack> = emptyList()
 
-    actual fun acquireSubtitles(): SubtitleOverlay? = null
+    @Volatile
+    private var selectedSubtitleId: Int? = null
+    private var pendingSubtitleId: Int? = null
+    private var currentCues: List<Cue> = emptyList()
 
-    actual fun setSubtitleCanvasSize(width: Int, height: Int) {}
+    @Volatile
+    private var canvasWidth = 0
+
+    @Volatile
+    private var canvasHeight = 0
+
+    @Volatile
+    private var videoWidth = 0
+
+    @Volatile
+    private var videoHeight = 0
+
+    private val overlayLock = Any()
+    private var overlay: SubtitleOverlay? = null
+    private var overlayFresh = false
+    private var overlayGeneration = 0L
+
+    /**
+     * Appends [file]'s track under a negative id, as on the desktop. The file
+     * is side-loaded into the playing item, which ExoPlayer can only do by
+     * preparing it again at the current position: the picture holds while it
+     * does, and the sound pauses for as long as that takes. Formats are told
+     * by extension (.srt, .ass, .ssa, .vtt, .ttml); an unreadable file or one
+     * of another kind adds nothing.
+     */
+    actual fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
+        if (closing || !hasVideo) return emptyList()
+        val mime = subtitleMimeFor(file) ?: return emptyList()
+        if (!Files.isReadable(file)) return emptyList()
+        val id = externalIds.decrementAndGet()
+        val track = SubtitleTrack(
+            id = id, streamIndex = 0, language = null, title = file.fileName?.toString(),
+            codecName = mime, isText = true, isDefault = false, isForced = false, externalPath = file,
+        )
+        externals += External(file, mime, track)
+        subtitleTracks = embeddedSubtitles + externals.map { it.track }
+        post {
+            val p = player ?: return@post
+            val position = p.currentPosition
+            val playing = p.playWhenReady
+            p.setMediaItem(mediaItem(source), position)
+            p.prepare()
+            p.playWhenReady = playing
+        }
+        return listOf(track)
+    }
+
+    actual fun selectSubtitleTrack(id: Int?) = post {
+        val p = player ?: return@post
+        if (id == null) {
+            selectedSubtitleId = null
+            pendingSubtitleId = null
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+            currentCues = emptyList()
+            publishCues()
+            return@post
+        }
+        val group = subtitleGroup(id, p.currentTracks)
+        if (group == null) {
+            // A side-loaded file whose preparation has not landed yet.
+            if (subtitleTracks.any { it.id == id }) pendingSubtitleId = id
+            return@post
+        }
+        selectSubtitles(group, id)
+    }
+
+    private fun selectSubtitles(group: Tracks.Group, id: Int) {
+        val p = player ?: return
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0)).build()
+        selectedSubtitleId = id
+        noteChange()
+    }
+
+    /** The text group a skinema id names: a group index, or a side-loaded file's tagged id. */
+    private fun subtitleGroup(id: Int, tracks: Tracks): Tracks.Group? {
+        val groups = tracks.groups
+        if (id >= 0) return groups.getOrNull(id)?.takeIf { it.type == C.TRACK_TYPE_TEXT }
+        val tag = EXTERNAL_PREFIX + (-id)
+        return groups.firstOrNull { it.type == C.TRACK_TYPE_TEXT && it.getTrackFormat(0).id?.endsWith(tag) == true }
+    }
+
+    actual val activeSubtitleTrack: Int? get() = selectedSubtitleId
+
+    actual fun acquireSubtitles(): SubtitleOverlay? = synchronized(overlayLock) {
+        if (!overlayFresh) return null
+        overlayFresh = false
+        overlay
+    }
+
+    actual fun setSubtitleCanvasSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        if (width == canvasWidth && height == canvasHeight) return
+        canvasWidth = width
+        canvasHeight = height
+        post { if (selectedSubtitleId != null) publishCues() }
+    }
+
+    /** The cues on screen, drawn at the announced canvas size or, before one, the video's own. */
+    private fun publishCues() {
+        val width = canvasWidth.takeIf { it > 0 } ?: videoWidth
+        val height = canvasHeight.takeIf { it > 0 } ?: videoHeight
+        val next = CueRasterizer.rasterize(currentCues, width, height)
+        synchronized(overlayLock) {
+            next.generation = ++overlayGeneration
+            overlay = next
+            overlayFresh = true
+        }
+        noteChange()
+    }
 
     // -- Lifecycle --------------------------------------------------------------------
 
@@ -647,7 +780,19 @@ actual class VideoPlayer actual constructor(
         handler.post { open(path, explicitClock, sink, audioTrack, startPaused) }
     }
 
-    private fun mediaItem(path: Path) = MediaItem.fromUri(Uri.fromFile(path.toFile()))
+    /** The file, with every side-loaded subtitle file attached under its tagged id. */
+    private fun mediaItem(path: Path): MediaItem = MediaItem.Builder()
+        .setUri(Uri.fromFile(path.toFile()))
+        .setSubtitleConfigurations(
+            externals.map { e ->
+                MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(e.path.toFile()))
+                    .setMimeType(e.mime)
+                    .setId(EXTERNAL_PREFIX + (-e.track.id))
+                    .setLabel(e.track.title)
+                    .build()
+            },
+        )
+        .build()
 
     private fun open(path: Path, explicitClock: MediaClock?, sink: PcmSink?, audioTrack: Int?, startPaused: Boolean) {
         if (closing) return
@@ -758,7 +903,17 @@ actual class VideoPlayer actual constructor(
         }
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
+            if (videoSize.width > 0 && videoSize.height > 0) {
+                videoWidth = videoSize.width
+                videoHeight = videoSize.height
+            }
             bridge?.resize(videoSize.width, videoSize.height)
+        }
+
+        override fun onCues(cueGroup: CueGroup) {
+            if (selectedSubtitleId == null) return
+            currentCues = cueGroup.cues
+            publishCues()
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -769,7 +924,7 @@ actual class VideoPlayer actual constructor(
                 val f = g.getTrackFormat(0)
                 AudioTrack(
                     streamIndex = i,
-                    language = f.language?.takeIf { it != "und" },
+                    language = threeLetterLanguage(f.language),
                     title = f.label,
                     channels = f.channelCount.coerceAtLeast(0),
                     sampleRate = f.sampleRate.coerceAtLeast(0),
@@ -780,6 +935,26 @@ actual class VideoPlayer actual constructor(
             pendingAudioTrack?.let { wanted ->
                 pendingAudioTrack = null
                 if (wanted != selectedAudioTrack) selectAudioTrack(wanted)
+            }
+            embeddedSubtitles = groups.mapIndexedNotNull { i, g ->
+                if (g.type != C.TRACK_TYPE_TEXT) return@mapIndexedNotNull null
+                val f = g.getTrackFormat(0)
+                if (f.id?.contains(EXTERNAL_PREFIX) == true) return@mapIndexedNotNull null
+                val mime = f.sampleMimeType ?: f.codecs ?: "text"
+                SubtitleTrack(
+                    id = i, streamIndex = i, language = threeLetterLanguage(f.language), title = f.label,
+                    codecName = mime, isText = mime !in BITMAP_SUBTITLES,
+                    isDefault = f.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0,
+                    isForced = f.selectionFlags and C.SELECTION_FLAG_FORCED != 0,
+                )
+            }
+            // A frameless player takes no subtitles, as on the desktop: there is no picture to lay text over.
+            subtitleTracks = if (hasVideo) embeddedSubtitles + externals.map { it.track } else emptyList()
+            pendingSubtitleId?.let { wanted ->
+                subtitleGroup(wanted, tracks)?.let { group ->
+                    pendingSubtitleId = null
+                    selectSubtitles(group, wanted)
+                }
             }
         }
 
@@ -860,6 +1035,32 @@ actual class VideoPlayer actual constructor(
         const val TICK_MILLIS = 100L
         const val UNREAD_NANOS = 2_000_000_000L
         const val RELEASE_MAP_LIMIT = 64
+
+        /** Tags a side-loaded subtitle file's format id, so its group can be found again. */
+        const val EXTERNAL_PREFIX = "skinema-external-"
+
+        /** The subtitle types Media3 decodes to pictures rather than text. */
+        val BITMAP_SUBTITLES = setOf(MimeTypes.APPLICATION_PGS, MimeTypes.APPLICATION_DVBSUBS, MimeTypes.APPLICATION_VOBSUB)
+
+        /**
+         * Media3 normalises a track's language to a BCP 47 tag ("en"), where
+         * the desktop reports the container's own three-letter ISO 639 tag
+         * ("eng"). Turned back into three letters so shared code reads one
+         * form on both. The platform gives the terminology code, so a file
+         * tagged with a bibliographic one ("ger") reads "deu" here.
+         */
+        fun threeLetterLanguage(tag: String?): String? {
+            if (tag.isNullOrBlank() || tag == "und") return null
+            return runCatching { Locale.forLanguageTag(tag).isO3Language }.getOrNull()?.takeIf { it.isNotEmpty() } ?: tag
+        }
+
+        fun subtitleMimeFor(file: Path): String? = when (file.fileName?.toString()?.substringAfterLast('.')?.lowercase()) {
+            "srt" -> MimeTypes.APPLICATION_SUBRIP
+            "ass", "ssa" -> MimeTypes.TEXT_SSA
+            "vtt" -> MimeTypes.TEXT_VTT
+            "ttml", "dfxp" -> MimeTypes.APPLICATION_TTML
+            else -> null
+        }
         const val CLOSE_BUDGET_MILLIS = 3_000L
 
         // AudioFormat constants that arrive at API 31, named for the floor of 29.

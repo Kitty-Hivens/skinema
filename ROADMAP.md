@@ -1586,6 +1586,28 @@ README once the library is usable.
   draw side. Updates outpacing draws, which is a window drawing slowly, is the
   case that exposes it (four frames and a stall, against sixty).
 
+  Subtitles on the Android player take the desktop's shape end to end:
+  embedded tracks listed off Media3's tracks under the same numbering as the
+  sound tracks, side-loaded files under negative ids, and Media3's cues drawn
+  into the same `SubtitleOverlay` the desktop publishes, at the size the
+  surface announces, so the surface composites them with no branch of its
+  own. Text is laid out with the platform's text engine, white over a dark
+  outline, at the cue's own size and place or the convention renderers share;
+  bitmap cues are scaled into their rect. Three differences are stated rather
+  than hidden. ASS styling goes no further than Media3's parser keeps
+  (position, alignment, size): no per-run fonts, karaoke or vector drawing,
+  which is libass's and stays the desktop's. A side-loaded file is attached
+  by preparing the item again at the current position, so the sound pauses
+  for as long as that takes. And closed captions are not offered: the
+  desktop finds CEA-608 in the bitstream lazily, and Media3 surfaces it only
+  for containers that declare it. Track languages come back in three letters,
+  because Media3 normalises them to two and shared code should read one form;
+  the platform gives the terminology code, so "ger" reads "deu".
+
+  Six device tests cover it, each mutation run on its own once two of them
+  turned out to share a test whose first assertion fell before the second
+  could.
+
   `skinema-demo-android` is the device harness, the desktop demo's
   counterpart. Watched on the phone: H.264 on the hardware decoder, a 1280x720
   AV1 file on the software one because that SoC has no AV1 block, and

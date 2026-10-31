@@ -76,6 +76,14 @@ abstract class AndroidFixtures : DefaultTask() {
             "-filter_complex", "hstack", "-c:v", "libx264", "-pix_fmt", "yuv420p",
         )
         ffmpeg("split-rot90.mp4", "-display_rotation", "90", "-i", dir.resolve("split.mp4").path, "-c", "copy")
+        // Two cues with a gap between them, so a clear is observable as well
+        // as a cue: side-loaded as it is, and muxed into the two containers
+        // that carry text tracks most often.
+        val srt = dir.resolve("subs.srt")
+        srt.writeText("1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:00:02,000 --> 00:00:04,000\nWorld\n\n")
+        val long = dir.resolve("long-with-sound.mp4").path
+        ffmpeg("subs.mkv", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "srt", "-metadata:s:s:0", "language=eng")
+        ffmpeg("subs-movtext.mp4", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text")
     }
 }
 
