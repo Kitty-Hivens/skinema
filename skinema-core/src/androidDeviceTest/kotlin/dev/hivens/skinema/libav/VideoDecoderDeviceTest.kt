@@ -124,6 +124,24 @@ class VideoDecoderDeviceTest {
     }
 
     @Test
+    fun imagesOpenAsFramesAnimatedOrStill() {
+        for (name in listOf("anim.gif", "anim.apng", "anim.webp")) {
+            VideoDecoder.open(DeviceFixtures.path(name), HwAccel.AUTO).use { d ->
+                assertEquals(10, decodeAll(d).size, "$name frames")
+                assertEquals(1_000_000_000L, d.durationNanos(), "$name duration")
+                assertFalse(d.hardwareActive())
+            }
+        }
+        VideoDecoder.open(DeviceFixtures.path("still.jpg"), HwAccel.AUTO).use { d ->
+            assertEquals(1, decodeAll(d).size)
+            assertEquals(64 to 48, d.videoSize())
+        }
+        VideoDecoder.open(DeviceFixtures.memorySource("anim.webp"), HwAccel.AUTO).use { assertEquals(10, decodeAll(it).size) }
+        val e = assertFailsWith<LibavException> { VideoDecoder.open(DeviceFixtures.path("anim.gif"), HwAccel.REQUIRE).close() }
+        assertTrue("REQUIRE" in e.message.orEmpty())
+    }
+
+    @Test
     fun closeIsIdempotent() {
         val d = VideoDecoder.open(DeviceFixtures.path("red-h264.mp4"), HwAccel.AUTO)
         d.close()

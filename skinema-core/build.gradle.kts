@@ -83,6 +83,41 @@ abstract class AndroidFixtures : DefaultTask() {
         srt.writeText("1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:00:02,000 --> 00:00:04,000\nWorld\n\n")
         val long = dir.resolve("long-with-sound.mp4").path
         ffmpeg("subs.mkv", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "srt", "-metadata:s:s:0", "language=eng")
+        // The three animated image formats, ten frames at 10 fps each, for the
+        // Android frame source.
+        val anim = arrayOf("-f", "lavfi", "-i", "testsrc2=s=160x120:r=10:d=1")
+        ffmpeg("anim.gif", *anim, "-loop", "0")
+        ffmpeg("anim.apng", *anim, "-plays", "0", "-f", "apng")
+        ffmpeg("anim.webp", *anim, "-c:v", "libwebp_anim", "-loop", "0", "-lossless", "1")
+        // Red, green, blue, a tenth of a second each: what a frame source has
+        // to get right (order, timing, colour) readable off three frames.
+        val rgb = arrayOf(
+            "-f", "lavfi", "-i", "color=c=red:s=64x48:r=10:d=0.1",
+            "-f", "lavfi", "-i", "color=c=lime:s=64x48:r=10:d=0.1",
+            "-f", "lavfi", "-i", "color=c=blue:s=64x48:r=10:d=0.1",
+            "-filter_complex", "[0][1][2]concat=n=3:v=1",
+        )
+        // A palette built from the frames, since GIF's default one has two bits
+        // of blue and turns pure blue into 170; and passthrough, or the
+        // constant-rate logic drops the concat's last frame and the file holds two.
+        ffmpeg(
+            "rgb.gif", *rgb.dropLast(2).toTypedArray(),
+            "-filter_complex", "[0][1][2]concat=n=3:v=1,split[a][b];[a]palettegen[p];[b][p]paletteuse",
+            "-loop", "0", "-fps_mode", "passthrough",
+        )
+        ffmpeg("rgb.apng", *rgb, "-plays", "0", "-fps_mode", "passthrough", "-f", "apng")
+        ffmpeg("rgb.webp", *rgb, "-c:v", "libwebp_anim", "-loop", "0", "-lossless", "1", "-fps_mode", "passthrough")
+        // The tenth frame of each testsrc2 animation as ffmpeg composes it, raw
+        // RGBA: the reference the Android composer is held to, on files whose
+        // frames depend on the ones before them.
+        for (format in listOf("gif", "apng", "webp")) {
+            ffmpeg(
+                "anim-$format-last.rgba", "-i", dir.resolve("anim.$format").path,
+                "-vf", "select=eq(n\\,9)", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba",
+            )
+        }
+        ffmpeg("still.jpg", "-f", "lavfi", "-i", "color=c=red:s=64x48", "-frames:v", "1")
+        ffmpeg("still.png", "-f", "lavfi", "-i", "color=c=blue:s=64x48", "-frames:v", "1")
         ffmpeg("subs-movtext.mp4", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text")
     }
 }

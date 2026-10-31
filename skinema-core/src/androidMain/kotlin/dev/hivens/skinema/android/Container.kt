@@ -30,6 +30,38 @@ internal sealed interface Input : AutoCloseable {
     override fun close() {
         if (this is Source) cursor.source.close()
     }
+
+    /** Up to [n] of the input's first bytes, for telling an image from a video. */
+    fun head(n: Int): ByteArray = when (this) {
+        is File -> java.io.FileInputStream(path.toFile()).use { it.readNBytes(n) }
+        is Source -> {
+            val buffer = ByteArray(n)
+            var got = 0
+            while (got < n) {
+                val read = cursor.readAt(got.toLong(), buffer, got, n - got)
+                if (read <= 0) break
+                got += read
+            }
+            buffer.copyOf(got)
+        }
+    }
+
+    /** The whole input in memory: what an image is read from. */
+    fun readAll(): ByteArray = when (this) {
+        is File -> java.nio.file.Files.readAllBytes(path)
+        is Source -> {
+            val out = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(64 * 1024)
+            var at = 0L
+            while (true) {
+                val read = cursor.readAt(at, buffer, 0, buffer.size)
+                if (read <= 0) break
+                out.write(buffer, 0, read)
+                at += read
+            }
+            out.toByteArray()
+        }
+    }
 }
 
 /**
