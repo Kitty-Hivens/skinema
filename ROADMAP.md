@@ -1414,6 +1414,73 @@ README once the library is usable.
   player with sound on that paused when its window was hidden now plays its
   sound on. The guides say so and the release notes have to.
 
+- **M23: Android, on the platform's own engine (decided 2026-10-31).** The
+  primary consumer is getting an Android build, and on it the moving
+  backgrounds, the pack banners and the video component draw nothing, while
+  its music plays through a Media3 wiring of its own written in the
+  meantime. The consumer wants one API on both platforms rather than two
+  implementations to keep in step, so the charter grows a second platform.
+  Recorded before any code, as M10 was, so the decisions below are not
+  re-argued later.
+
+  **The engine is Media3, not FFmpeg.** The core cannot run on ART at all:
+  Android implements no `java.lang.foreign`, and every binding here is FFM.
+  JNI would be acceptable on Android, so this is not a ruling against native
+  code. It is that the phone already ships the better engine: MediaCodec
+  decodes on dedicated hardware on every device, at a fraction of the power a
+  software FFmpeg decode costs on the same battery, and Media3 (Apache-2.0,
+  free) paces, syncs and renders on top of it. Porting the FFmpeg pipeline
+  would buy format breadth the consumer's files do not need at a cost its
+  users would feel. JNI stays available for a specific gap the platform
+  cannot fill, decided gap by gap, because native code on Android is also
+  bytes in an AAR counted against the Central quota (M17). The known
+  candidates: animated WebP and APNG, libass-grade ASS styling, writing mkv,
+  and the legacy containers MediaCodec has no extractor for. Until a real
+  file needs one, each is a documented limitation rather than a native
+  library.
+
+  **One API, two engines, through Kotlin Multiplatform.** `skinema-core` and
+  `skinema-compose` become multiplatform with a `jvm` target (the desktop,
+  unchanged) and an `android` target. The shared source set is shared by two
+  JVM-family targets only, so it keeps JDK types such as `Path` and
+  `AutoCloseable`, which is what lets the consumer move its existing calls
+  into shared code without rewriting them. The value types (state, tracks,
+  chapters, the overlay, the PCM types, the encode configs, the exceptions)
+  move there as they are. `VideoPlayer`, `VideoDecoder`, `AudioDecoder` and
+  `MediaWriter` become `expect` classes, and the desktop `actual` of each is
+  the existing class: the player is three thousand lines of concurrency with
+  tests written against it, and leaving it in place beats routing forty
+  members through a facade. `Transcoder` is already written against those
+  four classes' public surface, so it moves to shared code and runs on both.
+
+  Package names stay, `dev.hivens.skinema.libav` included, although nothing
+  on Android is libav: renaming would break every consumer's imports for the
+  sake of a word. The published coordinates stay too, since Gradle resolves
+  the platform variant from module metadata. `skinema-skiko` stays desktop
+  only, and `skinema-natives` is not touched: Android needs no bundle.
+
+  **What a parameter cannot mean on Android, it says.** A consumer clock
+  (`explicitClock`) is refused by name, because ExoPlayer takes no external
+  media clock to sync video against. A VAAPI device path is ignored and
+  documented as such. The FFmpeg encoder names are mapped onto MediaCodec
+  types, and a codec the device has no encoder for is refused by name, as on
+  the desktop. Family names (`h264`, `hevc`, `av1` and the audio set) become
+  valid on both platforms, so shared code can ask for a codec without
+  knowing which platform picks the encoder.
+
+  The network guarantee carries over by construction: the Android player is
+  built on a file data source and the `MediaSource` adapter only, so no
+  network data source is wired and the library needs no INTERNET permission.
+  Media3 carries no telemetry, though it does bring Guava and androidx with
+  it, which the README has to say.
+
+  The work runs in phases, each recorded below when it lands: the build
+  restructure with no change in behaviour, the shared API, the Android
+  decoders, the Android player, Compose, subtitles, writing, animated
+  images, chapters, then CI and the documents. Acceptance is the consumer
+  itself: its shared code playing backgrounds, banners and music through
+  this API on a phone, with its own Media3 wiring deleted.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
