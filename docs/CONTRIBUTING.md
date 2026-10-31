@@ -8,8 +8,8 @@ sitting and maintain it years from now. Keep that bar.
 
 ```
 ./gradlew build          # compile + all modules' tests
-./gradlew :skinema-core:test
-./gradlew compileKotlin   # quick compile check
+./gradlew :skinema-core:jvmTest
+./gradlew compileKotlinJvm   # quick compile check
 ```
 
 Toolchain: build on **JDK 25** (the foojay resolver fetches one if it

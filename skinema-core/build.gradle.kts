@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.maven.publish)
 }
 
@@ -10,8 +10,16 @@ kotlin {
     // The floor is 22: java.lang.foreign went final there and the bindings
     // use nothing newer.
     jvmToolchain(25)
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_22)
+    jvm {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_22)
+        }
+    }
+
+    sourceSets {
+        jvmTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
     }
 }
 
@@ -45,11 +53,14 @@ tasks.withType<JavaCompile>().configureEach {
 // a published module's constraint. `resolutionStrategy.force` works too. The
 // runtime still refuses a mismatched soname major either way, so overriding
 // buys a different bundle, not a different set of majors.
+//
+// On the jvm target's runtime only. The natives are the desktop engine, and a
+// target that does not load them must not carry a constraint naming them.
 val nativesVersion: String = providers.gradleProperty("nativesVersion").get()
 
 dependencies {
     constraints {
-        runtimeOnly("dev.hivens:skinema-natives") {
+        add("jvmMainRuntimeOnly", "dev.hivens:skinema-natives") {
             version { strictly(nativesVersion) }
             because(
                 "this skinema version binds the soname majors that skinema-natives $nativesVersion carries; " +
@@ -57,10 +68,9 @@ dependencies {
             )
         }
     }
-    testImplementation(libs.kotlin.test)
 }
 
-tasks.test {
+tasks.named<Test>("jvmTest") {
     useJUnitPlatform()
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }

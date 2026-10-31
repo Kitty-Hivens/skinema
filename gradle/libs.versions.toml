@@ -22,6 +22,7 @@ skiko-awt          = { group = "org.jetbrains.skiko", name = "skiko-awt", versio
 
 [plugins]
 kotlin-jvm              = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-multiplatform    = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlin-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose                 = { id = "org.jetbrains.compose", version.ref = "compose" }
 maven-publish           = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }

@@ -145,7 +145,7 @@ jobs:
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
-          # glibc runner cannot answer it. Scoped to :skinema-core:test rather
+          # glibc runner cannot answer it. Scoped to :skinema-core:jvmTest rather
           # than the whole build for the same reason the natives workflow is:
           # skiko ships no musl native, so :skinema-skiko cannot run there.
           - os: ubuntu-latest
@@ -341,7 +341,7 @@ jobs:
               apk add --no-cache bash openjdk25 ffmpeg font-dejavu fontconfig libva libstdc++ >/dev/null
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
               export SKINEMA_LIBAV_DIR=/src/libav-bundle
-              ./gradlew :skinema-core:test
+              ./gradlew :skinema-core:jvmTest
             '
 
       - name: Build and test
@@ -371,6 +371,10 @@ jobs:
           # both linux-x64 jobs uploaded under one name, and while the upload
           # allows it, the pair is then impossible to tell apart.
           name: test-results-${{ matrix.platform }}-${{ matrix.tier }}
-          path: "**/build/test-results/test/*.xml"
+          # Both layouts: the multiplatform modules report under jvmTest, the
+          # plain JVM ones (skiko) under test.
+          path: |
+            **/build/test-results/test/*.xml
+            **/build/test-results/jvmTest/*.xml
           if-no-files-found: warn
           retention-days: 14

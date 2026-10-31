@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.maven.publish)
     alias(libs.plugins.kotlin.compose.compiler)
     alias(libs.plugins.compose)
@@ -21,8 +21,22 @@ val skikoTarget = run {
 
 kotlin {
     jvmToolchain(25)
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_22)
+    jvm {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_22)
+        }
+    }
+
+    sourceSets {
+        jvmMain.dependencies {
+            api(project(":skinema-core"))
+            implementation(project(":skinema-skiko"))
+            implementation(libs.compose.runtime)
+            implementation(libs.compose.foundation)
+        }
+        jvmTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
     }
 }
 
@@ -31,20 +45,14 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
-    api(project(":skinema-core"))
-    implementation(project(":skinema-skiko"))
-    implementation(libs.compose.runtime)
-    implementation(libs.compose.foundation)
-
-    testImplementation(libs.kotlin.test)
     // The headless scene renderer draws through Skia, so the tests need
     // skiko's native for the host -- the same test-only arrangement
     // skinema-skiko already makes, rather than dragging the whole desktop
     // bundle in for one renderer. Consumers bring their own through Compose.
-    testRuntimeOnly("org.jetbrains.skiko:skiko-awt-runtime-$skikoTarget:${libs.versions.skiko.get()}")
+    add("jvmTestRuntimeOnly", "org.jetbrains.skiko:skiko-awt-runtime-$skikoTarget:${libs.versions.skiko.get()}")
 }
 
-tasks.test {
+tasks.named<Test>("jvmTest") {
     useJUnitPlatform()
 }
 

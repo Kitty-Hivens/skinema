@@ -5,6 +5,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.kotlin.multiplatform) apply false
     alias(libs.plugins.maven.publish) apply false
     alias(libs.plugins.kover)
 }
@@ -51,6 +52,9 @@ allprojects {
 // this" is.
 subprojects {
     plugins.withId("org.jetbrains.kotlin.jvm") {
+        apply(plugin = "org.jetbrains.kotlinx.kover")
+    }
+    plugins.withId("org.jetbrains.kotlin.multiplatform") {
         apply(plugin = "org.jetbrains.kotlinx.kover")
     }
 
