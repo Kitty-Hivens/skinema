@@ -223,6 +223,15 @@ class VideoPlayerDeviceTest {
     }
 
     @Test
+    fun aSwitchStraightAfterConstructionKeepsThePictureShape() {
+        val p = player("red-h264.mp4", loop = true)
+        p.setSource(DeviceFixtures.path("green-vp9.webm"))
+        awaitTrue(what = "the switch") { p.source.fileName.toString() == "green-vp9.webm" || p.sourceFailure != null }
+        assertNull(p.sourceFailure, "a picture player took a picture file")
+        assertNotNull(awaitFrame(p) { val c = centre(it); c[1] > 200 && c[0] < 40 })
+    }
+
+    @Test
     fun stepsMoveOneFrameEachWayAndStayPaused() {
         val p = player("long-with-sound.mp4", startPaused = true)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }

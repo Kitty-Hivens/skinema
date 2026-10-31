@@ -45,7 +45,9 @@ import dev.hivens.skinema.android.ImageFrameSource
 import dev.hivens.skinema.android.ImageFrames
 import dev.hivens.skinema.android.Input
 import dev.hivens.skinema.android.PcmSinkAudioSink
+import dev.hivens.skinema.android.firstTrack
 import dev.hivens.skinema.android.layoutFor
+import dev.hivens.skinema.android.openExtractor
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.PcmEncoding
 import dev.hivens.skinema.audio.PcmFormat
@@ -198,7 +200,6 @@ actual class VideoPlayer actual constructor(
     actual var tags: Map<String, String> = emptyMap()
         private set
 
-    /** Empty: the platform does not read chapters. */
     @Volatile
     actual var chapters: List<Chapter> = emptyList()
         private set
@@ -661,8 +662,10 @@ actual class VideoPlayer actual constructor(
         }
     }
 
-    actual fun setSource(path: Path) {
-        if (closing) return
+    actual fun setSource(path: Path) = post {
+        // Read on the player thread, behind the open, where the player
+        // knows its shape: a switch asked for straight after construction
+        // would otherwise find a picture player not yet knowing it has one.
         val picture = hasVideo
         decodeWork.execute {
             // Opened and decoded to a first frame before the player touches
@@ -711,6 +714,7 @@ actual class VideoPlayer actual constructor(
                 val p = player ?: buildPlayer()
                 tags = info.tags
                 coverArt = info.coverArt
+                chapters = info.chapters
                 durationNanos = null
                 sampleClock(0L, System.nanoTime(), false)
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
@@ -891,9 +895,11 @@ actual class VideoPlayer actual constructor(
             if (isImageFile(path)) {
                 startClip(path)
             } else {
+                hasVideo = carriesVideo(path)
                 val info = ContainerInfo.read(Input.File(path))
                 tags = info.tags
                 coverArt = info.coverArt
+                chapters = info.chapters
                 val p = buildPlayer()
                 pendingAudioTrack = audioTrack
                 p.setMediaItem(mediaItem(path))
@@ -948,6 +954,20 @@ actual class VideoPlayer actual constructor(
         return p
     }
 
+    /**
+     * Whether [path] has a picture, asked of the extractor at the open rather
+     * than waited for from ExoPlayer's track report, which comes later: the
+     * shape a [setSource] keeps has to be known from the start.
+     */
+    private fun carriesVideo(path: Path): Boolean = runCatching {
+        val extractor = openExtractor(Input.File(path))
+        try {
+            extractor.firstTrack("video/") >= 0
+        } finally {
+            extractor.release()
+        }
+    }.getOrDefault(false)
+
     // -- Image files --------------------------------------------------------------
 
     private fun isImageFile(path: Path): Boolean =
@@ -965,6 +985,7 @@ actual class VideoPlayer actual constructor(
         hardwareActive = false
         durationNanos = c.durationNanos()
         tags = emptyMap()
+        chapters = emptyList()
         coverArt = null
         audioTrackList = emptyList()
         selectedAudioTrack = null

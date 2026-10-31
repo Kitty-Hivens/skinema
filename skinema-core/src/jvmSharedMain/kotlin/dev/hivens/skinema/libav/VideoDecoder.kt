@@ -14,9 +14,11 @@ import java.nio.file.Path
  * On the desktop this is FFmpeg, with the hardware decode [HwAccel] asks for.
  * On Android it is the platform extractor and a MediaCodec decoder, converted
  * on the CPU; timestamps are the extractor's microseconds, so the time base
- * is 1/1000000. Android gives no closed captions ([captionBytes] is null) and
- * no chapters, and a [MediaSource] there must be able to seek, because the
- * platform extractor reads by offset.
+ * is 1/1000000. Android gives no closed captions ([captionBytes] is null),
+ * and a [MediaSource] there must be able to seek, because the platform
+ * extractor reads by offset. The platform reads no chapters, so this library
+ * does: Matroska and WebM chapters, and MP4 and QuickTime chapter tracks or
+ * Nero lists; other containers have none on Android.
  */
 expect class VideoDecoder : FrameSource {
 

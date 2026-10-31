@@ -5,6 +5,7 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import dev.hivens.skinema.Debug
 import dev.hivens.skinema.libav.AudioTrack
+import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.SubtitleTrack
@@ -125,12 +126,13 @@ internal fun MediaExtractor.subtitleTracks(): List<SubtitleTrack> = (0 until tra
 }
 
 /**
- * The container's tags and cover art, read through the platform retriever.
- * It names a fixed set of keys rather than handing the container's own
- * dictionary over, so the tags here are that set under the names the
- * desktop's demuxers use for the same fields.
+ * The container's tags and cover art, read through the platform retriever,
+ * and its chapters, which the platform does not read and [Chapters] does.
+ * The retriever names a fixed set of keys rather than handing the
+ * container's own dictionary over, so the tags here are that set under the
+ * names the desktop's demuxers use for the same fields.
  */
-internal class ContainerInfo(val tags: Map<String, String>, val coverArt: ByteArray?) {
+internal class ContainerInfo(val tags: Map<String, String>, val coverArt: ByteArray?, val chapters: List<Chapter>) {
     companion object {
         private val KEYS = listOf(
             MediaMetadataRetriever.METADATA_KEY_TITLE to "title",
@@ -147,6 +149,7 @@ internal class ContainerInfo(val tags: Map<String, String>, val coverArt: ByteAr
         )
 
         fun read(input: Input): ContainerInfo {
+            val chapters = Chapters.read(input)
             val retriever = MediaMetadataRetriever()
             return try {
                 when (input) {
@@ -156,12 +159,12 @@ internal class ContainerInfo(val tags: Map<String, String>, val coverArt: ByteAr
                 val tags = buildMap {
                     for ((key, name) in KEYS) retriever.extractMetadata(key)?.takeIf { it.isNotBlank() }?.let { put(name, it) }
                 }
-                ContainerInfo(tags, retriever.embeddedPicture)
+                ContainerInfo(tags, retriever.embeddedPicture, chapters)
             } catch (e: Exception) {
                 // Metadata is the optional half of an open: a file whose tags
                 // the retriever cannot read still plays.
                 Debug.trace("reading container metadata of ${input.label}", e)
-                ContainerInfo(emptyMap(), null)
+                ContainerInfo(emptyMap(), null, chapters)
             } finally {
                 runCatching { retriever.release() }
             }

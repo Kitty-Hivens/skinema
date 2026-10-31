@@ -186,7 +186,9 @@ expect class VideoPlayer(
     /**
      * Container chapters; empty when none or while opening.
      *
-     * Always empty on Android for now: the platform reads no chapters.
+     * On Android they are read by this library, since the platform reads
+     * none: Matroska and WebM chapters, and MP4 and QuickTime chapter tracks
+     * or Nero lists. Other containers have none there.
      */
     var chapters: List<Chapter>
         private set

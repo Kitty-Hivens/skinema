@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The platform decoders produce 16-bit integer or float, and more channels
  * than two only where the codec carries them; a 24-bit lossless file comes
  * out as float rather than as 32-bit integer, which carries those 24 bits
- * exactly. Chapters are empty: the platform extractor does not read them.
+ * exactly.
  */
 actual class AudioDecoder private constructor(
     private val input: Input,
@@ -243,7 +243,7 @@ actual class AudioDecoder private constructor(
                 return AudioDecoder(
                     input, extractor, codec, chosen,
                     format.longOrNull(MediaFormat.KEY_DURATION)?.let { it * NANOS_PER_MICRO },
-                    tracks, info.tags, emptyList(), info.coverArt,
+                    tracks, info.tags, info.chapters, info.coverArt,
                 )
             } catch (t: Throwable) {
                 runCatching { extractor.release() }

@@ -1693,6 +1693,37 @@ README once the library is usable.
   poll sees it, so the flag that prevents it guards a one-frame flash a
   surface could draw and no public call can observe.
 
+  Chapters are read on Android too, by a parser here, since neither the
+  platform extractor nor Media3 reads any. Matroska and WebM: the Chapters
+  element among the segment's first children or, written after the
+  clusters as a muxer adding chapters later does, through the seek head;
+  the default edition, its top-level atoms, hidden and disabled ones left
+  out. MP4 and QuickTime: the chapter track a video track names in its
+  `tref`, which Apple's tools write, else the Nero `chpl` list, which mp4v2
+  writes. ffmpeg writes both and libavformat lets the track win, so this
+  does too. Ends a container leaves out are filled as libavformat fills
+  them: the next start, and the duration for the last. Both decoders and
+  the player report them, through a `MediaSource` as well; other containers
+  have none on Android, and the contract says so.
+
+  The fixtures are ffmpeg's own chaptered mp4, mov, mkv and webm, plus that
+  mp4 twice more with one of its two chapter structures renamed out of the
+  way, so each mp4 path is shown to be read on its own. The seek-head path,
+  the edition choice and hidden atoms have no ffmpeg recipe that produces
+  them, so a test builds that Matroska structure byte by byte, in a segment
+  of unknown size. The first device run caught the element reader counting
+  the id's length twice, which every Matroska file showed as no chapters.
+
+  The player test for chapters found a defect in `setSource` on Android.
+  The shape a switch keeps (a picture player takes files with a picture)
+  was read when the call was made, and the player learns it has a picture
+  only from ExoPlayer's track report, which arrives after the prepare. A
+  switch asked for straight after construction therefore found a video
+  player that thought it played sound alone, and refused the video file
+  for carrying no sound. The open now asks the extractor whether the file
+  has a picture, and the switch reads the shape on the player's thread,
+  behind the open, as the desktop's queues behind its own.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

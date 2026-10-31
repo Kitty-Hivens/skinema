@@ -126,6 +126,35 @@ abstract class AndroidFixtures : DefaultTask() {
         )
         ffmpeg("half-red.png", "-f", "lavfi", "-i", "color=c=red@0.5:s=64x48,format=rgba", "-frames:v", "1")
         ffmpeg("subs-movtext.mp4", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text")
+        // Two titled chapters over a second of picture, in each container that
+        // carries them, read back against what was written. The .m4a is sound
+        // alone, for the audio decoder.
+        val meta = dir.resolve("chapters.txt")
+        meta.writeText(
+            ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=500\ntitle=Intro\n" +
+                "[CHAPTER]\nTIMEBASE=1/1000\nSTART=500\nEND=1000\ntitle=Drop\n",
+        )
+        for (ext in listOf("mp4", "mov", "mkv", "webm")) {
+            val codec = if (ext == "webm") arrayOf("-c:v", "libvpx-vp9") else arrayOf("-c:v", "libx264", "-pix_fmt", "yuv420p")
+            ffmpeg(
+                "chapters.$ext", "-f", "lavfi", "-i", "color=c=red:s=64x48:r=10:d=1", "-i", meta.path,
+                "-map", "0:v", "-map_chapters", "1", *codec,
+            )
+        }
+        ffmpeg("chapters.m4a", "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=1", "-i", meta.path, "-map", "0:a", "-map_chapters", "1", "-c:a", "aac")
+        // Nero's list alone, and the QuickTime track alone, from the mp4 with
+        // the other one renamed out of the way: a reader that finds either one
+        // has to be reading that one.
+        val both = dir.resolve("chapters.mp4").readBytes()
+        dir.resolve("chapters-nero.mp4").writeBytes(renamed(both, "tref", "free"))
+        dir.resolve("chapters-track.mp4").writeBytes(renamed(both, "chpl", "free"))
+    }
+
+    /** [bytes] with the first box named [from] renamed to [to], size unchanged: a box a reader then skips. */
+    private fun renamed(bytes: ByteArray, from: String, to: String): ByteArray {
+        val name = from.toByteArray(Charsets.ISO_8859_1)
+        val at = (4 until bytes.size - 4).first { i -> (0 until 4).all { bytes[i + it] == name[it] } }
+        return bytes.copyOf().also { to.toByteArray(Charsets.ISO_8859_1).copyInto(it, at) }
     }
 }
 

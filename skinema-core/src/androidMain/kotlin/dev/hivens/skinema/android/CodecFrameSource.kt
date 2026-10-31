@@ -63,7 +63,7 @@ internal class CodecFrameSource private constructor(
 
     override fun durationNanos(): Long? = declaredDuration ?: observedDuration
     override fun tags(): Map<String, String> = info.tags
-    override fun chapters(): List<Chapter> = emptyList()
+    override fun chapters(): List<Chapter> = info.chapters
     override fun coverArt(): ByteArray? = info.coverArt
     override fun subtitleTracks(): List<SubtitleTrack> = subtitles
     override fun captionBytes(): ByteArray? = null
