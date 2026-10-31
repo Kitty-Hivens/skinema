@@ -1613,6 +1613,31 @@ README once the library is usable.
   turned out to share a test whose first assertion fell before the second
   could.
 
+  Writing works on Android, and the `Transcoder` with it, unchanged: it was
+  shared code written against the decoders and the writer, so it ran on the
+  Android ones the first time. `MediaWriter` there is the platform's
+  MediaCodec encoders and MediaMuxer, frames converted to YUV on the CPU in
+  the matrix the desktop picks for the geometry and the file tagged with it;
+  mp4, webm, ogg and 3gp through the muxer, .flac and .wav written here, and
+  Matroska refused by name because the platform does not write it. The muxer
+  takes every track before its first sample, so packets an encoder hands out
+  before the last track exists are held and written once it starts.
+
+  Codec family names (`h264`, `hevc`, `av1`, `vp9`, `vp8`, `aac`, `opus`,
+  `flac`) are valid on both platforms now, so shared code can ask for a codec
+  without knowing which platform picks the encoder. On the desktop a family
+  tries the hardware encoder first and the bundle's software one after, which
+  is only safe because a refused open leaves nothing behind; an encoder named
+  outright still fails closed.
+
+  Two of the first round's tests passed against the defects they were written
+  for, and the reasons are worth keeping. A colour round trip proves the
+  matrix only for a colour the matrices disagree on: the blue first used came
+  back six levels off through the wrong one, inside the tolerance, where a
+  saturated green comes back twenty-eight off. And the muxer's holding path
+  never ran while sound and pictures alternated, since both tracks then exist
+  before the first packet; only every picture before any sound reaches it.
+
   `skinema-demo-android` is the device harness, the desktop demo's
   counterpart. Watched on the phone: H.264 on the hardware decoder, a 1280x720
   AV1 file on the software one because that SoC has no AV1 block, and

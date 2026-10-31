@@ -493,7 +493,7 @@ actual class MediaWriter private constructor(
          * encoder or any setup step is refused.
          */
         actual fun open(path: Path, video: VideoEncodeConfig, audio: AudioEncodeConfig?): MediaWriter =
-            openInternal(path, video, audio)
+            openResolved(path, video, audio)
 
         /**
          * Opens [path] for [audio] alone: a file with no picture in it, which
@@ -507,7 +507,53 @@ actual class MediaWriter private constructor(
          * [writeFrame] refuses by name.
          */
         actual fun open(path: Path, audio: AudioEncodeConfig): MediaWriter =
-            openInternal(path, null, audio)
+            openResolved(path, null, audio)
+
+        /**
+         * The encoders a family name stands for, best first: the hardware one
+         * where the bundle carries it, then the software one. Any other name is
+         * an encoder name and stands for itself.
+         */
+        private val FAMILIES = mapOf(
+            "h264" to listOf("h264_vaapi", "libx264"),
+            "hevc" to listOf("hevc_vaapi", "libx265"),
+            "av1" to listOf("libsvtav1"),
+            "vp9" to listOf("libvpx-vp9"),
+            "vp8" to listOf("libvpx"),
+            "opus" to listOf("libopus"),
+        )
+
+        internal fun encoderCandidates(name: String): List<String> = FAMILIES[name] ?: listOf(name)
+
+        /**
+         * Opens with the first encoders a family name stands for that will open.
+         *
+         * An encoder named outright is opened as it is, so a hardware encoder
+         * asked for by name still fails closed. A family name is the caller
+         * leaving the choice here, and a hardware encoder that cannot open on
+         * this machine is then a reason to try the next, not to fail: a failed
+         * open leaves nothing behind, the file included, so the next attempt
+         * starts clean.
+         */
+        private fun openResolved(path: Path, video: VideoEncodeConfig?, audio: AudioEncodeConfig?): MediaWriter {
+            val videoNames = video?.let { encoderCandidates(it.codecName) } ?: listOf(null)
+            val audioNames = audio?.let { encoderCandidates(it.codecName) } ?: listOf(null)
+            if (videoNames.size == 1 && audioNames.size == 1) {
+                return openInternal(path, video?.withCodec(videoNames[0]!!), audio?.withCodec(audioNames[0]!!))
+            }
+            val refusals = mutableListOf<String>()
+            for (v in videoNames) {
+                for (a in audioNames) {
+                    try {
+                        return openInternal(path, v?.let { video?.withCodec(it) }, a?.let { audio?.withCodec(it) })
+                    } catch (e: LibavException) {
+                        refusals += "${listOfNotNull(v, a).joinToString(" + ")}: ${e.message}"
+                    }
+                }
+            }
+            val asked = listOfNotNull(video?.codecName, audio?.codecName).joinToString(" + ")
+            throw LibavException("no encoder on this machine for $asked (${refusals.joinToString("; ")})")
+        }
 
         private fun openInternal(path: Path, video: VideoEncodeConfig?, audio: AudioEncodeConfig?): MediaWriter {
             // Unreachable through either overload above, which is the point of
