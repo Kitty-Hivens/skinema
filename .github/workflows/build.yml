@@ -408,13 +408,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       # The fixtures are generated on the host by the CLI, as the desktop's
-      # are: x264, libvpx, libwebp and libaom, which Ubuntu's build carries.
+      # are. Not Ubuntu's build: it is 6.1, which cannot decode an animated
+      # WebP, and the composition reference for that format is ffmpeg's own
+      # decode of one. A static build on the project's FFmpeg line instead,
+      # which carries x264, libvpx, libwebp and libaom.
       - name: Install ffmpeg CLI (fixtures)
         run: |
-          sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 update
-          sudo apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 install -y ffmpeg
+          curl -fsSL --retry 3 -o ffmpeg.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf ffmpeg.tar.xz -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -hide_banner -version | head -1
 
       # Without KVM the emulator falls back to software emulation and takes
       # minutes to boot instead of seconds.
