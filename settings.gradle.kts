@@ -40,3 +40,6 @@ include(":skinema-skiko")
 include(":skinema-compose")
 include(":skinema-demo")
 include(":skinema-natives")
+// The Android demo needs an Android SDK to configure; a run that opts out
+// of the Android target with -Pskinema.android=false leaves it out too.
+if (providers.gradleProperty("skinema.android").orNull != "false") include(":skinema-demo-android")

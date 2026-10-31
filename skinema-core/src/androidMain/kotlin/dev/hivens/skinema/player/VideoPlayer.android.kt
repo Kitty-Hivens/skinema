@@ -3,6 +3,8 @@
 package dev.hivens.skinema.player
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.ColorSpace
 import android.media.Image
 import android.media.MediaCodecList
 import android.net.Uri
@@ -281,6 +283,11 @@ actual class VideoPlayer actual constructor(
     private var latestPts = 0L
     private var fresh = false
 
+    // Images handed out by acquireFrameBitmap and not yet given back. A
+    // superseded image is closed (returned to the reader) only once nothing
+    // borrows it, so a frame being drawn is never recycled under the draw.
+    private val borrowed = HashSet<Image>()
+
     @Volatile
     private var lastPublishedPts = 0L
 
@@ -306,10 +313,11 @@ actual class VideoPlayer actual constructor(
             releaseToPts.keys.sorted().take(releaseToPts.size - RELEASE_MAP_LIMIT / 2).forEach(releaseToPts::remove)
         }
         synchronized(mailbox) {
-            latest?.close()
+            val old = latest
             latest = image
             latestPts = pts
             fresh = true
+            if (old != null && old !in borrowed) old.close()
         }
         lastPublishedPts = pts
         publishedSinceRead = true
@@ -341,6 +349,42 @@ actual class VideoPlayer actual constructor(
                 it.ptsNanos = latestPts
                 it.rgba = slotBytes
             }
+        }
+    }
+
+    /**
+     * The freshest frame as a hardware [android.graphics.Bitmap], with no copy:
+     * the image the GPU drew is wrapped as it is. Null when nothing newer
+     * arrived since the last call, as [acquireFrame].
+     *
+     * The frame is borrowed. Its image stays out of the player's rotation until
+     * [FrameBitmap.close], so a consumer that keeps one past the next frame
+     * holds a buffer the player cannot reuse, and one that never closes them
+     * stops the picture once the reader runs out. The Compose surface closes
+     * each one as soon as the draw that used it has ended. Android only: the
+     * desktop has no hardware frame to hand out.
+     *
+     * Shares the mailbox with [acquireFrame]: one reader per player, either way.
+     */
+    fun acquireFrameBitmap(): FrameBitmap? {
+        lastAcquireNanos = System.nanoTime()
+        publishedSinceRead = false
+        if (!presentingSaid && !visibilityReported) post { mailboxRead() }
+        synchronized(mailbox) {
+            if (!fresh) return null
+            val image = latest ?: return null
+            fresh = false
+            val buffer = image.hardwareBuffer ?: return null
+            val bitmap = buffer.use { Bitmap.wrapHardwareBuffer(it, ColorSpace.get(ColorSpace.Named.SRGB)) } ?: return null
+            borrowed += image
+            return FrameBitmap(image, bitmap, latestPts, ::giveBack)
+        }
+    }
+
+    private fun giveBack(image: Image) {
+        synchronized(mailbox) {
+            borrowed -= image
+            if (image !== latest) image.close()
         }
     }
 
@@ -792,6 +836,8 @@ actual class VideoPlayer actual constructor(
             synchronized(mailbox) {
                 latest?.close()
                 latest = null
+                borrowed.forEach(Image::close)
+                borrowed.clear()
             }
             decodeWork.shutdownNow()
             synchronized(changeMonitor) {

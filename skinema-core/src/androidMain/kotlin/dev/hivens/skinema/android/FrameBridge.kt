@@ -250,8 +250,12 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     }
 
     companion object {
-        /** Images in the reader: the newest, one a consumer may be drawing, and the next in flight. */
-        const val MAX_IMAGES = 4
+        /**
+         * Images in the reader: the newest, the frame a consumer holds and the
+         * two it drew last (the render thread can still be reading the older
+         * one), and the next in flight.
+         */
+        const val MAX_IMAGES = 5
 
         // x, y, s, t per vertex: a full-screen strip in the standard GL
         // orientation. The SurfaceTexture's transform carries the flip between

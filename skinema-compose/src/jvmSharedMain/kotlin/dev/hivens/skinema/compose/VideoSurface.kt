@@ -11,9 +11,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.skiaCanvas
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CancellationException
@@ -24,10 +25,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
 import dev.hivens.skinema.player.VideoPlayer
-import dev.hivens.skinema.skiko.SubtitleOverlayImage
-import dev.hivens.skinema.skiko.VideoFrameImage
-import org.jetbrains.skia.Rect
-import org.jetbrains.skia.SamplingMode
 import java.util.WeakHashMap
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -128,8 +125,8 @@ fun VideoSurface(
      */
     background: Color? = null,
 ) {
-    val frames = remember(player) { VideoFrameImage() }
-    val subtitles = remember(player) { SubtitleOverlayImage() }
+    val frames = remember(player) { VideoFrameHolder() }
+    val subtitles = remember(player) { SubtitleOverlayHolder() }
     var frameStamp by remember(player) { mutableLongStateOf(0L) }
     var subtitleCanvas by remember(player) { mutableStateOf(0 to 0) }
     // Snapshot state rather than a read in the draw scope, because a failure
@@ -176,14 +173,11 @@ fun VideoSurface(
                     return@Thread
                 }
                 if (stop.get()) return@Thread
-                // Nothing here bounds the images: VideoFrameImage keeps one
-                // superseded frame, the drawing thread's own, and frees the
-                // rest as it publishes. What paces this thread is the permit.
+                // Nothing here bounds the frames: the holder keeps the ones the
+                // drawing side may still be using and frees the rest as it
+                // takes the next. What paces this thread is the permit.
                 try {
-                    val slot = player.acquireFrame()
-                    if (slot != null && frames.update(slot.width, slot.height, slot.rgba) != null) {
-                        rasterStamp.incrementAndGet()
-                    }
+                    if (frames.update(player)) rasterStamp.incrementAndGet()
                 } catch (t: Throwable) {
                     rasterFailure.set(t)
                     return@Thread
@@ -250,11 +244,7 @@ fun VideoSurface(
                 try {
                     rasterFailure.get()?.let { throw it }
                     player.acquireSubtitles()?.let { overlay ->
-                        subtitles.update(
-                            overlay.patches.map {
-                                SubtitleOverlayImage.PatchPixels(it.x, it.y, it.width, it.height, it.rgba)
-                            },
-                        )
+                        subtitles.update(overlay)
                         subtitleCanvas = overlay.canvasWidth to overlay.canvasHeight
                         frameStamp++
                         invalidated = true
@@ -262,9 +252,10 @@ fun VideoSurface(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (t: Throwable) {
-                    // Both updates raster-copy into native memory -- 8 MB a frame
-                    // at 1080p, four times that at 4K -- and Skia answers a
-                    // refusal by throwing. Left to travel, that throw goes into
+                    // Both updates allocate per frame -- on the desktop a raster
+                    // copy into native memory, 8 MB at 1080p and four times that
+                    // at 4K, on Android a bitmap per overlay patch -- and either
+                    // answers a refusal by throwing. Left to travel, that throw goes into
                     // the Recomposer's effect job and cancels every LaunchedEffect
                     // in the composition, not only this surface's, while the
                     // player it came from still reports itself Playing. Stop
@@ -293,7 +284,7 @@ fun VideoSurface(
                     // close() calls that remain are teardowns -- the dispose below
                     // joins the raster thread first, and the failure path stops
                     // drawing.
-                    if (!nowSubtitled) subtitles.update(emptyList())
+                    if (!nowSubtitled) subtitles.clear()
                     frameStamp++
                     invalidated = true
                 }
@@ -398,11 +389,10 @@ fun VideoSurface(
         // one stayed painted -- and a consumer drawing its fallback anywhere
         // but on top of the surface never got to show it.
         if (failed) return@Canvas
-        // The drawing thread's half of the image handover: what the raster
-        // thread retired before this draw began is finished with, because
-        // the draw that was using it has ended.
-        frames.reclaim()
-        val image = frames.image ?: return@Canvas
+        // The drawing thread's half of the handover: what the raster thread
+        // retired before this draw began is finished with, because the draw
+        // that was using it has ended.
+        val frame = frames.frameForDraw() ?: return@Canvas
         // With the frame in hand, so the bars arrive with the picture rather
         // than ahead of it.
         background?.let { drawRect(it) }
@@ -410,7 +400,7 @@ fun VideoSurface(
         // scaling decisions follow what the viewer SEES, so quarter turns
         // swap the dimensions before Cover/Fit does its math.
         val rotation = player.rotationDegrees
-        val (displayedW, displayedH) = displayedSize(image.width.toFloat(), image.height.toFloat(), rotation)
+        val (displayedW, displayedH) = displayedSize(frame.width.toFloat(), frame.height.toFloat(), rotation)
         val dst = destinationRect(
             srcWidth = displayedW,
             srcHeight = displayedH,
@@ -428,47 +418,21 @@ fun VideoSurface(
         // viewer turned subtitles on and saw nothing at all over a picture
         // that was plainly running.
         val subtitleRect = visibleRect(imageRect, size.width, size.height, rotation)
-        drawIntoCanvas { canvas ->
-            val nc = canvas.skiaCanvas
-            nc.save()
-            // Cover overflows the bounds by design; never paint outside them.
-            nc.clipRect(Rect.makeWH(size.width, size.height))
-            if (rotation != 0) {
-                nc.save()
-                nc.rotate(rotation.toFloat(), (dst.left + dst.right) / 2f, (dst.top + dst.bottom) / 2f)
-            }
-            nc.drawImageRect(
-                image,
-                Rect.makeWH(image.width.toFloat(), image.height.toFloat()),
-                imageRect,
-                SamplingMode.LINEAR,
-                null,
-                true,
-            )
-            // Subtitles live in the video's own coordinate space: drawn
-            // inside the SAME rotation transform and mapped onto the
-            // pre-rotation rect, so positioned ASS and bitmap planes stay
-            // glued to the picture rather than compositing upright over a
-            // rotated frame. Upright video (the common case) leaves
-            // imageRect == dst and the transform a no-op -- nothing moves.
-            if (player.activeSubtitleTrack != null) {
-                val (canvasW, canvasH) = subtitleCanvas
-                for (placed in subtitles.images) {
-                    nc.drawImageRect(
-                        placed.image,
-                        Rect.makeWH(placed.image.width.toFloat(), placed.image.height.toFloat()),
-                        subtitleDrawRect(
-                            subtitleRect, canvasW, canvasH,
-                            placed.x, placed.y, placed.image.width, placed.image.height,
-                        ),
-                        SamplingMode.LINEAR,
-                        null,
-                        true,
-                    )
+        // Cover overflows the bounds by design; never paint outside them.
+        clipRect {
+            rotate(rotation.toFloat(), dst.center) {
+                with(frame) { drawInto(imageRect) }
+                // Subtitles live in the video's own coordinate space: drawn
+                // inside the SAME rotation transform and mapped onto the
+                // pre-rotation rect, so positioned ASS and bitmap planes stay
+                // glued to the picture rather than compositing upright over a
+                // rotated frame. Upright video (the common case) leaves
+                // imageRect == dst and the transform a no-op -- nothing moves.
+                if (player.activeSubtitleTrack != null) {
+                    val (canvasW, canvasH) = subtitleCanvas
+                    with(subtitles) { drawPatches(subtitleRect, canvasW, canvasH) }
                 }
             }
-            if (rotation != 0) nc.restore()
-            nc.restore()
         }
         // The pipeline rasterizes text at whatever size the surface
         // reports; posting the pre-rotation (storage-oriented) rect keeps
@@ -531,15 +495,12 @@ internal fun subtitleDrawRect(
     width: Int,
     height: Int,
 ): Rect {
-    if (canvasWidth <= 0 || canvasHeight <= 0) return Rect.makeWH(0f, 0f)
+    if (canvasWidth <= 0 || canvasHeight <= 0) return Rect.Zero
     val scaleX = dst.width / canvasWidth
     val scaleY = dst.height / canvasHeight
-    return Rect.makeXYWH(
-        dst.left + x * scaleX,
-        dst.top + y * scaleY,
-        width * scaleX,
-        height * scaleY,
-    )
+    val left = dst.left + x * scaleX
+    val top = dst.top + y * scaleY
+    return Rect(left, top, left + width * scaleX, top + height * scaleY)
 }
 
 /** The source dimensions as the viewer sees them after rotation. */
@@ -557,7 +518,7 @@ internal fun imageDrawRect(dst: Rect, rotationDegrees: Int): Rect {
     val centerY = (dst.top + dst.bottom) / 2f
     val halfWidth = dst.height / 2f
     val halfHeight = dst.width / 2f
-    return Rect.makeLTRB(centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight)
+    return Rect(centerX - halfWidth, centerY - halfHeight, centerX + halfWidth, centerY + halfHeight)
 }
 
 /**
@@ -592,7 +553,7 @@ internal fun visibleRect(
     // A degenerate overlap means the bounds carry no video at all; there is
     // nothing better to lay text out in than the rect itself.
     if (right <= left || bottom <= top) return imageRect
-    return Rect.makeLTRB(left, top, right, bottom)
+    return Rect(left, top, right, bottom)
 }
 
 /**
@@ -615,5 +576,5 @@ internal fun destinationRect(
     val height = srcHeight * factor
     val left = (boundsWidth - width) / 2f
     val top = (boundsHeight - height) / 2f
-    return Rect.makeXYWH(left, top, width, height)
+    return Rect(left, top, left + width, top + height)
 }

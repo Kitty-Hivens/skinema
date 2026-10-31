@@ -1567,6 +1567,30 @@ README once the library is usable.
   bridge are still to do; until their phases land the subtitle calls do
   nothing and say so.
 
+  Compose is on both platforms. `VideoSurface`, `rememberPlayerState` and
+  the sight tracker are shared code, and what differs is only how a frame is
+  held and drawn: a public `VideoFrameHolder` (and an internal overlay
+  holder), Skia images through `VideoFrameImage` on the desktop and the
+  player's hardware frames on Android, lent by `acquireFrameBitmap` and
+  wrapped as bitmaps with no copy. Rotation and the clip moved from Skia's
+  canvas to Compose transforms, and the geometry to Compose's `Rect`. The
+  holder is public because the consumer draws frames through a painter of its
+  own, and that painter can now live in shared code too.
+
+  Android's holder gives a frame back two draws after the one that used it,
+  not one, because the render thread draws a recorded frame after the code
+  that recorded it has moved on; the reader holds five images to cover it. A
+  device test of that, mutation-checked, needed a second scenario before it
+  meant anything: drawing after every update passes even a holder that never
+  gives superseded frames back, since every frame then leaves through the
+  draw side. Updates outpacing draws, which is a window drawing slowly, is the
+  case that exposes it (four frames and a stall, against sixty).
+
+  `skinema-demo-android` is the device harness, the desktop demo's
+  counterpart. Watched on the phone: H.264 on the hardware decoder, a 1280x720
+  AV1 file on the software one because that SoC has no AV1 block, and
+  `hardwareActive` saying which, Fit and Cover, sound, seek and rate.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

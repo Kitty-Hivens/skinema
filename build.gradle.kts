@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.multiplatform) apply false
     alias(libs.plugins.android.kmp.library) apply false
+    alias(libs.plugins.android.application) apply false
     alias(libs.plugins.maven.publish) apply false
     alias(libs.plugins.kover)
 }
@@ -157,7 +158,8 @@ subprojects {
         //
         // Not on the Android compilations, whose class library is the
         // platform's android.jar rather than a JDK release.
-        if (!name.contains("Android")) compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
+        val android = name.contains("Android") || project.pluginManager.hasPlugin("com.android.application")
+        if (!android) compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
     }
 }
 
