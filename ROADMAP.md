@@ -1524,6 +1524,49 @@ README once the library is usable.
   run in CI passes `-Pskinema.android=false`: the Alpine container, the
   natives runners and the arm images carry none.
 
+  The Android player is in, and the frame path it runs on was settled by
+  measuring on the phone rather than by the plan, which had it wrong twice.
+  Media3's effects pipeline into an `ImageReader` produced no frame at all
+  and said nothing, most likely because a bare `Surface` gives it no output
+  size. Rendering the codec straight into an RGBA `ImageReader` did deliver
+  frames, and reading one on the CPU crashed the process with a SIGSEGV in
+  the reader thread, on more than one file and with no stack the user build
+  would show: those buffers belong to the vendor codec. What works is the
+  classic shape. ExoPlayer renders into a `SurfaceTexture` on a GL thread of
+  ours, and each frame is drawn into the window surface of an RGBA
+  `ImageReader` whose images this library owns (`FrameBridge`). The GPU does
+  the colour conversion and applies the transform the codec attached, so
+  frames arrive already turned for display and `rotationDegrees` is zero on
+  Android, which is what that property's contract asks for. An image's
+  timestamp is the frame's release time, which `VideoFrameMetadataListener`
+  maps back to its media time exactly. The first frame is released before the
+  size the output is built from is known, so the bridge redraws it once the
+  output exists, or a paused start would show a black rectangle.
+
+  `KeepTime` disables the video track and re-enables it, and that was the
+  riskiest assumption in the plan: measured, the picture comes back at the
+  clock (hidden at 905 ms, shown at 1909 ms, first frame at 1933 ms). The
+  context ExoPlayer needs arrives through a provider in the library's
+  manifest that records the application context and answers nothing, so a
+  consumer's shared code opens a player with no platform call;
+  `AppContext.install` covers a consumer that removes it.
+
+  A consumer's `PcmSink` plays through an adapter (`PcmSinkAudioSink`) that
+  bridges two contracts that disagree: ExoPlayer wants a buffer handed over
+  without blocking and the sink blocks in its write, from one thread. So a
+  writer thread owns every call into the sink. Mutation-checking the first
+  version found a real defect: with one queue, the writer held the next chunk
+  waiting for playback to resume and the stop sat behind it, so a paused
+  player's device played its buffer out instead of stopping. Control
+  commands now have a queue of their own that always goes first. The shape is
+  negotiated down `formatLadder` as on the desktop, and speed is applied with
+  Sonic, pitch preserved.
+
+  Thirty-seven device tests pass on the phone, every behavioural one
+  mutation-checked. Subtitles on the Android player and HDR through the
+  bridge are still to do; until their phases land the subtitle calls do
+  nothing and say so.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

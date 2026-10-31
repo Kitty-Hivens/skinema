@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Records the application context for the player. Answers no queries. -->
+        <provider
+            android:name="dev.hivens.skinema.android.AppContextProvider"
+            android:authorities="${applicationId}.skinema-context"
+            android:exported="false" />
+    </application>
+</manifest>

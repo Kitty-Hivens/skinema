@@ -63,6 +63,19 @@ abstract class AndroidFixtures : DefaultTask() {
             "red-with-sound.mp4", *red, "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=1",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
         )
+        ffmpeg(
+            "long-with-sound.mp4", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=4",
+            "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=4",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-bf", "0", "-c:a", "aac", "-shortest",
+        )
+        // Red on the left, blue on the right, then tagged with a display
+        // rotation, so which way a frame arrives turned is readable off it.
+        ffmpeg(
+            "split.mp4", "-f", "lavfi", "-i", "color=c=red:s=160x240:r=30:d=1",
+            "-f", "lavfi", "-i", "color=c=blue:s=160x240:r=30:d=1",
+            "-filter_complex", "hstack", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        )
+        ffmpeg("split-rot90.mp4", "-display_rotation", "90", "-i", dir.resolve("split.mp4").path, "-c", "copy")
     }
 }
 
@@ -118,7 +131,6 @@ kotlin {
                 dependsOn(jvmSharedMain)
                 dependencies {
                     implementation(libs.media3.exoplayer)
-                    implementation(libs.media3.effect)
                 }
             }
             getByName("androidDeviceTest") {
