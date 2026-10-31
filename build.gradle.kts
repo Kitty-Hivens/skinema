@@ -23,6 +23,8 @@ val nativesVersion = providers.gradleProperty("nativesVersion").get()
 // block below.
 val inMemoryKey = providers.gradleProperty("signingInMemoryKey")
 
+val skipSigning = providers.gradleProperty("skipSigning")
+
 // The library modules are skinema's own code. skinema-natives is not: it
 // ships trimmed FFmpeg builds, LGPL for the core and decode tiers and GPL
 // for full, which links x264/x265 under --enable-gpl. A POM cannot scope a
@@ -163,7 +165,11 @@ subprojects {
             // Explicit auto-release: the no-arg form leaves the deployment
             // VALIDATED in the portal, waiting for a manual Publish click.
             publishToMavenCentral(automaticRelease = true)
-            signAllPublications()
+            // -PskipSigning is for publishing to mavenLocal, where a build
+            // without an unlocked key could not publish at all: signing runs
+            // for every repository, snapshots included. Central refuses an
+            // unsigned upload, so the switch cannot ship anything unsigned.
+            if (!skipSigning.isPresent) signAllPublications()
             coordinates("dev.hivens", project.name, project.version.toString())
             pom {
                 name.set(project.name)

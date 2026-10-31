@@ -150,6 +150,10 @@ an option -- same tasks, `-PappVersion=X.Y.Z` for the libraries, and
 against the key in the local keyring (`signing.gnupg.keyName`) instead of
 the CI path.
 
+Publishing to `mavenLocal` to try a build in another project signs as well,
+and fails without an unlocked key. `-PskipSigning` turns signing off for that
+case. Central refuses an unsigned upload, so the switch cannot ship anything.
+
 The workflow needs four repository secrets: `MAVEN_CENTRAL_USERNAME` and
 `MAVEN_CENTRAL_PASSWORD` (a Central Portal user token, not the account
 login), plus `SIGNING_KEY` (the ASCII-armored secret key) and
