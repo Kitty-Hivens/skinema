@@ -1,5 +1,6 @@
 package dev.hivens.skinema.android
 
+import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.graphics.SurfaceTexture
 import android.hardware.HardwareBuffer
@@ -13,6 +14,7 @@ import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
@@ -20,8 +22,10 @@ import dev.hivens.skinema.Debug
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.IdentityHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Turns the decoder's output into RGBA8888 images this library owns.
@@ -39,8 +43,16 @@ import java.util.concurrent.TimeUnit
  * An image's timestamp is the release time the player gave the frame, which
  * is how the caller maps it back to the frame's media time.
  *
- * [onImage] runs on the GL thread and owns the image it is handed: it must
- * close it, at once or later, and the reader holds [MAX_IMAGES] of them.
+ * A picture the library composed itself (an image file's frame) skips the
+ * input surface and goes in through [present], uploaded as a texture and
+ * drawn into the same reader, carrying a timestamp the caller picks.
+ *
+ * [onImage] runs on the GL thread and owns the image it is handed: it gives
+ * it back through [release], at once or later, and the reader holds
+ * [MAX_IMAGES] of them. Released rather than closed, because closing a reader
+ * closes every image it handed out: a reader replaced by a resize is kept
+ * until the last of its images comes back, so a frame the consumer still
+ * holds stays readable across a change of size.
  */
 internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable {
 
@@ -53,6 +65,8 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     private lateinit var pbuffer: EGLSurface
     private var texture = 0
     private var program = 0
+    private var stillTexture = 0
+    private var stillProgram = 0
     private lateinit var surfaceTexture: SurfaceTexture
 
     /** Where the player renders. Valid from construction until [close]. */
@@ -60,6 +74,11 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
         private set
 
     private var reader: ImageReader? = null
+
+    // Which reader each image handed out came from, and the readers a resize
+    // replaced while some of their images were still out.
+    private val owners = IdentityHashMap<Image, ImageReader>()
+    private val retired = HashSet<ImageReader>()
     private var windowSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var outWidth = 0
     private var outHeight = 0
@@ -71,8 +90,18 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     // show nothing until something else moved.
     private var latched = false
 
+    // Off while the library presents pictures of its own. A decoder being
+    // stopped can still release a frame, and drawn into a reader already
+    // sized for the picture it would land as a stray frame of the wrong file.
+    private var decoderFrames = true
+
     @Volatile
     private var closed = false
+
+    // The newest picture handed to present() and not drawn yet. Newer
+    // replaces older, so a reader that has stopped taking images holds back
+    // one picture, not a queue of them.
+    private val pendingStill = AtomicReference<Pair<Bitmap, Long>?>(null)
 
     init {
         onThread { setUp() }
@@ -81,9 +110,11 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     /**
      * Sizes the output to [width] x [height], the frame as it is displayed.
      * The reader is replaced only when the size changes, so a repeated call
-     * costs nothing.
+     * costs nothing. [redraw] draws the decoder's last frame into the new
+     * reader, which a caller about to [present] a picture of its own does
+     * not want.
      */
-    fun resize(width: Int, height: Int) {
+    fun resize(width: Int, height: Int, redraw: Boolean = true) {
         if (width <= 0 || height <= 0) return
         handler.post {
             if (closed || (width == outWidth && height == outHeight)) return@post
@@ -102,6 +133,7 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
                     Debug.trace("frame bridge: no image slot free", e)
                     null
                 } ?: return@setOnImageAvailableListener
+                synchronized(owners) { owners[image] = r }
                 onImage(image)
             }, handler)
             windowSurface = EGL14.eglCreateWindowSurface(display, config, next.surface, intArrayOf(EGL14.EGL_NONE), 0)
@@ -109,7 +141,49 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             reader = next
             outWidth = width
             outHeight = height
-            if (latched) draw()
+            if (latched && redraw) draw()
+        }
+    }
+
+    /**
+     * Draws [bitmap], a software ARGB_8888 picture of the output's size, into
+     * the reader as an image stamped [timestamp], and recycles it. The bitmap
+     * is the bridge's from this call on. Sized by a [resize] made before it.
+     */
+    /**
+     * Whether frames arriving on [inputSurface] are drawn. Ordered with
+     * [resize] and [present], so a frame that arrives after the call is held
+     * to it. Latched either way, or the input stops receiving frames.
+     */
+    fun acceptDecoderFrames(accept: Boolean) {
+        handler.post { decoderFrames = accept }
+    }
+
+    fun present(bitmap: Bitmap, timestamp: Long) {
+        if (closed) {
+            bitmap.recycle()
+            return
+        }
+        pendingStill.getAndSet(bitmap to timestamp)?.first?.recycle()
+        handler.post { drawStill() }
+    }
+
+    private fun drawStill() {
+        val (bitmap, timestamp) = pendingStill.getAndSet(null) ?: return
+        try {
+            if (closed || windowSurface == EGL14.EGL_NO_SURFACE) return
+            EGL14.eglMakeCurrent(display, windowSurface, windowSurface, context)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, stillTexture)
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+            quad(stillProgram, FLIP_ROWS)
+            EGLExt.eglPresentationTimeANDROID(display, windowSurface, timestamp)
+            EGL14.eglSwapBuffers(display, windowSurface)
+            // What the screen shows now is this picture, so a later resize
+            // has no decoder frame to bring back.
+            latched = false
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -143,6 +217,14 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         program = link(VERTEX_SHADER, FRAGMENT_SHADER)
+        GLES20.glGenTextures(1, names, 0)
+        stillTexture = names[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, stillTexture)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        stillProgram = link(VERTEX_SHADER, STILL_FRAGMENT_SHADER)
 
         surfaceTexture = SurfaceTexture(texture)
         surfaceTexture.setOnFrameAvailableListener({ drawFrame() }, handler)
@@ -156,8 +238,8 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
         // Latched whether or not there is anywhere to draw it, or the texture
         // stops receiving frames.
         surfaceTexture.updateTexImage()
-        latched = true
-        if (target == pbuffer) return
+        latched = decoderFrames
+        if (target == pbuffer || !decoderFrames) return
         draw()
     }
 
@@ -165,20 +247,25 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     private fun draw() {
         EGL14.eglMakeCurrent(display, windowSurface, windowSurface, context)
         surfaceTexture.getTransformMatrix(transform)
-        GLES20.glViewport(0, 0, outWidth, outHeight)
-        GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTexMatrix"), 1, false, transform, 0)
-        val position = GLES20.glGetAttribLocation(program, "aPosition")
+        quad(program, transform)
+        EGLExt.eglPresentationTimeANDROID(display, windowSurface, surfaceTexture.timestamp)
+        EGL14.eglSwapBuffers(display, windowSurface)
+    }
+
+    /** The full-output strip through [shader], its texture already bound, coordinates through [texMatrix]. */
+    private fun quad(shader: Int, texMatrix: FloatArray) {
+        GLES20.glViewport(0, 0, outWidth, outHeight)
+        GLES20.glUseProgram(shader)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(shader, "uTexMatrix"), 1, false, texMatrix, 0)
+        val position = GLES20.glGetAttribLocation(shader, "aPosition")
         GLES20.glEnableVertexAttribArray(position)
         GLES20.glVertexAttribPointer(position, 2, GLES20.GL_FLOAT, false, 16, QUAD.position(0))
-        val coord = GLES20.glGetAttribLocation(program, "aTexCoord")
+        val coord = GLES20.glGetAttribLocation(shader, "aTexCoord")
         GLES20.glEnableVertexAttribArray(coord)
         GLES20.glVertexAttribPointer(coord, 2, GLES20.GL_FLOAT, false, 16, QUAD.position(2))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        EGLExt.eglPresentationTimeANDROID(display, windowSurface, surfaceTexture.timestamp)
-        EGL14.eglSwapBuffers(display, windowSurface)
     }
 
     private fun releaseOutput() {
@@ -187,11 +274,26 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             EGL14.eglDestroySurface(display, windowSurface)
             windowSurface = EGL14.EGL_NO_SURFACE
         }
-        reader?.setOnImageAvailableListener(null, null)
-        reader?.close()
+        reader?.let { old ->
+            old.setOnImageAvailableListener(null, null)
+            val out = synchronized(owners) {
+                owners.values.any { it === old }.also { if (it) retired += old }
+            }
+            if (!out) old.close()
+        }
         reader = null
         outWidth = 0
         outHeight = 0
+    }
+
+    /** Gives back an image [onImage] was handed. Safe from any thread, and for an image already given back. */
+    fun release(image: Image) {
+        val emptied = synchronized(owners) {
+            val from = owners.remove(image)
+            image.close()
+            from?.takeIf { it in retired && owners.values.none { other -> other === it } }?.also { retired -= it }
+        }
+        emptied?.close()
     }
 
     private fun link(vertex: String, fragment: String): Int {
@@ -239,7 +341,8 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
                 inputSurface.release()
                 surfaceTexture.release()
                 GLES20.glDeleteProgram(program)
-                GLES20.glDeleteTextures(1, intArrayOf(texture), 0)
+                GLES20.glDeleteProgram(stillProgram)
+                GLES20.glDeleteTextures(2, intArrayOf(texture, stillTexture), 0)
                 EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 EGL14.eglDestroySurface(display, pbuffer)
                 EGL14.eglDestroyContext(display, context)
@@ -247,6 +350,12 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             }
         }.onFailure { Debug.trace("frame bridge teardown", it) }
         thread.quitSafely()
+        pendingStill.getAndSet(null)?.first?.recycle()
+        val leftover = synchronized(owners) {
+            owners.clear()
+            retired.toList().also { retired.clear() }
+        }
+        leftover.forEach(ImageReader::close)
     }
 
     companion object {
@@ -280,6 +389,24 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             void main() {
                 gl_Position = aPosition;
                 vTexCoord = (uTexMatrix * aTexCoord).xy;
+            }
+        """
+
+        // An uploaded bitmap's first row is t = 0, and the output's top is
+        // y = 1: t taken as 1 - t puts the bitmap's top row at the top.
+        private val FLIP_ROWS = floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, -1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 1f, 0f, 1f,
+        )
+
+        private const val STILL_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D uTexture;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = texture2D(uTexture, vTexCoord);
             }
         """
 

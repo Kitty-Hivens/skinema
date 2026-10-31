@@ -1643,6 +1643,56 @@ README once the library is usable.
   AV1 file on the software one because that SoC has no AV1 block, and
   `hardwareActive` saying which, Fit and Cover, sound, seek and rate.
 
+  Animated images play on Android too, by reading the containers rather than
+  through native code. The platform animates GIF and WebP inside a drawable
+  and hands out neither the frames nor their times, and does not animate APNG
+  at all, but it decodes a single frame of each. So `ImageFrames` takes the
+  three containers apart in Kotlin, wraps each frame's data as a standalone
+  single-frame file (the pixels untouched, only the header rewritten to the
+  frame's size), lets the platform decode that, and `ImageFrameSource`
+  composes the frames by each format's disposal and blending rules. No pixel
+  decoding was written, and that is what kept JNI out: the WebP and APNG gap
+  listed above as a native candidate closed without one. Stills (JPEG, PNG,
+  WebP, GIF, BMP, HEIF, AVIF) are the one-frame case of the same source, and
+  `VideoDecoder` hands anything whose first bytes say image to it. The
+  composition is held against ffmpeg's own composition of the tenth frame of
+  each format, on files whose frames depend on the ones before them.
+
+  The player plays them without ExoPlayer, which plays none of them as
+  video. It paces the frames against a clock of its own and draws each
+  composed picture into the same bridge, uploaded as a texture rather than
+  through the input surface, with a timestamp it picks, so the mailbox, the
+  hardware bitmaps and Compose see one kind of frame and `setSource` moves
+  between images and video either way. ExoPlayer is built only when the
+  first file that is not an image arrives. A still reads `Ended` unless it
+  loops and its clock never runs, where the desktop's turns a 40 ms lap over
+  and over. An image takes no side-loaded subtitle file, since ExoPlayer is
+  what lays out cues. A composed picture comes off the GPU premultiplied, as
+  Android draws every bitmap, so `acquireFrame` straightens it.
+
+  The switch test found a defect older than the images: closing an
+  `ImageReader` closes every image it handed out, so a change of size (any
+  switch between files of different sizes) invalidated the frame in the
+  mailbox and any frame a consumer held, and the next `acquireFrame` threw.
+  A replaced reader is now kept until the last of its images comes back. The
+  full suite then found a second one under load: a decoder being stopped can
+  still release a frame, which landed in the reader already sized for the
+  image as a stray frame of the wrong file. The bridge now holds decoder
+  frames back while an image plays, ordered with the resize on its own
+  thread.
+
+  Thirteen player tests cover it, mutation-checked. Two first survivals
+  sharpened the tests. A schedule that ignored the rate showed nearly every
+  frame at 2x anyway, because each late wake caught up on the next, so the
+  test now holds each frame to its time rather than counting frames. And
+  drawing while hidden is guarded twice (the schedule wakes only at a lap's
+  end while the frames are off, and the wake draws nothing), so only both
+  mutated at once is caught, which is the answer wanted. One survives for a
+  reason: drawing the decoder's last frame again into the image's new reader
+  is overwritten in the one-slot mailbox within milliseconds, before any
+  poll sees it, so the flag that prevents it guards a one-frame flash a
+  surface could draw and no public call can observe.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

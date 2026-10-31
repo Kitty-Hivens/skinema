@@ -41,6 +41,8 @@ import dev.hivens.skinema.android.AppContext
 import dev.hivens.skinema.android.CueRasterizer
 import dev.hivens.skinema.android.ContainerInfo
 import dev.hivens.skinema.android.FrameBridge
+import dev.hivens.skinema.android.ImageFrameSource
+import dev.hivens.skinema.android.ImageFrames
 import dev.hivens.skinema.android.Input
 import dev.hivens.skinema.android.PcmSinkAudioSink
 import dev.hivens.skinema.android.layoutFor
@@ -53,6 +55,7 @@ import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.subtitles.SubtitleOverlay
@@ -79,13 +82,20 @@ import android.media.AudioFormat as PlatformAudioFormat
  * is zero; `readAheadFrames` is not a knob here, since ExoPlayer buffers by
  * its own policy; and `explicitClock` is refused, since ExoPlayer takes no
  * external media clock to pace video against.
+ *
+ * An image file (a still, or an animated GIF, APNG or WebP) does not go
+ * through ExoPlayer, which plays none of them as video. The player paces its
+ * frames itself, from [ImageFrameSource], against a clock of its own, and
+ * draws each one into the same bridge, so the mailbox, [acquireFrameBitmap]
+ * and everything downstream see one kind of frame. A [setSource] moves
+ * between the two freely.
  */
 actual class VideoPlayer actual constructor(
     path: Path,
     loop: Boolean,
     private val audio: Boolean,
     explicitClock: MediaClock?,
-    sink: PcmSink?,
+    private val sink: PcmSink?,
     @Suppress("UNUSED_PARAMETER") readAheadFrames: Int,
     audioTrack: Int?,
     private val hardware: HwAccel,
@@ -243,6 +253,8 @@ actual class VideoPlayer actual constructor(
     // -- Player-thread state -----------------------------------------------------
 
     private var player: ExoPlayer? = null
+
+    @Volatile
     private var bridge: FrameBridge? = null
     private var everReady = false
     private var seekPending = false
@@ -252,7 +264,21 @@ actual class VideoPlayer actual constructor(
     private var userPaused = startPaused
     private var autoPaused = false
     private var stopMode: StopMode? = null
+
+    // The picture is off while nobody takes it: the video track disabled for
+    // ExoPlayer, no frames composed for an image.
     private var videoTrackDisabled = false
+
+    // The image file playing, when it is one. Its frames, its lap and whether
+    // the lap ran out without looping: the image side's whole state.
+    private var clip: ImageFrameSource? = null
+    private var clipEnded = false
+    private val clipAdvance = Runnable { advanceClip() }
+
+    // Read from ExoPlayer's playback thread, where a frame released late by a
+    // file just switched away from must not move the image's clock.
+    @Volatile
+    private var clipActive = false
 
     private enum class StopMode { FROZE, KEPT }
 
@@ -290,6 +316,7 @@ actual class VideoPlayer actual constructor(
     private val mailbox = Any()
     private var latest: Image? = null
     private var latestPts = 0L
+    private var latestPremultiplied = false
     private var fresh = false
 
     // Images handed out by acquireFrameBitmap and not yet given back. A
@@ -304,6 +331,11 @@ actual class VideoPlayer actual constructor(
     // read when the frame comes out of the bridge carrying its release time.
     private val releaseToPts = ConcurrentHashMap<Long, Long>()
 
+    // Timestamps of the images that carry a composed picture rather than a
+    // decoded one. Those come out of the GPU premultiplied, as Android draws
+    // every bitmap, and acquireFrame owes straight alpha.
+    private val premultipliedTags: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+
     @Volatile
     private var lastAcquireNanos = 0L
 
@@ -314,19 +346,24 @@ actual class VideoPlayer actual constructor(
 
     private fun onImage(image: Image) {
         if (closing) {
-            image.close()
+            release(image)
             return
         }
         val pts = releaseToPts.remove(image.timestamp) ?: lastPublishedPts
+        val premultiplied = premultipliedTags.remove(image.timestamp)
         if (releaseToPts.size > RELEASE_MAP_LIMIT) {
             releaseToPts.keys.sorted().take(releaseToPts.size - RELEASE_MAP_LIMIT / 2).forEach(releaseToPts::remove)
+        }
+        if (premultipliedTags.size > RELEASE_MAP_LIMIT) {
+            premultipliedTags.sorted().take(premultipliedTags.size - RELEASE_MAP_LIMIT / 2).forEach(premultipliedTags::remove)
         }
         synchronized(mailbox) {
             val old = latest
             latest = image
             latestPts = pts
+            latestPremultiplied = premultiplied
             fresh = true
-            if (old != null && old !in borrowed) old.close()
+            if (old != null && old !in borrowed) release(old)
         }
         lastPublishedPts = pts
         publishedSinceRead = true
@@ -352,6 +389,7 @@ actual class VideoPlayer actual constructor(
                 buffer.position(row * plane.rowStride)
                 buffer.get(slotBytes, row * rowBytes, rowBytes)
             }
+            if (latestPremultiplied) unpremultiply(slotBytes)
             return FrameSlot().also {
                 it.width = width
                 it.height = height
@@ -393,8 +431,13 @@ actual class VideoPlayer actual constructor(
     private fun giveBack(image: Image) {
         synchronized(mailbox) {
             borrowed -= image
-            if (image !== latest) image.close()
+            if (image !== latest) release(image)
         }
+    }
+
+    private fun release(image: Image) {
+        val frames = bridge
+        if (frames != null) frames.release(image) else image.close()
     }
 
     // -- Watching ----------------------------------------------------------------------
@@ -440,8 +483,12 @@ actual class VideoPlayer actual constructor(
 
     /** What [WhenUnwatched] says to do with the picture being taken or not. On the player thread. */
     private fun applyWatch(watched: Boolean) {
-        val p = player ?: return
         if (!hasVideo) return
+        if (clip != null) {
+            applyClipWatch(watched)
+            return
+        }
+        val p = player ?: return
         if (!watched && stopMode == null) {
             val mode = when (unwatched) {
                 WhenUnwatched.Freeze -> StopMode.FROZE
@@ -493,12 +540,16 @@ actual class VideoPlayer actual constructor(
 
     actual fun pause() = post {
         userPaused = true
-        player?.pause()
+        if (clip != null) freezeClip() else player?.pause()
         recomputeState()
     }
 
     actual fun resume() = post {
         userPaused = false
+        if (clip != null) {
+            resumeClip()
+            return@post
+        }
         val p = player ?: return@post
         // Not the way back from a stop the player made for a hidden picture:
         // it plays, and the picture stays off until it is being taken again.
@@ -516,6 +567,7 @@ actual class VideoPlayer actual constructor(
 
     actual fun seekBy(deltaNanos: Long, exact: Boolean) = post {
         val base = when {
+            clip != null -> positionNanos()
             seekPending -> intendedNanos
             hasVideo -> lastPublishedPts
             else -> positionNanos()
@@ -524,6 +576,13 @@ actual class VideoPlayer actual constructor(
     }
 
     private fun seekTo(target: Long, exact: Boolean) {
+        if (clip != null) {
+            // Every frame of an image can be reached, so exact or not lands
+            // on the frame showing at the target.
+            landClip(target)
+            recomputeState()
+            return
+        }
         val p = player ?: return
         intendedNanos = target
         seekPending = true
@@ -534,6 +593,11 @@ actual class VideoPlayer actual constructor(
     }
 
     actual fun stepForward() = post {
+        clip?.let { c ->
+            val next = c.shown + 1
+            stepClip(if (next < c.frameCount) next else if (loopField) 0 else c.shown)
+            return@post
+        }
         val p = player ?: return@post
         userPaused = true
         p.pause()
@@ -543,6 +607,10 @@ actual class VideoPlayer actual constructor(
     }
 
     actual fun stepBackward() = post {
+        clip?.let { c ->
+            stepClip((c.shown - 1).coerceAtLeast(0))
+            return@post
+        }
         val p = player ?: return@post
         userPaused = true
         p.pause()
@@ -584,8 +652,12 @@ actual class VideoPlayer actual constructor(
         if (rate.isNaN()) return
         val clamped = rate.coerceIn(0.5f, 4f)
         post {
+            // Re-anchored at the old rate first, or the time since the last
+            // anchor would be counted at the new one.
+            if (clip != null) sampleClock(positionNanos(), System.nanoTime(), clockRunning)
             this.rate = clamped
             player?.playbackParameters = PlaybackParameters(clamped)
+            scheduleClip()
         }
     }
 
@@ -608,31 +680,46 @@ actual class VideoPlayer actual constructor(
                 noteChange()
                 return@execute
             }
-            val info = ContainerInfo.read(Input.File(path))
+            val image = picture && isImageFile(path)
+            val info = if (image) null else ContainerInfo.read(Input.File(path))
             post {
-                val p = player ?: return@post
+                // A player that had ended plays the next file, as on the desktop.
+                val ended = if (clip != null) clipEnded else player?.playbackState == Player.STATE_ENDED
+                if (ended) userPaused = false
                 sourceFailure = null
                 source = path
-                tags = info.tags
-                coverArt = info.coverArt
-                durationNanos = null
                 everReady = false
                 seekPending = false
                 lastPublishedPts = 0L
-                sampleClock(0L, System.nanoTime(), false)
                 // Subtitles go off with the file they belonged to, as on the desktop.
                 externals.clear()
                 selectedSubtitleId = null
                 pendingSubtitleId = null
                 currentCues = emptyList()
+                publishState(State.Opening)
+                if (info == null) {
+                    player?.let {
+                        it.stop()
+                        it.clearMediaItems()
+                    }
+                    publishCues()
+                    startClip(path)
+                    return@post
+                }
+                closeClip()
+                bridge?.acceptDecoderFrames(true)
+                val p = player ?: buildPlayer()
+                tags = info.tags
+                coverArt = info.coverArt
+                durationNanos = null
+                sampleClock(0L, System.nanoTime(), false)
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
                 publishCues()
                 p.setMediaItem(mediaItem(path))
                 p.prepare()
-                if (p.playbackState == Player.STATE_ENDED || !userPaused) p.play()
-                publishState(State.Opening)
+                if (!userPaused) p.play()
             }
         }
     }
@@ -681,10 +768,12 @@ actual class VideoPlayer actual constructor(
      * preparing it again at the current position: the picture holds while it
      * does, and the sound pauses for as long as that takes. Formats are told
      * by extension (.srt, .ass, .ssa, .vtt, .ttml); an unreadable file or one
-     * of another kind adds nothing.
+     * of another kind adds nothing, and so does an image file playing: its
+     * frames are drawn by this player, not by ExoPlayer, which is what lays
+     * out the cues.
      */
     actual fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
-        if (closing || !hasVideo) return emptyList()
+        if (closing || !hasVideo || clipActive) return emptyList()
         val mime = subtitleMimeFor(file) ?: return emptyList()
         if (!Files.isReadable(file)) return emptyList()
         val id = externalIds.decrementAndGet()
@@ -777,7 +866,7 @@ actual class VideoPlayer actual constructor(
     private val decodeWork = Executors.newSingleThreadExecutor { r -> Thread(r, "skinema-player-work").apply { isDaemon = true } }
 
     init {
-        handler.post { open(path, explicitClock, sink, audioTrack, startPaused) }
+        handler.post { open(path, explicitClock, audioTrack, startPaused) }
     }
 
     /** The file, with every side-loaded subtitle file attached under its tagged id. */
@@ -794,17 +883,38 @@ actual class VideoPlayer actual constructor(
         )
         .build()
 
-    private fun open(path: Path, explicitClock: MediaClock?, sink: PcmSink?, audioTrack: Int?, startPaused: Boolean) {
+    private fun open(path: Path, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
         if (closing) return
         try {
             require(explicitClock == null) { "explicitClock is not supported on Android: ExoPlayer takes no external media clock" }
-            val context = AppContext.get()
-            val info = ContainerInfo.read(Input.File(path))
-            tags = info.tags
-            coverArt = info.coverArt
-            val frames = FrameBridge(::onImage)
-            bridge = frames
-            val renderers = object : DefaultRenderersFactory(context) {
+            bridge = FrameBridge(::onImage)
+            if (isImageFile(path)) {
+                startClip(path)
+            } else {
+                val info = ContainerInfo.read(Input.File(path))
+                tags = info.tags
+                coverArt = info.coverArt
+                val p = buildPlayer()
+                pendingAudioTrack = audioTrack
+                p.setMediaItem(mediaItem(path))
+                p.playWhenReady = !startPaused
+                p.prepare()
+            }
+            handler.postDelayed(tick, TICK_MILLIS)
+        } catch (t: Throwable) {
+            fail(t)
+        }
+    }
+
+    /**
+     * ExoPlayer, wired to the bridge and carrying every setting made so far.
+     * Built when the first file that is not an image arrives, so a player
+     * that only ever shows images never starts one.
+     */
+    private fun buildPlayer(): ExoPlayer {
+        val context = AppContext.get()
+        val frames = checkNotNull(bridge)
+        val renderers = object : DefaultRenderersFactory(context) {
                 override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink? = when {
                     // Ignored without sound, as on the desktop: nothing opens it.
                     sink != null && audio -> PcmSinkAudioSink(sink, audioChannels) { audioFormat = it }
@@ -813,34 +923,199 @@ actual class VideoPlayer actual constructor(
                         .build()
                     else -> super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
                 }
-            }.setMediaCodecSelector(codecSelector(hardware)).setEnableDecoderFallback(hardware == HwAccel.AUTO)
-            val p = ExoPlayer.Builder(context, renderers)
-                .setLooper(thread.looper)
-                .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
-                .build()
-            player = p
-            p.setVideoSurface(frames.inputSurface)
-            p.addListener(listener)
-            p.addAnalyticsListener(analytics)
-            p.setVideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
-                val pts = presentationTimeUs * NANOS_PER_MICRO
-                releaseToPts[releaseTimeNs] = pts
-                sampleClock(pts, releaseTimeNs, clockRunning)
-            }
-            p.repeatMode = if (loopField) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            p.volume = if (audio) volumeField else 0f
-            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, !audio)
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                .build()
-            pendingAudioTrack = audioTrack
-            p.setMediaItem(mediaItem(path))
-            p.playWhenReady = !startPaused
-            p.prepare()
-            handler.postDelayed(tick, TICK_MILLIS)
-        } catch (t: Throwable) {
-            fail(t)
+        }.setMediaCodecSelector(codecSelector(hardware)).setEnableDecoderFallback(hardware == HwAccel.AUTO)
+        val p = ExoPlayer.Builder(context, renderers)
+            .setLooper(thread.looper)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+            .build()
+        player = p
+        p.setVideoSurface(frames.inputSurface)
+        p.addListener(listener)
+        p.addAnalyticsListener(analytics)
+        p.setVideoFrameMetadataListener { presentationTimeUs, releaseTimeNs, _, _ ->
+            if (clipActive) return@setVideoFrameMetadataListener
+            val pts = presentationTimeUs * NANOS_PER_MICRO
+            releaseToPts[releaseTimeNs] = pts
+            sampleClock(pts, releaseTimeNs, clockRunning)
         }
+        p.repeatMode = if (loopField) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        p.volume = if (audio) volumeField else 0f
+        p.playbackParameters = PlaybackParameters(rate)
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, !audio)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+        return p
+    }
+
+    // -- Image files --------------------------------------------------------------
+
+    private fun isImageFile(path: Path): Boolean =
+        runCatching { Input.File(path).use { ImageFrames.isImage(it.head(16)) } }.getOrDefault(false)
+
+    /** Puts the image at [path] on screen in place of whatever played, on its first frame. */
+    private fun startClip(path: Path) {
+        if (hardware == HwAccel.REQUIRE) throw LibavException("no hardware decoder takes an image (HwAccel.REQUIRE)")
+        val image = ImageFrames.read(Files.readAllBytes(path))
+        closeClip()
+        val c = ImageFrameSource(image)
+        clip = c
+        clipActive = true
+        hasVideo = true
+        hardwareActive = false
+        durationNanos = c.durationNanos()
+        tags = emptyMap()
+        coverArt = null
+        audioTrackList = emptyList()
+        selectedAudioTrack = null
+        audioFormat = null
+        embeddedSubtitles = emptyList()
+        subtitleTracks = emptyList()
+        videoWidth = image.width
+        videoHeight = image.height
+        bridge?.acceptDecoderFrames(false)
+        bridge?.resize(image.width, image.height, redraw = false)
+        landClip(0L)
+        recomputeState()
+    }
+
+    private fun closeClip() {
+        handler.removeCallbacks(clipAdvance)
+        clip?.close()
+        clip = null
+        clipActive = false
+        clipEnded = false
+    }
+
+    /** Whether the image's clock runs: an animation, not ended, and paused by nobody. */
+    private fun clipRuns(): Boolean = clip?.animated == true && !clipEnded && !userPaused && !autoPaused
+
+    /**
+     * Shows the frame at [target], clamped to the lap, and anchors the clock
+     * there. A still has one frame and no time: it reads Ended unless it
+     * loops, as the desktop's does once its single frame has played, and the
+     * clock never runs, where the desktop's turns a 40 ms lap over and over.
+     */
+    private fun landClip(target: Long) {
+        val c = clip ?: return
+        val at = if (c.animated) target.coerceIn(0L, c.lapNanos) else 0L
+        c.show(c.frameAt(at))
+        presentClip()
+        clipEnded = !c.animated && !loopField
+        sampleClock(at, System.nanoTime(), clipRuns())
+        scheduleClip()
+    }
+
+    private fun stepClip(index: Int) {
+        val c = clip ?: return
+        userPaused = true
+        freezeClip()
+        landClip(c.ptsOf(index))
+        recomputeState()
+    }
+
+    private fun freezeClip() {
+        handler.removeCallbacks(clipAdvance)
+        sampleClock(positionNanos(), System.nanoTime(), false)
+    }
+
+    private fun resumeClip() {
+        // Not the way back from a stop the player made for a hidden picture,
+        // as with a video: the clock runs and the frames stay off.
+        if (stopMode == StopMode.FROZE) {
+            autoPaused = false
+            videoTrackDisabled = true
+            stopMode = StopMode.KEPT
+        }
+        if (clipEnded) landClip(0L)
+        if (clipRuns()) sampleClock(positionNanos(), System.nanoTime(), true)
+        scheduleClip()
+        recomputeState()
+    }
+
+    /** Draws the composed frame into the bridge, stamped so it comes out carrying its pts. */
+    private fun presentClip() {
+        val c = clip ?: return
+        val frames = bridge ?: return
+        val tag = maxOf(System.nanoTime(), lastClipTag + 1)
+        lastClipTag = tag
+        releaseToPts[tag] = c.ptsOf(c.shown)
+        premultipliedTags += tag
+        // A copy, since the next frame is composed onto the same canvas while
+        // the bridge may still be uploading this one.
+        frames.present(c.canvasBitmap.copy(Bitmap.Config.ARGB_8888, false), tag)
+    }
+
+    private var lastClipTag = 0L
+
+    /** Wakes at the next frame's time, or at the end of the lap while the frames are off. */
+    private fun scheduleClip() {
+        handler.removeCallbacks(clipAdvance)
+        val c = clip ?: return
+        if (!clockRunning) return
+        val next = c.shown + 1
+        val event = if (!videoTrackDisabled && next < c.frameCount) c.ptsOf(next) else c.lapNanos
+        val wallNanos = ((event - positionNanos()) / rate).toLong()
+        // Rounded up, or the wake lands just short of the frame and spins.
+        handler.postDelayed(clipAdvance, ((wallNanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI).coerceAtLeast(0L))
+    }
+
+    private fun advanceClip() {
+        val c = clip ?: return
+        if (!clockRunning) return
+        var position = positionNanos()
+        val lap = c.lapNanos
+        if (position >= lap) {
+            if (!loopField) {
+                sampleClock(lap, System.nanoTime(), false)
+                clipEnded = true
+                recomputeState()
+                return
+            }
+            position %= lap
+            sampleClock(position, System.nanoTime(), true)
+        }
+        if (!videoTrackDisabled) {
+            val index = c.frameAt(position)
+            if (index != c.shown) {
+                c.show(index)
+                presentClip()
+            }
+        }
+        scheduleClip()
+    }
+
+    /** [applyWatch] for an image. Nothing is ever heard, so FollowSound stops time with the picture. */
+    private fun applyClipWatch(watched: Boolean) {
+        val c = clip ?: return
+        if (!watched && stopMode == null) {
+            val mode = if (unwatched == WhenUnwatched.KeepTime) StopMode.KEPT else StopMode.FROZE
+            if (mode == StopMode.FROZE && clockRunning) {
+                autoPaused = true
+                freezeClip()
+            } else {
+                videoTrackDisabled = true
+                scheduleClip()
+            }
+            stopMode = mode
+        } else if (watched && stopMode != null) {
+            val lift = autoPaused && !userPaused
+            autoPaused = false
+            if (videoTrackDisabled) {
+                videoTrackDisabled = false
+                // Catches up with the clock. An ended one keeps the frame it
+                // had, as on the desktop: nothing decoded the end.
+                val index = c.frameAt(positionNanos().coerceAtMost(c.lapNanos))
+                if (!clipEnded && index != c.shown) {
+                    c.show(index)
+                    presentClip()
+                }
+            }
+            if (lift) sampleClock(positionNanos(), System.nanoTime(), true)
+            scheduleClip()
+            stopMode = null
+        }
+        recomputeState()
     }
 
     private var pendingAudioTrack: Int? = null
@@ -848,6 +1123,11 @@ actual class VideoPlayer actual constructor(
     private val tick = object : Runnable {
         override fun run() {
             if (closing) return
+            if (clip != null) {
+                checkMailbox()
+                handler.postDelayed(this, TICK_MILLIS)
+                return
+            }
             val p = player ?: return
             if (!hasVideo || stopMode != null) {
                 sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
@@ -860,6 +1140,16 @@ actual class VideoPlayer actual constructor(
     }
 
     private fun recomputeState() {
+        if (clip != null) {
+            publishState(
+                when {
+                    clipEnded -> State.Ended
+                    userPaused || autoPaused -> State.Paused
+                    else -> State.Playing
+                },
+            )
+            return
+        }
         val p = player ?: return
         val next = when {
             p.playbackState == Player.STATE_IDLE || !everReady -> State.Opening
@@ -874,6 +1164,7 @@ actual class VideoPlayer actual constructor(
 
     private val listener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (clip != null) return
             val p = player ?: return
             if (playbackState == Player.STATE_READY) {
                 everReady = true
@@ -888,6 +1179,7 @@ actual class VideoPlayer actual constructor(
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (clip != null) return
             val p = player ?: return
             sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), isPlaying)
             recomputeState()
@@ -895,14 +1187,20 @@ actual class VideoPlayer actual constructor(
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = recomputeState()
 
-        override fun onPlayerError(error: PlaybackException) = fail(error)
+        override fun onPlayerError(error: PlaybackException) {
+            // ExoPlayer stands idle while an image plays; a late word from
+            // the file it was stopped on is not this player's failure.
+            if (clip == null) fail(error)
+        }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            if (clip != null) return
             val duration = player?.duration ?: return
             durationNanos = if (duration == C.TIME_UNSET || duration < 0) null else duration * NANOS_PER_MILLI
         }
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
+            if (clip != null) return
             if (videoSize.width > 0 && videoSize.height > 0) {
                 videoWidth = videoSize.width
                 videoHeight = videoSize.height
@@ -911,12 +1209,14 @@ actual class VideoPlayer actual constructor(
         }
 
         override fun onCues(cueGroup: CueGroup) {
+            if (clip != null) return
             if (selectedSubtitleId == null) return
             currentCues = cueGroup.cues
             publishCues()
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            if (clip != null) return
             val groups = tracks.groups
             if (groups.any { it.type == C.TRACK_TYPE_VIDEO }) hasVideo = true
             audioTrackList = groups.mapIndexedNotNull { i, g ->
@@ -959,6 +1259,7 @@ actual class VideoPlayer actual constructor(
         }
 
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            if (clip != null) return
             sampleClock(newPosition.positionMs * NANOS_PER_MILLI, System.nanoTime(), player?.isPlaying == true)
         }
     }
@@ -997,6 +1298,7 @@ actual class VideoPlayer actual constructor(
         handler.post {
             runCatching { player?.release() }
             player = null
+            closeClip()
         }
     }
 
@@ -1006,6 +1308,7 @@ actual class VideoPlayer actual constructor(
         handler.post {
             runCatching { player?.release() }
             player = null
+            closeClip()
             runCatching { bridge?.close() }
             bridge = null
             synchronized(mailbox) {
@@ -1063,20 +1366,35 @@ actual class VideoPlayer actual constructor(
         }
         const val CLOSE_BUDGET_MILLIS = 3_000L
 
+        /** Premultiplied RGBA back to straight, in place. Opaque and empty pixels are left as they are. */
+        fun unpremultiply(rgba: ByteArray) {
+            var i = 0
+            while (i < rgba.size) {
+                val a = rgba[i + 3].toInt() and 0xFF
+                if (a in 1..254) {
+                    for (c in 0..2) {
+                        val v = rgba[i + c].toInt() and 0xFF
+                        rgba[i + c] = ((v * 255 + a / 2) / a).coerceAtMost(255).toByte()
+                    }
+                }
+                i += 4
+            }
+        }
+
         // AudioFormat constants that arrive at API 31, named for the floor of 29.
         const val ENCODING_PCM_24BIT_PACKED = 21
         const val ENCODING_PCM_32BIT = 22
+
+        /** Folds any layout to two channels before the device is asked, which is what Stereo means. */
+        fun stereoFold() = ChannelMixingAudioProcessor().apply {
+            for (channels in 1..8) putChannelMixingMatrix(ChannelMixingMatrix.createForConstantGain(channels, 2))
+        }
 
         /**
          * The platform decoders a policy allows for video, the desktop's three
          * words: OFF software only, REQUIRE hardware only, AUTO the platform's
          * own order. Audio decoders are left alone: the policy is about video.
          */
-        /** Folds any layout to two channels before the device is asked, which is what Stereo means. */
-        fun stereoFold() = ChannelMixingAudioProcessor().apply {
-            for (channels in 1..8) putChannelMixingMatrix(ChannelMixingMatrix.createForConstantGain(channels, 2))
-        }
-
         fun codecSelector(hardware: HwAccel) = MediaCodecSelector { mimeType, secure, tunneling ->
             val all = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
             if (!mimeType.startsWith("video/")) return@MediaCodecSelector all

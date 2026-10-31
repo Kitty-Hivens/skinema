@@ -26,6 +26,12 @@ import java.nio.file.Path
  * of its own and paces the frames itself. On Android it plays through Media3
  * on the platform codecs, and the frames are drawn on the GPU into images the
  * player owns.
+ *
+ * Image files play through it on both: a still, or an animated GIF, APNG or
+ * WebP. Media3 plays none of them as video, so on Android the player paces
+ * their frames itself, against a clock of its own. A still has one frame and
+ * reads [State.Ended] unless it loops; on Android its clock then stands at
+ * zero, where the desktop turns a 40 ms lap over and over.
  */
 expect class VideoPlayer(
     path: Path,
@@ -331,7 +337,9 @@ expect class VideoPlayer(
      *
      * On Android the file is attached by preparing the item again at the
      * current position, so the sound pauses for as long as that takes, and
-     * the format is told by extension (.srt, .ass, .ssa, .vtt, .ttml).
+     * the format is told by extension (.srt, .ass, .ssa, .vtt, .ttml). An
+     * image file playing takes none there: Media3 lays out the cues, and it is
+     * not what plays an image.
      */
     fun addExternalSubtitles(file: Path): List<SubtitleTrack>
 

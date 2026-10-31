@@ -118,6 +118,13 @@ abstract class AndroidFixtures : DefaultTask() {
         }
         ffmpeg("still.jpg", "-f", "lavfi", "-i", "color=c=red:s=64x48", "-frames:v", "1")
         ffmpeg("still.png", "-f", "lavfi", "-i", "color=c=blue:s=64x48", "-frames:v", "1")
+        // Red over blue, for which way up a drawn picture lands, and red at half
+        // opacity, for whether its alpha comes back straight.
+        ffmpeg(
+            "split-v.png", "-f", "lavfi", "-i", "color=c=red:s=64x24", "-f", "lavfi", "-i", "color=c=blue:s=64x24",
+            "-filter_complex", "vstack", "-frames:v", "1",
+        )
+        ffmpeg("half-red.png", "-f", "lavfi", "-i", "color=c=red@0.5:s=64x48,format=rgba", "-frames:v", "1")
         ffmpeg("subs-movtext.mp4", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text")
     }
 }

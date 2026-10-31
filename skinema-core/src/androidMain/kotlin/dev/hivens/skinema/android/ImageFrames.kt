@@ -359,8 +359,8 @@ internal class ImageFrames(
  */
 internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
 
-    private val canvasBitmap = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
-    private val canvas = Canvas(canvasBitmap)
+    private val canvasBitmapField = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+    private val canvas = Canvas(canvasBitmapField)
     private val replace = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC) }
     private val over = Paint(Paint.FILTER_BITMAP_FLAG)
     private val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
@@ -387,7 +387,7 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
             }
         }
         val part = image.parts[index]
-        previous = if (part.dispose == ImagePart.Dispose.PREVIOUS) canvasBitmap.copy(Bitmap.Config.ARGB_8888, false) else null
+        previous = if (part.dispose == ImagePart.Dispose.PREVIOUS) canvasBitmapField.copy(Bitmap.Config.ARGB_8888, false) else null
         val frame = BitmapFactory.decodeByteArray(part.encoded, 0, part.encoded.size)
             ?: throw LibavException("the platform could not decode frame $index of the image")
         canvas.drawBitmap(frame, part.x.toFloat(), part.y.toFloat(), if (part.blend) over else replace)
@@ -398,7 +398,7 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
     private fun current(target: ByteArray?): VideoDecoder.RgbaFrame {
         // getPixels hands colours back unpremultiplied, which is the straight
         // alpha the RGBA contract promises.
-        canvasBitmap.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
+        canvasBitmapField.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
         val out = target?.takeIf { it.size == rgba.size } ?: rgba
         for (i in pixels.indices) {
             val c = pixels[i]
@@ -434,8 +434,35 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
         next = index
     }
 
+    // -- For the player, which paces the frames itself and draws the canvas --
+
+    val animated: Boolean get() = image.animated
+    val frameCount: Int get() = image.parts.size
+
+    /** The frame last composed onto [canvasBitmap], or -1 before the first. */
+    val shown: Int get() = lastDrawn
+
+    /** The composed picture. Premultiplied, as every software bitmap is, and changed by the next [show]. */
+    val canvasBitmap: Bitmap get() = canvasBitmapField
+
+    /** One lap of an animation; zero for a still. */
+    val lapNanos: Long get() = pts.last() + image.parts.last().durationNanos
+
+    fun ptsOf(index: Int): Long = pts[index]
+
+    /** The frame showing at [ptsNanos] within a lap. */
+    fun frameAt(ptsNanos: Long): Int = pts.indexOfLast { it <= ptsNanos }.coerceAtLeast(0)
+
+    /** Composes up to frame [index]: forward from the one shown when it can, from the start when it cannot. */
+    fun show(index: Int) {
+        if (index == lastDrawn) return
+        if (index < lastDrawn) landOn(0)
+        while (lastDrawn < index) compose(lastDrawn + 1)
+        next = index + 1
+    }
+
     /** One lap, for an animation; null for a still, which declares none. */
-    override fun durationNanos(): Long? = if (image.animated) pts.last() + image.parts.last().durationNanos else null
+    override fun durationNanos(): Long? = if (image.animated) lapNanos else null
     override fun tags(): Map<String, String> = emptyMap()
     override fun chapters(): List<Chapter> = emptyList()
     override fun coverArt(): ByteArray? = null
@@ -444,7 +471,7 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
     override fun hardwareActive(): Boolean = false
 
     override fun close() {
-        canvasBitmap.recycle()
+        canvasBitmapField.recycle()
         previous?.recycle()
     }
 
