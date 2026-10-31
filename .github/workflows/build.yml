@@ -136,7 +136,7 @@ jobs:
           # on a second backend, which is worth more than skipping the lot.
           # SKINEMA_REQUIRE_HWACCEL is deliberately NOT set: that one says the
           # machine decodes on the GPU, and this one does not.
-          - os: macos-14
+          - os: macos-15
             platform: macos-arm64
             tier: full
             caps: decode,subs,dvbsub,cea608,webp,encode,encav1,encopus,formats

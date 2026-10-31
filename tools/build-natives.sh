@@ -137,6 +137,18 @@ case "${MSYSTEM:-}|$(uname -m)" in
 esac
 [ "${MAC_CROSS_X64:-}" = "1" ] && HOST_ARCH=x64
 
+# The oldest macOS the bundle loads on, stated rather than inherited. Left
+# unset, clang takes the build machine's own version as the deployment target,
+# so the floor the README promises followed whichever runner image happened to
+# build the bundle, and moving to a newer image would have raised it in
+# silence. Every dependency here is built from source by this script, and
+# clang, cmake and meson all read the variable from the environment, so one
+# export covers the whole bundle. tools/check-bundle-floor.sh holds the result
+# against tools/bundle-floors.txt.
+if [ "$HOST_OS" = mac ]; then
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+fi
+
 mkdir -p "${1:-natives-out}"
 PREFIX="$(cd "${1:-natives-out}" && pwd)"
 WORK="${WORK:-/tmp/skinema-natives}"
