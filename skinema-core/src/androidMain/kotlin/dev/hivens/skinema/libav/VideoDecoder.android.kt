@@ -74,6 +74,14 @@ actual class VideoDecoder private constructor(
                 // it, as it does on the desktop.
                 if (hardware == HwAccel.REQUIRE) throw LibavException("no hardware decoder takes an image (HwAccel.REQUIRE)")
                 return VideoDecoder(ImageFrameSource(ImageFrames.read(input.readAll())), 0, input)
+            } catch (e: LibavException) {
+                input.close()
+                throw e
+            } catch (e: Exception) {
+                // The contract's one refusal type, whatever in the file tripped
+                // what reads it.
+                input.close()
+                throw LibavException("cannot read the image in ${input.label}: $e").apply { initCause(e) }
             } catch (t: Throwable) {
                 input.close()
                 throw t

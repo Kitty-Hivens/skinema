@@ -1,10 +1,13 @@
 package dev.hivens.skinema.android
 
+import androidx.test.platform.app.InstrumentationRegistry
 import dev.hivens.skinema.libav.DeviceFixtures
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -98,5 +101,36 @@ class ImageFrameSourceDeviceTest {
             assertNull(s.nextFrame())
         }
         source("still.png").use { s -> assertColour(0, 0, 255, s.nextFrame() ?: fail("a frame"), "png") }
+    }
+
+    @Test
+    fun aFileCutShortGivesTheFramesItHoldsWhole() {
+        val dir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        for (format in listOf("gif", "apng", "webp")) {
+            val whole = DeviceFixtures.path("anim.$format").toFile().readBytes()
+            // A download that stopped part way: libavformat reads the frames
+            // before the cut, and so does this.
+            val cut = dir.resolve("cut.$format").apply { writeBytes(whole.copyOf(whole.size * 6 / 10)) }
+            VideoDecoder.open(cut.toPath()).use { d ->
+                var count = 0
+                while (d.nextFrame() != null) count++
+                assertTrue(count in 2..9, "$format cut at 60% gave $count frames")
+            }
+        }
+    }
+
+    @Test
+    fun aDamagedOrImpossibleImageIsRefusedAsTheDecoderRefuses() {
+        val dir = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        fun le16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
+        val gif = "GIF89a".toByteArray(Charsets.US_ASCII)
+        // A canvas of 65535 x 65535, sixteen gigabytes of pixels.
+        val huge = dir.resolve("huge.gif").apply { writeBytes(gif + le16(65535) + le16(65535) + byteArrayOf(0, 0, 0, 0x3B)) }
+        assertFailsWith<LibavException> { VideoDecoder.open(huge.toPath()) }
+        // A graphic control block two bytes long where four are owed.
+        val short = dir.resolve("short-gce.gif").apply {
+            writeBytes(gif + le16(2) + le16(2) + byteArrayOf(0, 0, 0, 0x21, 0xF9.toByte(), 2, 0, 0, 0, 0x3B))
+        }
+        assertFailsWith<LibavException> { VideoDecoder.open(short.toPath()) }
     }
 }

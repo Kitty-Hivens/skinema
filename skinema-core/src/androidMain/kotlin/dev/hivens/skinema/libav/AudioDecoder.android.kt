@@ -208,6 +208,16 @@ actual class AudioDecoder private constructor(
         private const val ENCODING_PCM_24BIT_PACKED = 21
         private const val ENCODING_PCM_32BIT = 22
 
+        /** What the extractor says of the source's depth: bits per sample, or a raw track's own encoding. */
+        private fun deeperThan16(format: MediaFormat): Boolean {
+            val bits = format.intOrNull(KEY_BITS_PER_SAMPLE)
+            if (bits != null) return bits > 16
+            return format.intOrNull(MediaFormat.KEY_PCM_ENCODING) in setOf(AudioFormat.ENCODING_PCM_FLOAT, ENCODING_PCM_24BIT_PACKED, ENCODING_PCM_32BIT)
+        }
+
+        // The extractor's own key for a lossless track's depth; MediaFormat names no constant for it.
+        private const val KEY_BITS_PER_SAMPLE = "bits-per-sample"
+
         actual fun openOrNull(path: Path, streamIndex: Int?): AudioDecoder? = openFrom(Input.File(path), streamIndex)
 
         actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? = openFrom(Input.Source(source), streamIndex)
@@ -236,10 +246,18 @@ actual class AudioDecoder private constructor(
                 }
                 extractor.selectTrack(chosen)
                 val format = extractor.getTrackFormat(chosen)
+                // A decoder left to itself narrows a deeper source to 16 bits;
+                // asked for float, it carries all of them.
+                if (deeperThan16(format)) format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_FLOAT)
                 // Audio decode is software on every device that matters, and
                 // the policy word is the video side's; any decoder will do.
                 val codec = openDecoder(format, HwAccel.AUTO) { c -> c.configure(format, null, null, 0) }
-                val info = ContainerInfo.read(input)
+                val info = try {
+                    ContainerInfo.read(input)
+                } catch (t: Throwable) {
+                    runCatching { codec.release() }
+                    throw t
+                }
                 return AudioDecoder(
                     input, extractor, codec, chosen,
                     format.longOrNull(MediaFormat.KEY_DURATION)?.let { it * NANOS_PER_MICRO },

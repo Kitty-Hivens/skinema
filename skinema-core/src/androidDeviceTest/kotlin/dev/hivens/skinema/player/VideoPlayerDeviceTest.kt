@@ -173,8 +173,47 @@ class VideoPlayerDeviceTest {
             override fun mediaNanos() = 0L
         })
         awaitTrue(what = "Failed") { clocked.state is VideoPlayer.State.Failed }
+        val clockCause = assertIs<VideoPlayer.State.Failed>(clocked.state).cause
+        assertTrue("explicitClock" in clockCause.message.orEmpty(), "the refusal names the parameter: ${clockCause.message}")
         val missing = VideoPlayer(Path.of("/nonexistent/skinema.mp4")).also { players += it }
         awaitTrue(what = "Failed") { missing.state is VideoPlayer.State.Failed }
+    }
+
+    @Test
+    fun aFailedPlayerTakesNoMoreFilesAndKeepsItsFailureThroughTheClose() {
+        // With sound on, so the file switched to below is one this player's
+        // shape takes, and only the failure can refuse it.
+        val missing = VideoPlayer(Path.of("/nonexistent/skinema.m4a"), audio = true).also { players += it }
+        awaitTrue(what = "Failed") { missing.state is VideoPlayer.State.Failed }
+        // The desktop's thread has ended by now, and a switch finds nothing to run it.
+        missing.setSource(DeviceFixtures.path("sine-aac.m4a"))
+        Thread.sleep(1_500)
+        assertEquals("skinema.m4a", missing.source.fileName.toString(), "the switch was not taken")
+        assertTrue(missing.audioTracks.isEmpty(), "nothing plays after the failure")
+        assertIs<VideoPlayer.State.Failed>(missing.state)
+        missing.close()
+        assertIs<VideoPlayer.State.Failed>(missing.state, "the failure is what a consumer polls for, closed or not")
+    }
+
+    @Test
+    fun aSoundFileWithSoundOffFails() {
+        val p = player("sine-aac.m4a", audio = false)
+        awaitTrue(what = "Failed") { p.state is VideoPlayer.State.Failed }
+    }
+
+    @Test
+    fun aSoundPlayerKeepsItsShapeThroughAVideo() {
+        val p = player("sine-aac.m4a", audio = true, loop = true)
+        awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+        p.setSource(DeviceFixtures.path("red-with-sound.mp4"))
+        awaitTrue(what = "the switch") { p.source.fileName.toString() == "red-with-sound.mp4" }
+        awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+        Thread.sleep(500)
+        assertNull(p.acquireFrame(), "a sound player plays a video frameless")
+        // Still a sound player, so a sound file is taken.
+        p.setSource(DeviceFixtures.path("chapters.m4a"))
+        awaitTrue(what = "the second switch") { p.source.fileName.toString() == "chapters.m4a" || p.sourceFailure != null }
+        assertNull(p.sourceFailure, "a sound player took a sound file")
     }
 
     @Test
@@ -188,6 +227,40 @@ class VideoPlayerDeviceTest {
         assertTrue(abs(p.positionNanos() - stood) < 50_000_000, "time stood still")
         p.reportVisible(true)
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+    }
+
+    @Test
+    fun aSwitchWhileFrozenForAHiddenPictureStaysStopped() {
+        val p = player("long-with-sound.mp4", loop = true, unwatched = WhenUnwatched.Freeze)
+        awaitFrame(p)
+        p.reportVisible(false)
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        p.setSource(DeviceFixtures.path("red-with-sound.mp4"))
+        awaitTrue(what = "the switch") { p.source.fileName.toString() == "red-with-sound.mp4" }
+        awaitTrue(what = "the new file open") { p.state != VideoPlayer.State.Opening }
+        val stood = p.positionNanos()
+        Thread.sleep(500)
+        assertEquals(VideoPlayer.State.Paused, p.state, "nobody is watching the new file either")
+        assertTrue(abs(p.positionNanos() - stood) < 50_000_000, "time stood still")
+        p.reportVisible(true)
+        awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+    }
+
+    @Test
+    fun aPictureKeptOffForAHiddenVideoComesBackAfterAnImageInBetween() {
+        val p = player("long-with-sound.mp4", loop = true, unwatched = WhenUnwatched.KeepTime)
+        awaitFrame(p)
+        p.reportVisible(false)
+        Thread.sleep(200)
+        p.setSource(DeviceFixtures.path("rgb.gif"))
+        awaitTrue(what = "the image") { p.source.fileName.toString() == "rgb.gif" }
+        p.reportVisible(true)
+        awaitFrame(p) { it.width == 64 }
+        p.setSource(DeviceFixtures.path("red-h264.mp4"))
+        awaitTrue(what = "the video") { p.source.fileName.toString() == "red-h264.mp4" }
+        // Watched again, so the video's picture is on.
+        val red = awaitFrame(p) { it.width == 320 }
+        assertTrue(centre(red)[0] > 200, "the video's own picture")
     }
 
     @Test
@@ -249,6 +322,54 @@ class VideoPlayerDeviceTest {
     }
 
     @Test
+    fun quickStepsAreTakenOneFrameEachInTheOrderAsked() {
+        val p = player("long-with-sound.mp4", startPaused = true)
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        p.seek(1_500_000_000L)
+        val at = awaitFrame(p) { abs(it.ptsNanos - 1_500_000_000L) < 40_000_000 }
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        // Two presses before the first lands: two frames on, and the
+        // position is the frame on screen.
+        p.stepForward()
+        p.stepForward()
+        val two = lastFrameWithin(p, 1_500) ?: fail("frames after two steps")
+        assertTrue(abs(two - at.ptsNanos - 66_666_666) < 2_000_000, "two frames on: ${two - at.ptsNanos}")
+        assertTrue(abs(p.positionNanos() - two) < 2_000_000, "the position is the frame shown: ${p.positionNanos() - two}")
+        // Back, then forward, straight after each other: where it started.
+        p.stepBackward()
+        p.stepForward()
+        val again = lastFrameWithin(p, 2_000) ?: fail("frames after back and forth")
+        assertEquals(two, again, "back and forth lands where it was")
+    }
+
+    /** The pts of the last frame published within [millis], or null when none was. */
+    private fun lastFrameWithin(p: VideoPlayer, millis: Long): Long? {
+        var last: Long? = null
+        val until = System.nanoTime() + millis * 1_000_000
+        while (System.nanoTime() < until) {
+            p.acquireFrame()?.let { last = it.ptsNanos }
+            Thread.sleep(5)
+        }
+        return last
+    }
+
+    @Test
+    fun aSideLoadedSubtitleFileKeepsTheSoundTrackChosenBeforeIt() {
+        val p = player("two-sounds.mp4", loop = true, audio = true)
+        awaitTrue(what = "two sound tracks") { p.audioTracks.size == 2 }
+        val second = p.audioTracks[1].streamIndex
+        p.selectAudioTrack(second)
+        awaitTrue(what = "the second track") { p.activeAudioTrack == second }
+        // Attached by preparing the item again, which renames every track
+        // group; the choice made before is made again on the new ones.
+        val added = p.addExternalSubtitles(DeviceFixtures.path("subs.srt"))
+        assertEquals(1, added.size)
+        awaitTrue(what = "the prepare to land") { p.state == VideoPlayer.State.Playing }
+        Thread.sleep(1_500)
+        assertEquals(second, p.activeAudioTrack, "the chosen sound track after the side-load")
+    }
+
+    @Test
     fun awaitChangeWakesOnAFrameAndCloseSettlesClosed() {
         val p = player("red-h264.mp4")
         val seen = p.changeCount
@@ -265,5 +386,17 @@ class VideoPlayerDeviceTest {
         val auto = player("red-h264.mp4", hardware = HwAccel.AUTO)
         awaitFrame(auto)
         assertTrue(auto.hardwareActive, "a phone decodes H.264 on its hardware")
+        // AV1 in hardware is still rare on phones: REQUIRE either decodes it
+        // there or fails by name, and never plays on without a picture.
+        val required = player("blue-av1.mp4", hardware = HwAccel.REQUIRE)
+        awaitTrue(what = "a picture or the failure") { required.state is VideoPlayer.State.Failed || required.acquireFrame() != null }
+        val state = required.state
+        if (state is VideoPlayer.State.Failed) {
+            assertTrue("REQUIRE" in state.cause.message.orEmpty(), "the failure names the policy: ${state.cause.message}")
+        } else {
+            assertTrue(required.hardwareActive)
+        }
+        val software = player("blue-av1.mp4", hardware = HwAccel.AUTO)
+        assertTrue(centre(awaitFrame(software))[2] > 200, "AUTO falls back to software")
     }
 }

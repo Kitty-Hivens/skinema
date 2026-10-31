@@ -49,17 +49,17 @@ class AudioDecoderDeviceTest {
     }
 
     @Test
-    fun a24BitFLACConvertsToFloatWithoutLosingItsShape() {
+    fun a24BitFLACArrivesAsFloatAndA16BitSourceAsItself() {
         val d = AudioDecoder.openOrNull(DeviceFixtures.path("tone-flac24.flac")) ?: fail("an audio decoder")
         d.use {
             val first = d.nextChunk() ?: fail("a chunk")
             assertEquals(44_100, first.sampleRate)
             assertEquals(2, first.format.channels)
-            val wide = first.format.copy(encoding = PcmEncoding.F32LE, significantBits = 32)
-            val converted = d.convertLastAs(wide)
-            assertEquals(wide, converted.format)
-            assertEquals(first.byteCount / first.format.bytesPerFrame * 8, converted.byteCount)
+            // Narrowed to 16 bits, the shape would say so here.
+            assertEquals(PcmEncoding.F32LE, first.format.encoding, "the 24-bit file's shape")
         }
+        val aac = AudioDecoder.openOrNull(DeviceFixtures.path("sine-aac.m4a")) ?: fail("an audio decoder")
+        aac.use { assertEquals(PcmEncoding.S16LE, (it.nextChunk() ?: fail("a chunk")).format.encoding, "the AAC file's shape") }
     }
 
     @Test

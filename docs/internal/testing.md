@@ -191,7 +191,7 @@ Useful flags and env:
   fallback for a decoder with no software path of its own is covered on
   every row without either switch (`SoftwareFallbackTest`).
 
-A note on CI flakes: `taskset -c 0 ./gradlew test --no-daemon` pins the
+A note on CI flakes: `taskset -c 0 ./gradlew jvmTest --no-daemon` pins the
 build to one core and reproduces runner-starvation flakes locally that
 otherwise only appear on thrashed shared runners.
 

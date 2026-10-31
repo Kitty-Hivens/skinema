@@ -27,6 +27,7 @@ import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.FileDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
@@ -36,6 +37,7 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.BandwidthMeter
 import dev.hivens.skinema.Debug
 import dev.hivens.skinema.android.AppContext
 import dev.hivens.skinema.android.CueRasterizer
@@ -58,6 +60,7 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.NoVideoStreamException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.subtitles.SubtitleOverlay
@@ -240,7 +243,15 @@ actual class VideoPlayer actual constructor(
         get() = loopField
         set(value) {
             loopField = value
-            post { player?.repeatMode = if (value) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
+            post {
+                player?.repeatMode = if (value) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                // A still stands at its end all the time, so looping off ends
+                // it now, which is the next end of the file.
+                if (!value && clip?.animated == false && !clipEnded) {
+                    clipEnded = true
+                    recomputeState()
+                }
+            }
         }
 
     @Volatile
@@ -262,6 +273,11 @@ actual class VideoPlayer actual constructor(
     private var intendedNanos = 0L
     @Volatile
     private var hasVideo = false
+
+    // Whether the player's shape (picture or sound alone) is fixed. It is
+    // learnt from the first file and kept from then on, as on the desktop: a
+    // sound player that is switched to a video plays it frameless.
+    private var shapeSettled = false
     private var userPaused = startPaused
     private var autoPaused = false
     private var stopMode: StopMode? = null
@@ -369,6 +385,7 @@ actual class VideoPlayer actual constructor(
         lastPublishedPts = pts
         publishedSinceRead = true
         noteChange()
+        if (stepping) handler.post { onStepFrame() }
     }
 
     actual fun acquireFrame(): FrameSlot? {
@@ -425,7 +442,7 @@ actual class VideoPlayer actual constructor(
             val buffer = image.hardwareBuffer ?: return null
             val bitmap = buffer.use { Bitmap.wrapHardwareBuffer(it, ColorSpace.get(ColorSpace.Named.SRGB)) } ?: return null
             borrowed += image
-            return FrameBitmap(image, bitmap, latestPts, ::giveBack)
+            return FrameBitmap(image, bitmap, latestPts, ::giveBack, latestPremultiplied)
         }
     }
 
@@ -527,10 +544,15 @@ actual class VideoPlayer actual constructor(
 
     // -- Commands ----------------------------------------------------------------------
 
+    /**
+     * Runs [block] on the player thread. A failed player takes no more
+     * commands, as on the desktop, where the thread that would run them has
+     * ended: nothing a later call does can bring playback back.
+     */
     private fun post(block: () -> Unit) {
         if (closing) return
         handler.post {
-            if (closing) return@post
+            if (closing || stateField is State.Failed) return@post
             try {
                 block()
             } catch (t: Throwable) {
@@ -599,12 +621,7 @@ actual class VideoPlayer actual constructor(
             stepClip(if (next < c.frameCount) next else if (loopField) 0 else c.shown)
             return@post
         }
-        val p = player ?: return@post
-        userPaused = true
-        p.pause()
-        // The first frame at or after a millisecond past the one on screen is
-        // the next one: frames are never closer than that.
-        seekTo((lastPublishedPts / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI, exact = true)
+        queueStep(forward = true)
     }
 
     actual fun stepBackward() = post {
@@ -612,10 +629,49 @@ actual class VideoPlayer actual constructor(
             stepClip((c.shown - 1).coerceAtLeast(0))
             return@post
         }
-        val p = player ?: return@post
+        queueStep(forward = false)
+    }
+
+    // Steps not yet taken, in the order asked. A step lands where the frame on
+    // screen is, so each waits for the one before it (and for a seek in
+    // flight) to put its frame up: two quick presses are two frames.
+    private val queuedSteps = ArrayDeque<Boolean>()
+    private var stepBusy = false
+    private var stepFrom = 0L
+
+    // Read on the frame thread, which tells the player thread a frame landed
+    // only while something waits for one.
+    @Volatile
+    private var stepping = false
+    private val stepSettled = Runnable { stepLanded() }
+
+    private fun queueStep(forward: Boolean) {
+        val p = player ?: return
         userPaused = true
         p.pause()
+        queuedSteps.addLast(forward)
+        stepping = true
+        runSteps()
+    }
+
+    /** Takes the next queued step, unless one is landing or a seek is. */
+    private fun runSteps() {
+        if (stepBusy || seekPending) return
+        val forward = queuedSteps.removeFirstOrNull()
+        if (forward == null) {
+            stepping = false
+            return
+        }
+        stepBusy = true
         val shown = lastPublishedPts
+        stepFrom = shown
+        if (forward) {
+            // The first frame at or after a millisecond past the one on screen
+            // is the next one: frames are never closer than that.
+            seekTo((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI, exact = true)
+            handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
+            return
+        }
         val file = source
         // Which frame precedes the one on screen is only knowable by decoding
         // toward it, as on the desktop: run the platform decoder over the
@@ -625,8 +681,36 @@ actual class VideoPlayer actual constructor(
             val previous = runCatching { previousFramePts(file, shown) }
                 .onFailure { Debug.trace("step backward discovery", it) }
                 .getOrNull()
-            post { seekTo(previous ?: (shown - NANOS_PER_MILLI).coerceAtLeast(0), exact = true) }
+            post {
+                if (!stepBusy) return@post
+                seekTo(previous ?: (shown - NANOS_PER_MILLI).coerceAtLeast(0), exact = true)
+                handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
+            }
         }
+    }
+
+    /** A step's frame is up, or none is coming (the end of the file): the next step may go. */
+    private fun stepLanded() {
+        handler.removeCallbacks(stepSettled)
+        stepBusy = false
+        runSteps()
+    }
+
+    /** On the player thread, after a frame was published while a step waited. */
+    private fun onStepFrame() {
+        if (seekPending) return
+        if (stepBusy) {
+            if (lastPublishedPts != stepFrom) stepLanded()
+        } else {
+            runSteps()
+        }
+    }
+
+    private fun dropSteps() {
+        handler.removeCallbacks(stepSettled)
+        queuedSteps.clear()
+        stepBusy = false
+        stepping = false
     }
 
     private fun previousFramePts(file: Path, shown: Long): Long? {
@@ -694,6 +778,9 @@ actual class VideoPlayer actual constructor(
                 everReady = false
                 seekPending = false
                 lastPublishedPts = 0L
+                dropSteps()
+                chosenAudioTrack = null
+                reapplyChoices = false
                 // Subtitles go off with the file they belonged to, as on the desktop.
                 externals.clear()
                 selectedSubtitleId = null
@@ -719,22 +806,42 @@ actual class VideoPlayer actual constructor(
                 sampleClock(0L, System.nanoTime(), false)
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                    .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    // The picture as this player stands now: off while hidden
+                    // and keeping time, whichever engine was hiding it, and
+                    // off for good on a player whose shape is sound alone.
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, videoTrackDisabled || !picture)
+                    .build()
                 publishCues()
                 p.setMediaItem(mediaItem(path))
                 p.prepare()
-                if (!userPaused) p.play()
+                // A player stopped for a hidden picture stays stopped: the
+                // switch does not start a file nobody is watching.
+                p.playWhenReady = !userPaused && !autoPaused
             }
         }
     }
 
-    actual fun selectAudioTrack(streamIndex: Int) = post {
-        val p = player ?: return@post
-        val group = p.currentTracks.groups.getOrNull(streamIndex) ?: return@post
-        if (group.type != C.TRACK_TYPE_AUDIO) return@post
+    actual fun selectAudioTrack(streamIndex: Int) = post { overrideAudio(streamIndex) }
+
+    // The sound track chosen by index, kept so it can be chosen again when a
+    // re-preparation renames every track group (see addExternalSubtitles).
+    private var chosenAudioTrack: Int? = null
+
+    private fun overrideAudio(streamIndex: Int) {
+        val p = player ?: return
+        val group = p.currentTracks.groups.getOrNull(streamIndex) ?: return
+        if (group.type != C.TRACK_TYPE_AUDIO) return
+        chosenAudioTrack = streamIndex
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0)).build()
     }
+
+    // Set when the item is prepared again with side-loaded files attached:
+    // Media3 then merges sources, and every group comes back under a new
+    // identity that the overrides made before no longer match.
+    private var reapplyChoices = false
 
     // -- Subtitles ----------------------------------------------------------------------
 
@@ -791,6 +898,7 @@ actual class VideoPlayer actual constructor(
             val p = player ?: return@post
             val position = p.currentPosition
             val playing = p.playWhenReady
+            reapplyChoices = true
             p.setMediaItem(mediaItem(source), position)
             p.prepare()
             p.playWhenReady = playing
@@ -869,10 +977,6 @@ actual class VideoPlayer actual constructor(
 
     private val decodeWork = Executors.newSingleThreadExecutor { r -> Thread(r, "skinema-player-work").apply { isDaemon = true } }
 
-    init {
-        handler.post { open(path, explicitClock, audioTrack, startPaused) }
-    }
-
     /** The file, with every side-loaded subtitle file attached under its tagged id. */
     private fun mediaItem(path: Path): MediaItem = MediaItem.Builder()
         .setUri(Uri.fromFile(path.toFile()))
@@ -891,7 +995,7 @@ actual class VideoPlayer actual constructor(
         if (closing) return
         try {
             require(explicitClock == null) { "explicitClock is not supported on Android: ExoPlayer takes no external media clock" }
-            bridge = FrameBridge(::onImage)
+            bridge = FrameBridge(::onImage, ::fail)
             if (isImageFile(path)) {
                 startClip(path)
             } else {
@@ -930,9 +1034,16 @@ actual class VideoPlayer actual constructor(
                     else -> super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
                 }
         }.setMediaCodecSelector(codecSelector(hardware)).setEnableDecoderFallback(hardware == HwAccel.AUTO)
+        // Local files only, so nothing about the network is asked: the default
+        // bandwidth meter reads the network's country and watches its type,
+        // and platform diagnostics report every playback session to the
+        // system's media metrics service. Neither is wanted, both are on by
+        // default.
         val p = ExoPlayer.Builder(context, renderers)
             .setLooper(thread.looper)
             .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+            .setBandwidthMeter(NoBandwidthMeter)
+            .setUsePlatformDiagnostics(false)
             .build()
         player = p
         p.setVideoSurface(frames.inputSurface)
@@ -1188,12 +1299,20 @@ actual class VideoPlayer actual constructor(
             if (clip != null) return
             val p = player ?: return
             if (playbackState == Player.STATE_READY) {
+                val everReadyBefore = everReady
                 everReady = true
                 if (seekPending) {
                     seekPending = false
                     intendedNanos = p.currentPosition * NANOS_PER_MILLI
+                    // A step waiting behind this seek goes once its frame is
+                    // up; this covers a landing that puts up no new frame.
+                    if (stepping) handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
                 }
-                sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
+                // Paused on a picture, the position is the frame on screen,
+                // which the frame callback has set or is about to; the seek's
+                // target is a millisecond past the frame before it.
+                val pictureHolds = hasVideo && !videoTrackDisabled && !p.isPlaying && everReadyBefore
+                if (!pictureHolds) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
             }
             if (playbackState == Player.STATE_ENDED) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
             recomputeState()
@@ -1239,7 +1358,26 @@ actual class VideoPlayer actual constructor(
         override fun onTracksChanged(tracks: Tracks) {
             if (clip != null) return
             val groups = tracks.groups
-            if (groups.any { it.type == C.TRACK_TYPE_VIDEO }) hasVideo = true
+            val video = groups.filter { it.type == C.TRACK_TYPE_VIDEO }
+            // An empty report (the item cleared for the next one) settles nothing.
+            if (!shapeSettled && groups.isNotEmpty()) {
+                shapeSettled = true
+                if (video.isNotEmpty()) hasVideo = true
+                // Nothing to show and nothing asked to be heard: the desktop
+                // fails here too, since there is nothing to play.
+                if (!hasVideo && !audio) {
+                    fail(NoVideoStreamException("$source carries no video stream, and the player was made without sound"))
+                    return
+                }
+            }
+            // ExoPlayer plays on without a picture when no decoder takes it,
+            // which the hardware policy and the open contract both forbid.
+            if (hasVideo && video.isNotEmpty() && video.none { it.isSupported }) {
+                val type = video.first().getTrackFormat(0).sampleMimeType
+                val why = if (hardware == HwAccel.REQUIRE) "no hardware decoder takes $type (HwAccel.REQUIRE)" else "no decoder on this device takes $type"
+                fail(LibavException(why))
+                return
+            }
             audioTrackList = groups.mapIndexedNotNull { i, g ->
                 if (g.type != C.TRACK_TYPE_AUDIO) return@mapIndexedNotNull null
                 val f = g.getTrackFormat(0)
@@ -1256,6 +1394,13 @@ actual class VideoPlayer actual constructor(
             pendingAudioTrack?.let { wanted ->
                 pendingAudioTrack = null
                 if (wanted != selectedAudioTrack) selectAudioTrack(wanted)
+            }
+            if (reapplyChoices && groups.isNotEmpty()) {
+                reapplyChoices = false
+                // Same groups in the same order, under new identities: the
+                // choices are made again by index.
+                chosenAudioTrack?.let { wanted -> if (groups.getOrNull(wanted)?.isSelected == false) overrideAudio(wanted) }
+                selectedSubtitleId?.let { id -> subtitleGroup(id, tracks)?.takeIf { !it.isSelected }?.let { selectSubtitles(it, id) } }
             }
             embeddedSubtitles = groups.mapIndexedNotNull { i, g ->
                 if (g.type != C.TRACK_TYPE_TEXT) return@mapIndexedNotNull null
@@ -1340,7 +1485,9 @@ actual class VideoPlayer actual constructor(
             }
             decodeWork.shutdownNow()
             synchronized(changeMonitor) {
-                stateField = State.Closed
+                // A failure keeps its state through the close, as on the
+                // desktop: it is the answer a consumer polls for.
+                if (stateField !is State.Failed) stateField = State.Closed
                 changes++
                 changeMonitor.notifyAll()
             }
@@ -1353,8 +1500,17 @@ actual class VideoPlayer actual constructor(
         thread.join(CLOSE_BUDGET_MILLIS)
     }
 
+    // Last, after every property above is initialised: the open runs on the
+    // player thread, which can reach it before the constructor returns.
+    init {
+        handler.post { open(path, explicitClock, audioTrack, startPaused) }
+    }
+
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /** How long a step waits for its frame before the next step goes anyway. */
+        const val STEP_SETTLE_MILLIS = 400L
         const val NANOS_PER_MICRO = 1_000L
         const val TICK_MILLIS = 100L
         const val UNREAD_NANOS = 2_000_000_000L
@@ -1387,24 +1543,21 @@ actual class VideoPlayer actual constructor(
         }
         const val CLOSE_BUDGET_MILLIS = 3_000L
 
-        /** Premultiplied RGBA back to straight, in place. Opaque and empty pixels are left as they are. */
-        fun unpremultiply(rgba: ByteArray) {
-            var i = 0
-            while (i < rgba.size) {
-                val a = rgba[i + 3].toInt() and 0xFF
-                if (a in 1..254) {
-                    for (c in 0..2) {
-                        val v = rgba[i + c].toInt() and 0xFF
-                        rgba[i + c] = ((v * 255 + a / 2) / a).coerceAtMost(255).toByte()
-                    }
-                }
-                i += 4
-            }
-        }
-
         // AudioFormat constants that arrive at API 31, named for the floor of 29.
         const val ENCODING_PCM_24BIT_PACKED = 21
         const val ENCODING_PCM_32BIT = 22
+
+        /**
+         * A meter that measures nothing, for a player that loads nothing over
+         * a network. Media3 refuses its own NO_OP here, so this is that by
+         * another name.
+         */
+        object NoBandwidthMeter : BandwidthMeter {
+            override fun getBitrateEstimate(): Long = 0L
+            override fun getTransferListener(): TransferListener? = null
+            override fun addEventListener(eventHandler: Handler, eventListener: BandwidthMeter.EventListener) {}
+            override fun removeEventListener(eventListener: BandwidthMeter.EventListener) {}
+        }
 
         /** Folds any layout to two channels before the device is asked, which is what Stereo means. */
         fun stereoFold() = ChannelMixingAudioProcessor().apply {

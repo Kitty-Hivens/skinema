@@ -1,8 +1,19 @@
+@file:OptIn(UnstableApi::class)
+
 package dev.hivens.skinema.player
 
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.audio.AudioSink
+import dev.hivens.skinema.android.PcmSinkAudioSink
+import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.DeviceFixtures
+import java.nio.ByteBuffer
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -35,6 +46,9 @@ class PcmSinkDeviceTest {
             minOf(written, playedBefore + live)
         }
 
+        // A start or stop with no line open: a call out of the contract's order.
+        @Volatile var outOfOrder = 0
+
         override fun open(format: PcmFormat) {
             synchronized(offered) { offered += format }
             if (!accepts(format)) throw IllegalArgumentException("refused $format")
@@ -42,6 +56,9 @@ class PcmSinkDeviceTest {
                 this.format = format
                 written = 0; playedBefore = 0; running = true; startedAt = System.nanoTime()
             }
+            // Every new line at full gain, which the contract allows: the
+            // player owes the volume to each one.
+            lastVolume = 1f
         }
 
         override fun write(data: ByteArray, offset: Int, length: Int) {
@@ -53,6 +70,7 @@ class PcmSinkDeviceTest {
         }
 
         override fun stop() {
+            if (format == null) outOfOrder++
             synchronized(lock) {
                 if (running) { playedBefore = played(); running = false }
             }
@@ -60,6 +78,7 @@ class PcmSinkDeviceTest {
         }
 
         override fun start() {
+            if (format == null) outOfOrder++
             synchronized(lock) {
                 if (!running) { startedAt = System.nanoTime(); running = true }
             }
@@ -110,6 +129,107 @@ class PcmSinkDeviceTest {
         val advanced = p.positionNanos() - before
         assertTrue(advanced in 700_000_000L..1_300_000_000L, "a second of sink time moved the clock $advanced")
         assertTrue(sink.bytes > 0)
+        assertEquals(0, sink.outOfOrder, "starts or stops with no line open")
+    }
+
+    @Test
+    fun aSwitchToASoundOfAnotherShapeReopensTheSinkAndKeepsPlaying() {
+        val sink = PacedSink()
+        val p = VideoPlayer(DeviceFixtures.path("two-sounds.mp4"), loop = false, audio = true, sink = sink, volume = 0.4f).also { players += it }
+        awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+        awaitTrue(what = "two sound tracks") { p.audioTracks.size == 2 }
+        awaitTrue(what = "the first line") { sink.format?.channels == 2 }
+        Thread.sleep(500)
+        p.selectAudioTrack(p.audioTracks[1].streamIndex)
+        // Reopened while playing: a line opened and then left stopped takes a
+        // short buffer and blocks, and the clock stands with it.
+        awaitTrue(what = "the second line") { sink.format?.channels == 1 }
+        assertEquals(44_100, sink.format?.sampleRate)
+        awaitTrue(what = "the volume on the new line") { sink.lastVolume == 0.4f }
+        Thread.sleep(300)
+        val before = p.positionNanos()
+        Thread.sleep(800)
+        val advanced = p.positionNanos() - before
+        assertTrue(advanced in 500_000_000L..1_100_000_000L, "800 ms after the switch moved the clock $advanced")
+    }
+
+    @Test
+    fun aRateChangeLeavesThePositionWhereItWas() {
+        val sink = PacedSink()
+        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = false, audio = true, sink = sink).also { players += it }
+        awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
+        Thread.sleep(1_500)
+        // A second and a half played at 1x, counted again at 2x, would put the
+        // clock that far ahead at once.
+        val before = p.positionNanos()
+        p.setRate(2f)
+        Thread.sleep(150)
+        val faster = p.positionNanos() - before
+        assertTrue(faster in 0L..700_000_000L, "150 ms around a change to 2x moved the clock $faster")
+        // And counted at half speed, behind where it stood: the clock would
+        // hold still until the device caught up.
+        Thread.sleep(300)
+        val slowFrom = p.positionNanos()
+        p.setRate(0.5f)
+        Thread.sleep(400)
+        val slower = p.positionNanos() - slowFrom
+        assertTrue(slower in 50_000_000L..600_000_000L, "400 ms around a change to 0.5x moved the clock $slower")
+    }
+
+    // -- The adapter alone, fed the way ExoPlayer feeds it ----------------------
+
+    private val stereo48k: Format = Format.Builder()
+        .setSampleMimeType(MimeTypes.AUDIO_RAW).setPcmEncoding(C.ENCODING_PCM_16BIT)
+        .setChannelCount(2).setSampleRate(48_000).build()
+
+    /** Hands [seconds] of silence stamped [ptsUs] to [adapter], waiting for room as ExoPlayer does. */
+    private fun feed(adapter: PcmSinkAudioSink, seconds: Double, ptsUs: Long) {
+        val bytes = (48_000 * seconds).toInt() * 4
+        val buffer = ByteBuffer.wrap(ByteArray(bytes))
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (!adapter.handleBuffer(buffer, ptsUs, 1)) {
+            if (System.nanoTime() > deadline) fail("the adapter took no sound for 5 s")
+            Thread.sleep(5)
+        }
+    }
+
+    @Test
+    fun aGapInTheTimesReachesTheClockAtTheFrameItHappensOn() {
+        val sink = PacedSink()
+        val adapter = PcmSinkAudioSink(sink, ChannelPreference.Source) {}
+        try {
+            adapter.configure(AudioSink.AudioSinkConfig.Builder(stereo48k).build())
+            adapter.play()
+            // Half a second, then half a second more stamped a full second in:
+            // the next lap of a loop whose sound is shorter than its picture.
+            feed(adapter, 0.5, 0L)
+            feed(adapter, 0.5, 1_000_000L)
+            awaitTrue(what = "0.3 s played") { sink.framePosition() >= 14_400 }
+            val before = adapter.getCurrentPositionUs(false)
+            assertTrue(before in 250_000L..450_000L, "before the gap the clock read $before us")
+            awaitTrue(what = "0.7 s played") { sink.framePosition() >= 33_600 }
+            val after = adapter.getCurrentPositionUs(false)
+            assertTrue(after in 1_150_000L..1_400_000L, "past the gap the clock read $after us")
+        } finally {
+            adapter.release()
+        }
+    }
+
+    @Test
+    fun aPlayBeforeTheFormatIsKnownLeavesTheLineRunningOnceItOpens() {
+        val sink = PacedSink()
+        val adapter = PcmSinkAudioSink(sink, ChannelPreference.Source) {}
+        try {
+            // A renderer enabled while the player plays is started before its
+            // decoder has said what it puts out.
+            adapter.play()
+            adapter.configure(AudioSink.AudioSinkConfig.Builder(stereo48k).build())
+            feed(adapter, 0.3, 0L)
+            awaitTrue(what = "the device playing") { sink.framePosition() >= 4_800 }
+            assertEquals(0, sink.outOfOrder, "starts or stops with no line open")
+        } finally {
+            adapter.release()
+        }
     }
 
     @Test

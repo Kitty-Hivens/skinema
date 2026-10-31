@@ -1455,8 +1455,12 @@ README once the library is usable.
 
   Package names stay, `dev.hivens.skinema.libav` included, although nothing
   on Android is libav: renaming would break every consumer's imports for the
-  sake of a word. The published coordinates stay too, since Gradle resolves
-  the platform variant from module metadata. `skinema-skiko` stays desktop
+  sake of a word. The published coordinates stay for Gradle, which resolves
+  the platform variant from module metadata. They do not stay for a Maven,
+  sbt or Bazel build: those read the root POM, which for a multiplatform
+  module carries no classes, and have to name `skinema-core-jvm` (and
+  `skinema-compose-jvm`) instead. That is a break for those builds and the
+  release notes and README have to say so. `skinema-skiko` stays desktop
   only, and `skinema-natives` is not touched: Android needs no bundle.
 
   **What a parameter cannot mean on Android, it says.** A consumer clock
@@ -1468,11 +1472,20 @@ README once the library is usable.
   valid on both platforms, so shared code can ask for a codec without
   knowing which platform picks the encoder.
 
-  The network guarantee carries over by construction: the Android player is
-  built on a file data source and the `MediaSource` adapter only, so no
-  network data source is wired and the library needs no INTERNET permission.
-  Media3 carries no telemetry, though it does bring Guava and androidx with
-  it, which the README has to say.
+  The network guarantee carries over, though not by construction alone. The
+  Android player is built on a file data source and the `MediaSource`
+  adapter only, so no network data source is wired and the library needs no
+  INTERNET permission. But Media3 does more by default than that suggests,
+  and an earlier line here said it carried no telemetry, which was wrong. An
+  ExoPlayer left to its defaults reports every playback session to the
+  system's media metrics service (platform diagnostics, on from API 31), and
+  its default bandwidth meter reads the network's country and watches the
+  network type. Both are turned off where the player is built, the meter
+  replaced by one that measures nothing (Media3 refuses its own no-op there).
+  Its manifests also ask for ACCESS_NETWORK_STATE and WAKE_LOCK for features
+  this library never turns on, and the library's manifest removes both from
+  what Media3 brings, so an app does not ask for them on its account. It
+  also brings Guava and androidx, which the README has to say.
 
   The work runs in phases, each recorded below when it lands: the build
   restructure with no change in behaviour, the shared API, the Android
@@ -1723,6 +1736,75 @@ README once the library is usable.
   for carrying no sound. The open now asks the extractor whether the file
   has a picture, and the switch reads the shape on the player's thread,
   behind the open, as the desktop's queues behind its own.
+
+  A review of the whole branch before the CI phase, six readers each on one
+  part, found more than the phases had, and the two worst were about what
+  leaves the phone and what a hostile file can do. The diagnostics and the
+  bandwidth meter above are the first. The second: the QuickTime chapter
+  track was laid out by expanding each stsc entry's samples per chunk as the
+  file claimed, so a 400 KB file claiming 2^31 samples a chunk for a hundred
+  thousand chunks held the open for 2e14 steps, on the player's thread. The
+  walk is now bounded by the chunks and samples that exist. The image
+  containers threw whatever a short read threw on a file cut short (where
+  libavformat reads the frames before the cut, and now so does this) and
+  believed any canvas size a header gave, so a cut GIF failed with an index
+  exception from a call promised to throw `LibavException`, and a 65535 by
+  65535 one asked for sixteen gigabytes.
+
+  The consumer sink adapter had four. It opened a line and stopped it at
+  once, so a renderer started before its format was known (an audio-only
+  file at the open) played into a stopped line and stood. It counted all the
+  sound since the last flush at the current speed, so a change of rate moved
+  the clock by everything played so far (a minute at 1x read as two at 2x).
+  It forwarded volume changes but never set the volume on a line it opened,
+  which the `PcmSink` contract leaves to the player. And it ignored gaps in
+  the timestamps, which the platform sink absorbs. The clock is now a list
+  of stretches, each with the speed it was stretched at and any jump at its
+  start, so a rate change or a gap reaches the clock at the frame it happens
+  on. The audio decoder narrowed a 24-bit FLAC to 16 bits, against its own
+  contract, because the platform decoder does unless asked for float.
+
+  The player had more, mostly in what survives a change of engine or file.
+  A video track kept off for a hidden picture stayed off for ExoPlayer after
+  an image played in between, because the image engine cleared the flag
+  without telling it. A switch while stopped for a hidden picture started the
+  new file anyway. A sound player switched to a video took the video's shape
+  and then refused sound files. A failed player rebuilt ExoPlayer on the next
+  switch and played under a Failed state, and a close replaced the failure
+  with Closed, where the desktop keeps it. REQUIRE with no hardware decoder,
+  or a codec no decoder takes, played sound with no picture instead of
+  failing, since ExoPlayer drops an unsupported track quietly. Quick steps
+  aimed at the same frame, a side-loaded subtitle file dropped the chosen
+  sound track (the re-prepared item renames every group, and the overrides
+  then match none), and after a step the position read the seek's target,
+  one frame short, instead of the frame shown. The open was posted from an
+  `init` above properties the player thread reads, so it could run before
+  they were set.
+
+  The writer deleted a file that was already there when it refused before
+  touching it (a .mkv, an unknown codec, a codec the device lacks), and a
+  container that cannot hold a codec surfaced mid-write as an
+  `IllegalStateException`. Refusals now come before the file is opened, a
+  muxer refusal later is a `LibavException` that leaves no file, and a
+  failed finish can be retried. On the desktop a family standing for one
+  encoder was refused under the encoder's name rather than the family's.
+  Smaller: ten-bit limited range was scaled with the eight-bit factors (white
+  at 1020 of 1023), a stream with no declared duration reported its last
+  frame's start as its end, a translucent picture copied out of a hardware
+  frame came back premultiplied, a throw on the frame thread ended the
+  process instead of failing the player, and a frame left queued while every
+  image was out stayed there.
+
+  Every fix has a test, and every test was mutation-checked. Three first
+  passed against the fix they were written for. A loop whose sound is
+  shorter than its picture showed no stall through the player, so the gap
+  handling is held by feeding the adapter directly, and the same for a start
+  before the format is known. And a failed player switched to a video was
+  refused by the shape check before the failure could be what refused it
+  (it had failed on a missing file, so it knew no picture), so the test now
+  switches it to a sound file its shape takes. Left open: the first frame after a switch
+  between sizes is drawn at the old size for one frame, since ExoPlayer
+  releases it before it reports the new size, and HDR through the bridge.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

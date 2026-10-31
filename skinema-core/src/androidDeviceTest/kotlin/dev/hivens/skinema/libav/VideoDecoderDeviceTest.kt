@@ -104,7 +104,7 @@ class VideoDecoderDeviceTest {
         val e = assertFailsWith<LibavException> {
             VideoDecoder.open(DeviceFixtures.forwardOnlySource("red-h264.mp4"), HwAccel.AUTO).use { decodeAll(it) }
         }
-        assertTrue(e.message.orEmpty().isNotEmpty())
+        assertTrue("cannot seek" in e.message.orEmpty(), "the refusal names the seek: ${e.message}")
     }
 
     @Test
@@ -139,6 +139,18 @@ class VideoDecoderDeviceTest {
         VideoDecoder.open(DeviceFixtures.memorySource("anim.webp"), HwAccel.AUTO).use { assertEquals(10, decodeAll(it).size) }
         val e = assertFailsWith<LibavException> { VideoDecoder.open(DeviceFixtures.path("anim.gif"), HwAccel.REQUIRE).close() }
         assertTrue("REQUIRE" in e.message.orEmpty())
+    }
+
+    @Test
+    fun aStreamWithNoDeclaredDurationReportsWhereItsLastFrameEnds() {
+        VideoDecoder.open(DeviceFixtures.path("green-live.webm"), HwAccel.AUTO).use { d ->
+            val pts = decodeAll(d)
+            assertEquals(15, pts.size)
+            // Fifteen frames at 15 fps: the last starts at 933 ms and ends at a
+            // second, which is the length the desktop reports once it has read it.
+            val duration = d.durationNanos() ?: fail("a duration once the end was reached")
+            assertTrue(abs(duration - 1_000_000_000L) < 5_000_000, "duration $duration")
+        }
     }
 
     @Test

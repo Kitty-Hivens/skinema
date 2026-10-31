@@ -55,11 +55,19 @@ internal class CodecFrameSource private constructor(
     private var toneMapper: ToneMapper? = null
     private var toneMapperTransfer: Int? = null
 
-    private val declaredDuration: Long? = trackFormat.longOrNull(MediaFormat.KEY_DURATION)?.let { it * NANOS_PER_MICRO }
+    // A live muxer's file declares zero, which is no duration at all.
+    private val declaredDuration: Long? = trackFormat.longOrNull(MediaFormat.KEY_DURATION)?.takeIf { it > 0 }?.let { it * NANOS_PER_MICRO }
 
     @Volatile
     private var observedDuration: Long? = null
     private var lastFrameEndNanos = 0L
+    private var previousPtsNanos = -1L
+    private var lastGapNanos = 0L
+
+    // How long a frame stays, for where the last one ends: the declared rate,
+    // or failing that the gap the frames before it kept.
+    private val declaredFrameNanos: Long? = (trackFormat.numberOrNull(MediaFormat.KEY_FRAME_RATE))
+        ?.takeIf { it > 0.0 }?.let { (1_000_000_000.0 / it).toLong() }
 
     override fun durationNanos(): Long? = declaredDuration ?: observedDuration
     override fun tags(): Map<String, String> = info.tags
@@ -111,13 +119,21 @@ internal class CodecFrameSource private constructor(
                     }
                     heldIndex = index
                     heldPtsNanos = bufferInfo.presentationTimeUs * NANOS_PER_MICRO
-                    if (heldPtsNanos > lastFrameEndNanos) lastFrameEndNanos = heldPtsNanos
+                    noteFrameEnd(heldPtsNanos)
                     return if (convert) convertHeld(target) else metadataFrame()
                 }
             }
         }
         if (observedDuration == null && lastFrameEndNanos > 0) observedDuration = lastFrameEndNanos
         return null
+    }
+
+    /** Where the frame at [pts] ends, as the desktop counts a duration it had to observe: its start and its stay. */
+    private fun noteFrameEnd(pts: Long) {
+        if (previousPtsNanos >= 0 && pts > previousPtsNanos) lastGapNanos = pts - previousPtsNanos
+        previousPtsNanos = pts
+        val end = pts + (declaredFrameNanos ?: lastGapNanos)
+        if (end > lastFrameEndNanos) lastFrameEndNanos = end
     }
 
     override fun convertLast(target: ByteArray?): VideoDecoder.RgbaFrame {
@@ -136,6 +152,7 @@ internal class CodecFrameSource private constructor(
 
     private fun seekToMicros(micros: Long) {
         releaseHeld()
+        previousPtsNanos = -1L
         extractor.seekTo(micros, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
         codec.flush()
         inputDone = false
@@ -260,6 +277,7 @@ internal class CodecFrameSource private constructor(
                 input.close()
                 throw t
             }
+            var codec: MediaCodec? = null
             try {
                 val track = extractor.firstTrack("video/")
                 if (track < 0) throw NoVideoStreamException("${input.label} carries no video stream")
@@ -277,7 +295,7 @@ internal class CodecFrameSource private constructor(
                 } else {
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
                 }
-                val codec = openDecoder(format, hardware) { c ->
+                codec = openDecoder(format, hardware) { c ->
                     val configured = MediaFormat(format)
                     configured.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
                     c.configure(configured, null, null, 0)
@@ -288,6 +306,7 @@ internal class CodecFrameSource private constructor(
                     extractor.subtitleTracks(),
                 )
             } catch (t: Throwable) {
+                codec?.let { runCatching { it.release() } }
                 runCatching { extractor.release() }
                 input.close()
                 throw t

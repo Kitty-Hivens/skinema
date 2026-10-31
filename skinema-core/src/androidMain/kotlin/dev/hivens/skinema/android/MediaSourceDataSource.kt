@@ -15,6 +15,14 @@ internal class SourceCursor(val source: MediaSource) {
     private var position = 0L
 
     /**
+     * The seek this source refused, kept because the platform reader swallows
+     * what a data source throws and reports only that it could not open.
+     */
+    @Volatile
+    var refusal: String? = null
+        private set
+
+    /**
      * Reads at absolute [at]. The platform readers ask for bytes anywhere in
      * the stream, so a read away from where the source stands is a seek
      * first, and a source that cannot seek is refused at the first such read,
@@ -26,7 +34,11 @@ internal class SourceCursor(val source: MediaSource) {
         if (size == 0) return 0
         if (at != position) {
             val landed = source.seek(at)
-            if (landed < 0) throw IOException("the MediaSource cannot seek, and the platform reader asks for offset $at")
+            if (landed < 0) {
+                val why = "the MediaSource cannot seek, and the platform reader asks for offset $at"
+                refusal = why
+                throw IOException(why)
+            }
             position = landed
         }
         val read = source.read(buffer, offset, size)

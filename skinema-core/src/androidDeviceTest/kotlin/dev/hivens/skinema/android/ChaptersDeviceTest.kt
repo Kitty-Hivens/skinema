@@ -105,6 +105,45 @@ class ChaptersDeviceTest {
         el(0xB6, uint(0x91, start), el(0x80, el(0x85, title.toByteArray())), *extra)
 
     @Test
+    fun aChapterTrackClaimingBillionsOfSamplesPerChunkIsReadInBoundedTime() {
+        // One chunk table of 100 000 entries and one stsc entry saying each
+        // chunk holds 2^31 - 1 samples, for a track that has one. Expanded as
+        // claimed, that is 2e14 steps, and the open that reads it never returns.
+        val n = 100_000
+        fun u32(v: Int) = ByteBuffer.allocate(4).putInt(v).array()
+        fun box(type: String, vararg body: ByteArray): ByteArray {
+            val payload = body.fold(ByteArray(0)) { acc, b -> acc + b }
+            return u32(8 + payload.size) + type.toByteArray(Charsets.ISO_8859_1) + payload
+        }
+        fun full(type: String, vararg body: ByteArray) = box(type, ByteArray(4), *body)
+        val stbl = box(
+            "stbl",
+            full("stts", u32(1), u32(1), u32(1000)),
+            full("stsz", u32(0), u32(1), u32(10)),
+            full("stsc", u32(1), u32(1), u32(Int.MAX_VALUE), u32(1)),
+            full("stco", u32(n), ByteArray(4 * n)),
+        )
+        val trak = box(
+            "trak",
+            full("tkhd", ByteArray(8), u32(1), ByteArray(68)),
+            box("tref", box("chap", u32(1))),
+            box("mdia", full("mdhd", ByteArray(8), u32(1000), u32(1000), ByteArray(4)), box("minf", stbl)),
+        )
+        val moov = box("moov", full("mvhd", ByteArray(8), u32(1000), u32(1000), ByteArray(80)), trak)
+        val file = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("hostile-stsc.mp4")
+        file.writeBytes(box("ftyp", "isomisom".toByteArray()) + moov)
+        var result: List<Triple<Long, Long, String?>>? = null
+        val reader = Thread { result = Chapters.read(Input.File(file.toPath())).plain() }.apply {
+            isDaemon = true
+            start()
+            join(5_000)
+        }
+        assertTrue(!reader.isAlive, "still reading after 5 s")
+        // The one sample the track has, untitled: its bytes are no text sample.
+        assertEquals(listOf(Triple(0L, 1_000_000_000L, null)), result)
+    }
+
+    @Test
     fun aFileWithoutChaptersOrNotAContainerHasNone() {
         for (name in listOf("red-h264.mp4", "green-vp9.webm", "subs.mkv", "sine-aac.m4a", "still.png", "tone-flac24.flac")) {
             assertTrue(read(name).isEmpty(), name)

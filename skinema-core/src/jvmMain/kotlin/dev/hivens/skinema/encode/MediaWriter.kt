@@ -538,7 +538,10 @@ actual class MediaWriter private constructor(
         private fun openResolved(path: Path, video: VideoEncodeConfig?, audio: AudioEncodeConfig?): MediaWriter {
             val videoNames = video?.let { encoderCandidates(it.codecName) } ?: listOf(null)
             val audioNames = audio?.let { encoderCandidates(it.codecName) } ?: listOf(null)
-            if (videoNames.size == 1 && audioNames.size == 1) {
+            // Only encoder names take the direct path. A family name with one
+            // candidate still goes through the loop, so its refusal names the
+            // family that was asked for and not the encoder it stood for.
+            if (video?.codecName !in FAMILIES && audio?.codecName !in FAMILIES) {
                 return openInternal(path, video?.withCodec(videoNames[0]!!), audio?.withCodec(audioNames[0]!!))
             }
             val refusals = mutableListOf<String>()

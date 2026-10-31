@@ -134,6 +134,10 @@ class ImagePlayerDeviceTest {
         assertNull(looping.acquireFrame(), "nothing more to draw")
         assertEquals(0L, looping.positionNanos())
         assertEquals(VideoPlayer.State.Playing, looping.state)
+        // Looping off takes effect at the next end of the file, and a still
+        // is at its end: the desktop's one lap of 40 ms runs out.
+        looping.loop = false
+        awaitTrue(what = "Ended once looping is off") { looping.state == VideoPlayer.State.Ended }
     }
 
     @Test
@@ -162,6 +166,19 @@ class ImagePlayerDeviceTest {
             val px = it.copyPixels()
             val i = (24 * 64 + 32) * 4
             assertTrue((px[i + 2].toInt() and 0xFF) > 200 && (px[i].toInt() and 0xFF) < 60, "blue")
+        }
+        // Copied out, a translucent picture is straight, as acquireFrame's is.
+        val half = player("half-red.png")
+        var translucent: FrameBitmap? = null
+        awaitTrue(what = "a translucent bitmap") {
+            translucent = half.acquireFrameBitmap()
+            translucent != null
+        }
+        translucent!!.use {
+            val px = it.copyPixels()
+            val i = (24 * 64 + 32) * 4
+            val rgba = IntArray(4) { c -> px[i + c].toInt() and 0xFF }
+            assertTrue(abs(rgba[3] - 128) <= 2 && rgba[0] > 245, "full red at half opacity, got ${rgba.toList()}")
         }
     }
 

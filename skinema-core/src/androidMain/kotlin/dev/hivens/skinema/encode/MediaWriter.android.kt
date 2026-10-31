@@ -83,13 +83,21 @@ actual class MediaWriter private constructor(
         }
     }
 
+    /**
+     * Safe to call again after it threw, as on the desktop: each step that
+     * already happened (an end of stream queued, an encoder drained, the
+     * container closed) is not asked for twice, so a retry, or the close
+     * after a failed finish, resumes where the failure left off.
+     */
     actual fun finish() {
         check(!closed) { "finish after close()" }
         if (finished) return
         for (encoder in listOfNotNull(video, audio)) {
+            if (encoder.endQueued) continue
             val index = encoder.inputSlot(sink)
             val pts = if (encoder === audio) samplesQueued * 1_000_000L / checkNotNull(audioConfig).sampleRate else 0L
             encoder.codec.queueInputBuffer(index, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+            encoder.endQueued = true
         }
         for (encoder in listOfNotNull(video, audio)) encoder.drain(sink, final = true)
         sink.finish()
@@ -115,6 +123,7 @@ actual class MediaWriter private constructor(
         private val info = MediaCodec.BufferInfo()
         var track = -1
         var ended = false
+        var endQueued = false
 
         /** An input buffer index, draining output while the encoder has none free. */
         fun inputSlot(sink: Sink): Int {
@@ -168,13 +177,30 @@ actual class MediaWriter private constructor(
      * that come out before the last track's format are held and written once
      * it starts.
      */
-    private class MuxerSink(private val muxer: MediaMuxer, private val expectedTracks: Int) : Sink {
+    private class MuxerSink(
+        private val muxer: MediaMuxer,
+        private val expectedTracks: Int,
+        private val path: Path,
+        private val container: String,
+    ) : Sink {
         private var added = 0
         private var started = false
+        private var stopped = false
+        private var refusal: LibavException? = null
         private val held = ArrayList<Triple<Encoder, ByteArray, MediaCodec.BufferInfo>>()
 
         override fun addTrack(format: MediaFormat): Int {
-            val track = muxer.addTrack(format)
+            refusal?.let { throw it }
+            // What the platform muxer takes in each container is its own
+            // business and differs by release; its refusal is an
+            // IllegalStateException, said here as the contract says refusals.
+            val track = try {
+                muxer.addTrack(format)
+            } catch (e: IllegalStateException) {
+                throw refuse(format, e)
+            } catch (e: IllegalArgumentException) {
+                throw refuse(format, e)
+            }
             if (++added == expectedTracks) {
                 muxer.start()
                 started = true
@@ -184,7 +210,14 @@ actual class MediaWriter private constructor(
             return track
         }
 
+        /** Kept, so every later packet is refused the same way rather than held without end. */
+        private fun refuse(format: MediaFormat, cause: Exception): LibavException =
+            LibavException("the platform muxer does not take ${format.getString(MediaFormat.KEY_MIME)} in .$container")
+                .apply { initCause(cause) }
+                .also { refusal = it }
+
         override fun write(encoder: Encoder, buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+            refusal?.let { throw it }
             if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) return
             if (started) {
                 muxer.writeSampleData(encoder.track, buffer, info)
@@ -196,10 +229,18 @@ actual class MediaWriter private constructor(
         }
 
         override fun finish() {
-            if (started) muxer.stop()
+            if (started && !stopped) {
+                muxer.stop()
+                stopped = true
+            }
         }
 
-        override fun release() = muxer.release()
+        override fun release() {
+            runCatching { muxer.release() }
+            // Never started, it wrote no file worth keeping: a refusal leaves
+            // nothing behind.
+            if (!started) runCatching { Files.deleteIfExists(path) }
+        }
     }
 
     /**
@@ -210,6 +251,7 @@ actual class MediaWriter private constructor(
     private class FlacSink(path: Path) : Sink {
         private val file = RandomAccessFile(path.toFile(), "rw").apply { setLength(0) }
         private var headerWritten = false
+        private var done = false
 
         override fun addTrack(format: MediaFormat): Int {
             if (!headerWritten) format.getByteBuffer("csd-0")?.let { writeHeader(it) }
@@ -233,7 +275,12 @@ actual class MediaWriter private constructor(
             headerWritten = true
         }
 
-        override fun finish() = file.close()
+        override fun finish() {
+            if (done) return
+            file.close()
+            done = true
+        }
+
         override fun release() {
             runCatching { file.close() }
         }
@@ -255,10 +302,14 @@ actual class MediaWriter private constructor(
             dataBytes += pcm.size
         }
 
+        private var done = false
+
         override fun finish() {
+            if (done) return
             file.seek(0)
             file.write(header(dataBytes))
             file.close()
+            done = true
         }
 
         override fun release() {
@@ -311,17 +362,20 @@ actual class MediaWriter private constructor(
                 require(video.fps > 0) { "fps must be positive" }
             }
             val extension = path.fileName?.toString()?.substringAfterLast('.', "")?.lowercase().orEmpty()
+            // Everything that can be refused without touching the file is
+            // refused first: a refusal leaves nothing behind, and a file that
+            // was there before the call is not this writer's to delete.
+            checkContainer(extension, video, audio)
+            if (extension == "wav") {
+                val a = checkNotNull(audio)
+                return MediaWriter(WavSink(path, a.sampleRate), null, null, null, a, pcmOnly = true)
+            }
             val codecs = ArrayList<MediaCodec>()
             var sink: Sink? = null
+            // Set once the file has been created or truncated, which is when a
+            // refusal owes its removal.
+            var created = false
             try {
-                if (extension == "wav") {
-                    if (video != null) throw LibavException("a .wav file carries no picture")
-                    val a = checkNotNull(audio)
-                    if (a.codecName != "pcm_s16le" && a.codecName != "wav") {
-                        throw LibavException("a .wav file is written as pcm_s16le, not '${a.codecName}'")
-                    }
-                    return MediaWriter(WavSink(path, a.sampleRate), null, null, null, a, pcmOnly = true)
-                }
                 val videoEncoder = video?.let { config ->
                     val mime = videoMime(config.codecName) ?: throw LibavException("no Android codec type for '${config.codecName}'")
                     val format = MediaFormat.createVideoFormat(mime, config.width, config.height).apply {
@@ -354,22 +408,52 @@ actual class MediaWriter private constructor(
                     }
                     Encoder(createEncoder(format, config.codecName).also(codecs::add))
                 }
-                sink = when (extension) {
-                    "flac" -> {
-                        if (videoEncoder != null || audio?.let { audioMime(it.codecName) } != MediaFormat.MIMETYPE_AUDIO_FLAC) {
-                            throw LibavException("a .flac file carries FLAC sound and nothing else")
-                        }
-                        FlacSink(path)
-                    }
-                    "mkv", "mka" -> throw LibavException("Matroska (.$extension) cannot be written on Android: the platform muxer does not write it")
-                    else -> MuxerSink(MediaMuxer(path.toString(), muxerFormat(extension)), codecs.size)
-                }
+                val format = muxerFormat(extension)
+                created = true
+                sink = if (extension == "flac") FlacSink(path) else MuxerSink(MediaMuxer(path.toString(), format), codecs.size, path, extension)
                 return MediaWriter(sink, videoEncoder, audioEncoder, video, audio, pcmOnly = false)
             } catch (t: Throwable) {
                 for (codec in codecs) runCatching { codec.release() }
                 runCatching { sink?.release() }
-                runCatching { Files.deleteIfExists(path) }
+                if (created) runCatching { Files.deleteIfExists(path) }
                 throw t
+            }
+        }
+
+        /**
+         * The refusals a container and the codecs asked for make before
+         * anything opens: a container this platform has no writer for, and a
+         * codec the container cannot hold where the platform muxer is known to
+         * refuse it. MP4 and 3GP take different codecs on different releases,
+         * so what they refuse is learnt from the muxer as the first packet
+         * arrives, and refused by name then.
+         */
+        private fun checkContainer(extension: String, video: VideoEncodeConfig?, audio: AudioEncodeConfig?) {
+            val videoType = video?.let { videoMime(it.codecName) ?: throw LibavException("no Android codec type for '${it.codecName}'") }
+            val audioType = audio?.let { a ->
+                if (extension == "wav") null else audioMime(a.codecName) ?: throw LibavException("no Android codec type for '${a.codecName}'")
+            }
+            when (extension) {
+                "wav" -> {
+                    if (video != null) throw LibavException("a .wav file carries no picture")
+                    val a = checkNotNull(audio)
+                    if (a.codecName != "pcm_s16le") throw LibavException("a .wav file is written as pcm_s16le, not '${a.codecName}'")
+                }
+                "flac" -> if (video != null || audioType != MediaFormat.MIMETYPE_AUDIO_FLAC) {
+                    throw LibavException("a .flac file carries FLAC sound and nothing else")
+                }
+                "mkv", "mka" -> throw LibavException("Matroska (.$extension) cannot be written on Android: the platform muxer does not write it")
+                "webm" -> {
+                    videoType?.takeIf { it != MediaFormat.MIMETYPE_VIDEO_VP8 && it != MediaFormat.MIMETYPE_VIDEO_VP9 }
+                        ?.let { throw LibavException("a .webm file carries VP8 or VP9 video, not '${video.codecName}'") }
+                    audioType?.takeIf { it != MediaFormat.MIMETYPE_AUDIO_OPUS }
+                        ?.let { throw LibavException("a .webm file carries Opus sound here, not '${audio.codecName}'") }
+                }
+                "ogg", "opus" -> {
+                    if (video != null) throw LibavException("an .$extension file carries no picture")
+                    if (audioType != MediaFormat.MIMETYPE_AUDIO_OPUS) throw LibavException("an .$extension file carries Opus sound, not '${audio?.codecName}'")
+                }
+                else -> muxerFormat(extension)
             }
         }
 
@@ -378,6 +462,7 @@ actual class MediaWriter private constructor(
             "webm" -> MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
             "ogg", "opus" -> MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG
             "3gp" -> MediaMuxer.OutputFormat.MUXER_OUTPUT_3GPP
+            "flac" -> -1
             else -> throw LibavException("no Android container for '.$extension'")
         }
 

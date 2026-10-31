@@ -46,6 +46,18 @@ abstract class AndroidFixtures : DefaultTask() {
             "green-vp9.webm", "-f", "lavfi", "-i", "color=c=0x00FF00:s=320x240:r=15:d=1",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-g", "5",
         )
+        // AV1, which this decade's phones mostly decode in software alone: the
+        // hardware policy's REQUIRE case.
+        ffmpeg(
+            "blue-av1.mp4", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=15:d=1",
+            "-c:v", "libaom-av1", "-cpu-used", "8", "-pix_fmt", "yuv420p",
+        )
+        // As a live muxer writes it: no duration in the header, so a reader
+        // learns how long it is only by reaching the end.
+        ffmpeg(
+            "green-live.webm", "-f", "lavfi", "-i", "color=c=0x00FF00:s=320x240:r=15:d=1",
+            "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-g", "5", "-f", "webm", "-live", "1",
+        )
         // HD converted with the BT.709 matrix, once tagged and once not: the
         // untagged file is the geometry rule's case.
         val blueHd = arrayOf(
@@ -126,6 +138,14 @@ abstract class AndroidFixtures : DefaultTask() {
         )
         ffmpeg("half-red.png", "-f", "lavfi", "-i", "color=c=red@0.5:s=64x48,format=rgba", "-frames:v", "1")
         ffmpeg("subs-movtext.mp4", "-i", long, "-i", srt.path, "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text")
+        // Two sound tracks of different shapes, stereo at 48 kHz and mono at
+        // 44.1 kHz, so a switch between them reopens a sink while it plays.
+        ffmpeg(
+            "two-sounds.mp4", "-f", "lavfi", "-i", "testsrc2=s=160x120:r=30:d=4",
+            "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=4", "-f", "lavfi", "-i", "sine=f=880:sample_rate=44100:d=4",
+            "-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30",
+            "-c:a", "aac", "-ac:a:0", "2", "-ac:a:1", "1",
+        )
         // Two titled chapters over a second of picture, in each container that
         // carries them, read back against what was written. The .m4a is sound
         // alone, for the audio decoder.

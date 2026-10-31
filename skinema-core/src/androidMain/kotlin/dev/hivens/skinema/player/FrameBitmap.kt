@@ -15,6 +15,10 @@ class FrameBitmap internal constructor(
     val bitmap: Bitmap,
     val ptsNanos: Long,
     private val giveBack: (Image) -> Unit,
+    // A picture the library composed (an image file's frame) comes out of the
+    // GPU premultiplied, which is what the bitmap draws as; copied out, it is
+    // owed straight.
+    private val premultiplied: Boolean = false,
 ) : AutoCloseable {
 
     val width: Int get() = bitmap.width
@@ -22,7 +26,7 @@ class FrameBitmap internal constructor(
 
     private val closed = AtomicBoolean(false)
 
-    /** RGBA8888 of this frame, tightly packed, copied out of the image on the CPU. */
+    /** RGBA8888 of this frame, straight alpha, tightly packed, copied out of the image on the CPU. */
     fun copyPixels(): ByteArray {
         val plane = image.planes[0]
         val rowBytes = image.width * 4
@@ -32,6 +36,7 @@ class FrameBitmap internal constructor(
             buffer.position(row * plane.rowStride)
             buffer.get(out, row * rowBytes, rowBytes)
         }
+        if (premultiplied) unpremultiply(out)
         return out
     }
 
@@ -41,5 +46,20 @@ class FrameBitmap internal constructor(
         // freed by hand can go while that draw still reads it. The collector
         // frees it once nothing refers to it.
         if (closed.compareAndSet(false, true)) giveBack(image)
+    }
+}
+
+/** Premultiplied RGBA back to straight, in place. Opaque and empty pixels are left as they are. */
+internal fun unpremultiply(rgba: ByteArray) {
+    var i = 0
+    while (i < rgba.size) {
+        val a = rgba[i + 3].toInt() and 0xFF
+        if (a in 1..254) {
+            for (c in 0..2) {
+                val v = rgba[i + c].toInt() and 0xFF
+                rgba[i + c] = ((v * 255 + a / 2) / a).coerceAtMost(255).toByte()
+            }
+        }
+        i += 4
     }
 }

@@ -7,10 +7,19 @@ sitting and maintain it years from now. Keep that bar.
 ## Build and test
 
 ```
-./gradlew build          # compile + all modules' tests
+./gradlew build                         # compile both targets + the host tests
+./gradlew build -Pskinema.android=false # the same without an Android SDK
 ./gradlew :skinema-core:jvmTest
-./gradlew compileKotlinJvm   # quick compile check
+./gradlew compileKotlinJvm              # quick compile check
+./gradlew :skinema-core:connectedAndroidDeviceTest  # the Android suite, on a device
 ```
+
+The Android target needs an Android SDK to configure at all (compileSdk 37,
+pointed at by `ANDROID_HOME` or `local.properties`). Without one, pass
+`-Pskinema.android=false` and the desktop builds and tests alone. `build`
+runs the host tests only: the Android suite drives MediaCodec, which exists
+on a device or an emulator and nowhere else, so it runs through
+`connectedAndroidDeviceTest` with one attached.
 
 Toolchain: build on **JDK 25** (the foojay resolver fetches one if it
 is absent), emitting **JVM 22** bytecode -- `java.lang.foreign` went

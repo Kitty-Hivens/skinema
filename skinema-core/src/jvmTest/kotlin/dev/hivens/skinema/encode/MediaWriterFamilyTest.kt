@@ -1,11 +1,13 @@
 package dev.hivens.skinema.encode
 
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** Family names: one word both platforms take, the encoder left to the platform. */
@@ -25,6 +27,18 @@ class MediaWriterFamilyTest {
         assertEquals(listOf("libopus"), MediaWriter.encoderCandidates("opus"))
         assertEquals(listOf("libx264"), MediaWriter.encoderCandidates("libx264"))
         assertEquals(listOf("aac"), MediaWriter.encoderCandidates("aac"))
+    }
+
+    /**
+     * A family that cannot open is refused under the name the caller used,
+     * even when it stands for a single encoder whose own name does not
+     * contain it. A .wav takes no picture, so this is refused whether or not
+     * the FFmpeg in use carries libvpx.
+     */
+    @Test
+    fun `a refused family is refused by the family's name`() {
+        val e = assertFailsWith<LibavException> { MediaWriter.open(dir.resolve("x.wav"), VideoEncodeConfig("vp8", 64, 64, 10)).close() }
+        assertTrue("vp8" in e.message.orEmpty(), "the refusal names the family: ${e.message}")
     }
 
     /**

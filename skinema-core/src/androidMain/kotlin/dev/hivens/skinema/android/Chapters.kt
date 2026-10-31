@@ -130,23 +130,29 @@ internal object Chapters {
         val count = stsz.u32(8).coerceIn(0, MAX_SAMPLES)
         val sizes = IntArray(count) { if (fixedSize != 0) fixedSize else stsz.u32(12 + it * 4) }
 
-        // Where each sample sits: chunks in order, each holding the samples
-        // per chunk of the last stsc entry that starts at or before it.
+        // Where each sample sits: each stsc entry covers the chunks up to the
+        // next entry's first, every one holding its samples per chunk. Walked
+        // so the work is bounded by the chunks and samples that exist, never
+        // by what a size field claims.
         val sampleOffsets = LongArray(count)
         val entries = stsc.u32(4).coerceIn(0, MAX_SAMPLES)
+        fun firstChunk(e: Int) = (stsc.u32(8 + e * 12).toLong() and 0xFFFFFFFFL) - 1
         var sample = 0
-        for (chunk in offsets.indices) {
-            var perChunk = 0
-            for (e in 0 until entries) {
-                if (stsc.u32(8 + e * 12) - 1 <= chunk) perChunk = stsc.u32(8 + e * 12 + 4) else break
-            }
-            var at = offsets[chunk]
-            repeat(perChunk) {
-                if (sample < count) {
+        for (e in 0 until entries) {
+            if (sample >= count) break
+            val perChunk = stsc.u32(8 + e * 12 + 4).toLong() and 0xFFFFFFFFL
+            val until = if (e + 1 < entries) firstChunk(e + 1).coerceAtMost(offsets.size.toLong()) else offsets.size.toLong()
+            var chunk = firstChunk(e).coerceAtLeast(0)
+            while (chunk < until && sample < count) {
+                var at = offsets[chunk.toInt()]
+                var placed = 0L
+                while (placed < perChunk && sample < count) {
                     sampleOffsets[sample] = at
                     at += sizes[sample]
                     sample++
+                    placed++
                 }
+                chunk++
             }
         }
 

@@ -198,6 +198,37 @@ class MediaWriterDeviceTest {
     }
 
     @Test
+    fun aRefusalAtTheOpenLeavesAFileThatWasAlreadyThereAlone() {
+        val video = VideoEncodeConfig("h264", 320, 240, 30)
+        val cases = listOf(
+            "kept.mkv" to { p: Path -> MediaWriter.open(p, video) },
+            "kept.mp4" to { p: Path -> MediaWriter.open(p, VideoEncodeConfig("prores", 320, 240, 30)) },
+            "kept.webm" to { p: Path -> MediaWriter.open(p, video) },
+            "kept.ogg" to { p: Path -> MediaWriter.open(p, AudioEncodeConfig("aac", 48_000)) },
+            "kept.wav" to { p: Path -> MediaWriter.open(p, AudioEncodeConfig("aac", 48_000)) },
+        )
+        for ((name, open) in cases) {
+            val file = dir.resolve(name).apply { writeText("someone's file") }
+            assertFailsWith<LibavException>(name) { open(file.toPath()).close() }
+            assertEquals("someone's file", file.readText(), "$name after the refusal")
+        }
+    }
+
+    @Test
+    fun aCodecTheMuxerRefusesMidWriteIsRefusedByNameAndLeavesNothing() {
+        // MP4 takes VP8 on some releases and not on others, so either outcome
+        // is the platform's; what is this library's is how a refusal reads.
+        val path = out("vp8.mp4")
+        try {
+            writeRed(path, "vp8", frames = 10)
+            assertEquals(10, decodeVideo(path).first)
+        } catch (e: LibavException) {
+            assertTrue("vp8" in e.message.orEmpty(), "the refusal names the codec: ${e.message}")
+            assertTrue(!path.toFile().exists(), "a refused write left ${path.toFile().length()} bytes behind")
+        }
+    }
+
+    @Test
     fun theTranscoderRunsOnTheAndroidDecodersAndWriter() {
         val path = out("transcoded.mp4")
         Transcoder.open(DeviceFixtures.path("red-with-sound.mp4"), path, TranscodeConfig(videoCodec = "h264", audioCodec = "aac")).use { it.run() }

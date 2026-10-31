@@ -39,25 +39,33 @@ internal enum class YuvMatrix(val kr: Double, val kb: Double) {
  */
 internal class YuvToRgba(matrix: YuvMatrix, private val fullRange: Boolean) {
 
-    private val crToR: Int
-    private val cbToG: Int
-    private val crToG: Int
-    private val cbToB: Int
-    private val yScale: Int
 
-    init {
-        val kr = matrix.kr
-        val kb = matrix.kb
-        val kg = 1.0 - kr - kb
-        // Limited range spans 219 luma and 224 chroma codes of the 255.
-        val ys = if (fullRange) 1.0 else 255.0 / 219.0
-        val cs = if (fullRange) 1.0 else 255.0 / 224.0
-        yScale = fixed(ys)
-        crToR = fixed(2.0 * (1.0 - kr) * cs)
-        cbToB = fixed(2.0 * (1.0 - kb) * cs)
-        cbToG = fixed(2.0 * (1.0 - kb) * kb / kg * cs)
-        crToG = fixed(2.0 * (1.0 - kr) * kr / kg * cs)
+    /** The matrix in 16.16 fixed point for one code width: limited range spans a different share of 8 and of 10 bits. */
+    private class Coefficients(matrix: YuvMatrix, fullRange: Boolean, maxCode: Double, lumaCodes: Double, chromaCodes: Double) {
+        val yScale: Int
+        val crToR: Int
+        val cbToG: Int
+        val crToG: Int
+        val cbToB: Int
+
+        init {
+            val kr = matrix.kr
+            val kb = matrix.kb
+            val kg = 1.0 - kr - kb
+            val ys = if (fullRange) 1.0 else maxCode / lumaCodes
+            val cs = if (fullRange) 1.0 else maxCode / chromaCodes
+            yScale = fixed(ys)
+            crToR = fixed(2.0 * (1.0 - kr) * cs)
+            cbToB = fixed(2.0 * (1.0 - kb) * cs)
+            cbToG = fixed(2.0 * (1.0 - kb) * kb / kg * cs)
+            crToG = fixed(2.0 * (1.0 - kr) * kr / kg * cs)
+        }
     }
+
+    // Limited range spans 219 luma and 224 chroma codes of 255, and 876 and
+    // 896 of 1023.
+    private val eight = Coefficients(matrix, fullRange, 255.0, 219.0, 224.0)
+    private val ten = Coefficients(matrix, fullRange, 1023.0, 876.0, 896.0)
 
     /**
      * Writes [image]'s [crop] as tightly packed RGBA8888 into [out], which
@@ -76,18 +84,19 @@ internal class YuvToRgba(matrix: YuvMatrix, private val fullRange: Boolean) {
         val vRow = planes[2].rowStride
         val vPix = planes[2].pixelStride
         val yOffset = if (fullRange) 0 else 16
+        val k = eight
         var d = 0
         for (y in crop.top until crop.bottom) {
             val yLine = y * yRow
             val cLine = y / 2
             for (x in crop.left until crop.right) {
-                val luma = ((yBuf.get(yLine + x * yPix).toInt() and 0xFF) - yOffset) * yScale
+                val luma = ((yBuf.get(yLine + x * yPix).toInt() and 0xFF) - yOffset) * k.yScale
                 val cx = x / 2
                 val cb = (uBuf.get(cLine * uRow + cx * uPix).toInt() and 0xFF) - 128
                 val cr = (vBuf.get(cLine * vRow + cx * vPix).toInt() and 0xFF) - 128
-                out[d] = clamp8(luma + crToR * cr)
-                out[d + 1] = clamp8(luma - cbToG * cb - crToG * cr)
-                out[d + 2] = clamp8(luma + cbToB * cb)
+                out[d] = clamp8(luma + k.crToR * cr)
+                out[d + 1] = clamp8(luma - k.cbToG * cb - k.crToG * cr)
+                out[d + 2] = clamp8(luma + k.cbToB * cb)
                 out[d + 3] = OPAQUE
                 d += 4
             }
@@ -111,23 +120,32 @@ internal class YuvToRgba(matrix: YuvMatrix, private val fullRange: Boolean) {
         val uPix = planes[1].pixelStride
         val vRow = planes[2].rowStride
         val vPix = planes[2].pixelStride
-        // Ten-bit codes: limited range spans 876 luma and 896 chroma of 1023.
-        val yOff = if (fullRange) 0 else 64
         var d = 0
         for (y in crop.top until crop.bottom) {
             val cLine = y / 2
             for (x in crop.left until crop.right) {
-                val luma = (sample10(yBuf, y * yRow + x * yPix) - yOff) * yScale
                 val cx = x / 2
-                val cb = sample10(uBuf, cLine * uRow + cx * uPix) - CHROMA_MID_10
-                val cr = sample10(vBuf, cLine * vRow + cx * vPix) - CHROMA_MID_10
-                out[d] = clamp16(luma + crToR * cr)
-                out[d + 1] = clamp16(luma - cbToG * cb - crToG * cr)
-                out[d + 2] = clamp16(luma + cbToB * cb)
-                out[d + 3] = OPAQUE16
+                pixel10(
+                    sample10(yBuf, y * yRow + x * yPix),
+                    sample10(uBuf, cLine * uRow + cx * uPix),
+                    sample10(vBuf, cLine * vRow + cx * vPix),
+                    out, d,
+                )
                 d += 4
             }
         }
+    }
+
+    /** One pixel of ten-bit codes as RGBA64 at [at] in [out]. */
+    internal fun pixel10(y: Int, cb: Int, cr: Int, out: ShortArray, at: Int) {
+        val k = ten
+        val luma = (y - if (fullRange) 0 else 64) * k.yScale
+        val u = cb - CHROMA_MID_10
+        val v = cr - CHROMA_MID_10
+        out[at] = clamp16(luma + k.crToR * v)
+        out[at + 1] = clamp16(luma - k.cbToG * u - k.crToG * v)
+        out[at + 2] = clamp16(luma + k.cbToB * u)
+        out[at + 3] = OPAQUE16
     }
 
     private companion object {

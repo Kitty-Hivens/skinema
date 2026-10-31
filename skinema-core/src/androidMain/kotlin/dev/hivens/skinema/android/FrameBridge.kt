@@ -53,8 +53,15 @@ import java.util.concurrent.atomic.AtomicReference
  * closes every image it handed out: a reader replaced by a resize is kept
  * until the last of its images comes back, so a frame the consumer still
  * holds stays readable across a change of size.
+ *
+ * Anything that throws on the GL thread after construction (a reader the
+ * graphics memory cannot hold, a surface the driver refuses) goes to
+ * [onFailure] rather than up the thread, where it would end the process.
  */
-internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable {
+internal class FrameBridge(
+    private val onImage: (Image) -> Unit,
+    private val onFailure: (Throwable) -> Unit,
+) : AutoCloseable {
 
     private val thread = HandlerThread("skinema-frames").apply { start() }
     private val handler = Handler(thread.looper)
@@ -98,6 +105,12 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     @Volatile
     private var closed = false
 
+    // Frames the reader announced while every image was out, still queued in
+    // it: taken once the consumer gives one back. Changed on the GL thread,
+    // read anywhere as the hint that a give-back has a frame to bring out.
+    @Volatile
+    private var starved = 0
+
     // The newest picture handed to present() and not drawn yet. Newer
     // replaces older, so a reader that has stopped taking images holds back
     // one picture, not a queue of them.
@@ -116,26 +129,16 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
      */
     fun resize(width: Int, height: Int, redraw: Boolean = true) {
         if (width <= 0 || height <= 0) return
-        handler.post {
-            if (closed || (width == outWidth && height == outHeight)) return@post
+        guarded {
+            if (closed || (width == outWidth && height == outHeight)) return@guarded
             releaseOutput()
             val next = ImageReader.newInstance(
                 width, height, PixelFormat.RGBA_8888, MAX_IMAGES,
                 HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_CPU_READ_OFTEN or
                     HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
             )
-            next.setOnImageAvailableListener({ r ->
-                val image = try {
-                    r.acquireNextImage()
-                } catch (e: IllegalStateException) {
-                    // Every slot is held by the consumer. The frame waits in the
-                    // queue and comes out on the next notification.
-                    Debug.trace("frame bridge: no image slot free", e)
-                    null
-                } ?: return@setOnImageAvailableListener
-                synchronized(owners) { owners[image] = r }
-                onImage(image)
-            }, handler)
+            next.setOnImageAvailableListener({ r -> take(r) }, handler)
+            starved = 0
             windowSurface = EGL14.eglCreateWindowSurface(display, config, next.surface, intArrayOf(EGL14.EGL_NONE), 0)
             check(windowSurface != EGL14.EGL_NO_SURFACE) { "eglCreateWindowSurface failed: 0x${Integer.toHexString(EGL14.eglGetError())}" }
             reader = next
@@ -146,10 +149,33 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
     }
 
     /**
-     * Draws [bitmap], a software ARGB_8888 picture of the output's size, into
-     * the reader as an image stamped [timestamp], and recycles it. The bitmap
-     * is the bridge's from this call on. Sized by a [resize] made before it.
+     * Takes the next image out of [r] and hands it on. With every image out,
+     * the frame stays queued in the reader and is counted, to be taken when
+     * one comes back: the reader announces each frame once.
      */
+    private fun take(r: ImageReader) {
+        val image = try {
+            r.acquireNextImage()
+        } catch (e: IllegalStateException) {
+            Debug.trace("frame bridge: no image slot free", e)
+            if (r === reader) starved++
+            null
+        } ?: return
+        synchronized(owners) { owners[image] = r }
+        onImage(image)
+    }
+
+    /** Runs [block] on the GL thread, its failure reported rather than thrown there. */
+    private fun guarded(block: () -> Unit) {
+        handler.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                if (!closed) onFailure(t)
+            }
+        }
+    }
+
     /**
      * Whether frames arriving on [inputSurface] are drawn. Ordered with
      * [resize] and [present], so a frame that arrives after the call is held
@@ -165,7 +191,7 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             return
         }
         pendingStill.getAndSet(bitmap to timestamp)?.first?.recycle()
-        handler.post { drawStill() }
+        guarded { drawStill() }
     }
 
     private fun drawStill() {
@@ -227,7 +253,13 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
         stillProgram = link(VERTEX_SHADER, STILL_FRAGMENT_SHADER)
 
         surfaceTexture = SurfaceTexture(texture)
-        surfaceTexture.setOnFrameAvailableListener({ drawFrame() }, handler)
+        surfaceTexture.setOnFrameAvailableListener({
+            try {
+                drawFrame()
+            } catch (t: Throwable) {
+                if (!closed) onFailure(t)
+            }
+        }, handler)
         inputSurface = Surface(surfaceTexture)
     }
 
@@ -294,6 +326,12 @@ internal class FrameBridge(private val onImage: (Image) -> Unit) : AutoCloseable
             from?.takeIf { it in retired && owners.values.none { other -> other === it } }?.also { retired -= it }
         }
         emptied?.close()
+        // A slot is free now: a frame left queued while there was none comes out.
+        if (starved > 0) handler.post {
+            if (closed || starved == 0) return@post
+            starved--
+            reader?.let(::take)
+        }
     }
 
     private fun link(vertex: String, fragment: String): Int {

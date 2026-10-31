@@ -79,7 +79,8 @@ internal fun openExtractor(input: Input): MediaExtractor {
         }
     } catch (e: Exception) {
         extractor.release()
-        throw LibavException("the platform extractor cannot open ${input.label}: ${e.message}")
+        val why = (input as? Input.Source)?.cursor?.refusal ?: e.message
+        throw LibavException("the platform extractor cannot open ${input.label}: $why")
     }
     return extractor
 }
@@ -91,6 +92,9 @@ internal fun MediaExtractor.firstTrack(prefix: String): Int =
 internal fun MediaFormat.intOrNull(key: String): Int? = if (containsKey(key)) getInteger(key) else null
 
 internal fun MediaFormat.longOrNull(key: String): Long? = if (containsKey(key)) getLong(key) else null
+
+/** A value the platform stores as an integer on one device and a float on another, such as the frame rate. */
+internal fun MediaFormat.numberOrNull(key: String): Double? = if (containsKey(key)) getNumber(key)?.toDouble() else null
 
 /** Every audio track, keyed by its index in the container as the desktop keys them. */
 internal fun MediaExtractor.audioTracks(): List<AudioTrack> = (0 until trackCount).mapNotNull { i ->
