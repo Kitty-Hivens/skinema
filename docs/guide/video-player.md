@@ -15,7 +15,7 @@ image files, subtitles, chapters) are listed in [android.md](android.md).
 
 ```kotlin
 VideoPlayer(
-    path: Path,
+    input: MediaInput,
     loop: Boolean = true,
     audio: Boolean = false,
     explicitClock: MediaClock? = null,
@@ -30,7 +30,9 @@ VideoPlayer(
 )
 ```
 
-- `path` -- the file to play.
+- `input` -- what to play: `MediaInput.File(path)`, or
+  `MediaInput.Stream(source)` for bytes you hand over through a
+  `MediaSource`. See [Streams](#streams) below.
 - `loop` -- restart at EOF instead of ending. Default `true` (skinema's
   first job is looping backgrounds). The starting value of a property you
   can set later; see [Looping](#looping) below.
@@ -357,8 +359,8 @@ stopping.
 ## Changing the file
 
 ```kotlin
-fun setSource(path: Path)
-val source: Path                // @Volatile, the file playing now
+fun setSource(input: MediaInput)
+val source: MediaInput          // @Volatile, what is playing now
 val sourceFailure: Throwable?   // @Volatile, why the last switch did not take
 ```
 
@@ -398,11 +400,54 @@ on screen, the way a paused start shows its poster. A player that had
 ```kotlin
 // A queue, in full. The player is built once.
 var index = 0
-fun play(at: Int) { index = at; player.setSource(queue[at]) }
+fun play(at: Int) { index = at; player.setSource(MediaInput.File(queue[at])) }
 
 // ... and "next", from wherever you watch for the end:
 if (player.state is VideoPlayer.State.Ended) play((index + 1) % queue.size)
 ```
+
+## Streams
+
+```kotlin
+VideoPlayer(MediaInput.Stream(source), audio = true)
+val seekable: Boolean   // false only for a stream that reads forward only
+```
+
+A `MediaSource` is bytes you fetch and hand over: a download, memory, the
+segments a streaming companion assembles. The player pulls them; it does no
+I/O of its own, so the bundle's `--disable-network` holds. A stream goes
+everywhere a file does, `setSource` and the transcoder included, and a switch
+between a file and a stream is an ordinary switch.
+
+How it is read depends on one answer, asked once at the open: does
+`seek(0)` return 0?
+
+- **Yes, it can seek.** It is read the way a file is. The picture, the sound
+  and the subtitles each run their own demuxer, through a cursor of their own
+  over the one source, and the cursors take turns, so calls into it never
+  overlap. Everything works as on a file: seeks, steps, the loop, track
+  switches, subtitles turned on mid-play. Each side reads at its own
+  position, so the source is asked for different offsets in turn; keep
+  `seek` cheap, with a cache in front of anything slow.
+- **No, it reads forward only.** It is the shape of a live stream and can be
+  read once, so one demuxer reads it and hands each side the packets of its
+  stream. `seekable` reports false, and what such a stream cannot do is
+  refused by doing nothing: `seek`, `seekBy` and `stepBackward` leave the
+  player where it is, and a loop ends at the end of the stream instead of
+  turning. `stepForward` works. The position starts at zero where the stream
+  was joined. An audio track switch or a subtitle selection takes effect from
+  the next packets, and the clock steps to where those are. While the picture
+  is hidden and time runs on, only the newest pictures are kept, and the
+  picture rejoins from a keyframe. Read-ahead stops at about a second of each
+  stream, so a pause holds the stream where it was: a live source that cannot
+  wait has to buffer or drop on its own side.
+
+The player owns the stream from the moment it is handed over. A switch away
+from it closes it once nothing reads it any more, and a close closes it at
+once. `close()` may arrive while a read is blocked inside your source, and it
+must make that read return: that is how a stalled stream is torn down within
+the close budget. A read that throws fails the player, with your exception as
+the cause.
 
 ## Volume
 
