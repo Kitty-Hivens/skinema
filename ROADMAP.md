@@ -1843,7 +1843,8 @@ README once the library is usable.
   state when two instances run at once. A phone runs the same pair every
   step without trouble. So the two step tests that discover on a second
   decoder skip on the emulator, the fallback test still runs there, and the
-  job's skip ceiling is four.
+  job's skip ceiling is four (six once the second round added two more
+  tests that step back the same way).
 
   The next run caught a real one, which a phone hides. A pause, and the
   freeze for a hidden picture, published Paused at once, while the clock
