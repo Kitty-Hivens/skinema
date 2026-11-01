@@ -1918,6 +1918,18 @@ README once the library is usable.
   pause, which lags the clock there by two frames: frames released while
   the clock stands now move it only for a seek's landing.
 
+  A later emulator run showed the pause fix incomplete for a hidden
+  picture. While frames are off, the clock follows ExoPlayer's position on
+  every tick, and it kept doing so while stopped. That position, read on
+  the application thread, is the last one ExoPlayer's playback thread
+  published, so the pause read a value from before the stop, and the
+  playback thread then published where its own clock had actually stopped:
+  on the emulator 51 ms later, which the next tick copied into a clock the
+  state already called Paused. The tick now follows ExoPlayer only while it
+  plays, or once to stop a clock still running. As with the pause fix, the
+  window on a phone is a few milliseconds, so the emulator run is what holds
+  it.
+
   The documents close the phase. The README names Android in its opening,
   gives the Android dependency and the `-jvm` coordinates a non-Gradle build
   now needs, and its modules table states both floors.
