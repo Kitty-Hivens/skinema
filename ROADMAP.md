@@ -1833,6 +1833,15 @@ README once the library is usable.
   frame for the same reason, and the test that forces the discovery to fail
   catches both.
 
+  What set it off on the emulator is the emulator's own. Its log shows the
+  player's decoder unable to dequeue an output buffer for four seconds right
+  after the discovery's decoder ran beside it, and the host ffmpeg behind
+  both reporting slices with no parameter sets: the goldfish decoders lose
+  state when two instances run at once. A phone runs the same pair every
+  step without trouble. So the two step tests that discover on a second
+  decoder skip on the emulator, the fallback test still runs there, and the
+  job's skip ceiling is four.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

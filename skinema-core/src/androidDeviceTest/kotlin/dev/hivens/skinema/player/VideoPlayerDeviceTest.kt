@@ -4,6 +4,8 @@ import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.hasHardwareDecoder
+import dev.hivens.skinema.libav.onEmulator
+import org.junit.Assume.assumeFalse
 import java.nio.file.Path
 import kotlin.math.abs
 import kotlin.test.AfterTest
@@ -307,6 +309,12 @@ class VideoPlayerDeviceTest {
 
     @Test
     fun stepsMoveOneFrameEachWayAndStayPaused() {
+        // A step back decodes toward the shown frame on a second decoder beside
+        // the player's. The emulator's host-side decoder loses its parameter
+        // sets when two run at once and the player's then stalls; a phone's
+        // do not. The fallback path is covered there by the test that makes
+        // the discovery fail.
+        assumeFalse("the emulator's decoder does not run two instances reliably", onEmulator())
         val p = player("long-with-sound.mp4", startPaused = true)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
         p.seek(1_500_000_000L)
@@ -340,6 +348,12 @@ class VideoPlayerDeviceTest {
 
     @Test
     fun quickStepsAreTakenOneFrameEachInTheOrderAsked() {
+        // A step back decodes toward the shown frame on a second decoder beside
+        // the player's. The emulator's host-side decoder loses its parameter
+        // sets when two run at once and the player's then stalls; a phone's
+        // do not. The fallback path is covered there by the test that makes
+        // the discovery fail.
+        assumeFalse("the emulator's decoder does not run two instances reliably", onEmulator())
         val p = player("long-with-sound.mp4", startPaused = true)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
         p.seek(1_500_000_000L)
