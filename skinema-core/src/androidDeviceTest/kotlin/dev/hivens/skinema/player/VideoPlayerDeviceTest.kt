@@ -225,9 +225,13 @@ class VideoPlayerDeviceTest {
         awaitFrame(p)
         p.reportVisible(false)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        // Read the moment the state says Paused: the clock stops with it, not
+        // when ExoPlayer later reports that it stopped. A frame already on its
+        // way still lands and sets the position to itself, so a frame's worth
+        // of movement is allowed.
         val stood = p.positionNanos()
         Thread.sleep(500)
-        assertTrue(abs(p.positionNanos() - stood) < 50_000_000, "time stood still")
+        assertTrue(abs(p.positionNanos() - stood) < 50_000_000, "time stood still from the pause on: moved ${(p.positionNanos() - stood) / 1_000_000} ms")
         p.reportVisible(true)
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
     }

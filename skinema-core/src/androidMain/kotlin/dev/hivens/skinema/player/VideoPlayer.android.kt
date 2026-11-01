@@ -515,7 +515,7 @@ actual class VideoPlayer actual constructor(
             }
             if (mode == StopMode.FROZE && p.playWhenReady) {
                 autoPaused = true
-                p.pause()
+                stopNow(p)
             } else {
                 setVideoDisabled(true)
             }
@@ -563,8 +563,19 @@ actual class VideoPlayer actual constructor(
 
     actual fun pause() = post {
         userPaused = true
-        if (clip != null) freezeClip() else player?.pause()
+        if (clip != null) freezeClip() else player?.let(::stopNow)
         recomputeState()
+    }
+
+    /**
+     * Pauses ExoPlayer and stops the clock at its position in the same step.
+     * The state reads Paused at once, and ExoPlayer reports that it stopped
+     * only later; the clock ran on from the last frame's release time until
+     * then (which is a vsync ahead) and jumped back when the report came.
+     */
+    private fun stopNow(p: ExoPlayer) {
+        p.pause()
+        sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
     }
 
     actual fun resume() = post {
@@ -648,7 +659,7 @@ actual class VideoPlayer actual constructor(
     private fun queueStep(forward: Boolean) {
         val p = player ?: return
         userPaused = true
-        p.pause()
+        stopNow(p)
         queuedSteps.addLast(forward)
         stepping = true
         runSteps()

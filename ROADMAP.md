@@ -1842,6 +1842,18 @@ README once the library is usable.
   decoder skip on the emulator, the fallback test still runs there, and the
   job's skip ceiling is four.
 
+  The next run caught a real one, which a phone hides. A pause, and the
+  freeze for a hidden picture, published Paused at once, while the clock
+  stopped only when ExoPlayer reported it had stopped playing. Until then
+  it ran on from the last frame's release time, a vsync ahead, and then
+  jumped to ExoPlayer's position: on the emulator more than 50 ms after the
+  state said Paused. The clock now stops at ExoPlayer's position in the same
+  step as the pause. On a phone that window is a few milliseconds, too short
+  for any assertion to see, so this fix is held by the emulator run and not
+  by a mutation on the device: a tolerance tight enough to see it on the
+  phone also sees the frame already on its way when the pause lands, which
+  sets the position to itself and is correct.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
