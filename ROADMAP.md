@@ -1895,6 +1895,28 @@ README once the library is usable.
   file in a throwaway ExoPlayer with every track type off and asks whether a
   decoder takes the track the player's shape needs.
 
+  The device run of those fixes then turned up one the first round had made
+  itself. The platform's FLAC extractor does not hand out FLAC: it decodes
+  the file and hands out PCM already narrowed to 16 bits, under audio/raw,
+  and the raw decoder relabels whatever it is told rather than converting.
+  So asking it for float, the first round's fix for a 24-bit FLAC, labelled
+  16-bit samples as float and the decoder produced noise, while the test,
+  which looked only at the label, passed. Raw tracks are no longer asked, a
+  24-bit FLAC arrives through the decoder as 16-bit, which is what the
+  platform gives, and the test now holds the samples to the tone they are.
+  The player is not affected: Media3 reads FLAC itself.
+
+  Two of the round's guards are not visible on the phone, and are kept as
+  defence rather than proven: the step that lands only on a frame published
+  after its own seek, and the wait for frames still on their way when a
+  press pauses a playing player. Mutated singly or together, nothing fails,
+  because this phone's ExoPlayer releases no frame after the pause. The
+  same holds for a seek that ends at ENDED without READY, which this
+  phone's player does not do on the fixtures. And on the emulator the clock
+  of a paused player was set back to the last frame released after the
+  pause, which lags the clock there by two frames: frames released while
+  the clock stands now move it only for a seek's landing.
+
   The documents close the phase. The README names Android in its opening,
   gives the Android dependency and the `-jvm` coordinates a non-Gradle build
   now needs, and its modules table states both floors.

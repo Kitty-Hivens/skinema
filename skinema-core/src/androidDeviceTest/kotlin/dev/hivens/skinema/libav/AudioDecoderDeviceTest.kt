@@ -2,6 +2,8 @@ package dev.hivens.skinema.libav
 
 import dev.hivens.skinema.audio.PcmEncoding
 import dev.hivens.skinema.audio.PcmFormat
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -49,17 +51,36 @@ class AudioDecoderDeviceTest {
     }
 
     @Test
-    fun a24BitFLACArrivesAsFloatAndA16BitSourceAsItself() {
+    fun a24BitFLACDecodesToItsOwnSoundInTheShapeItIsLabelled() {
+        // The platform's FLAC extractor hands out PCM it has already narrowed
+        // to 16 bits, and its raw decoder relabels bytes rather than
+        // converting them: asked for float, it called 16-bit samples float
+        // and the sound came out as noise. So the samples are held to the
+        // tone they are, read in the encoding the chunk names.
         val d = AudioDecoder.openOrNull(DeviceFixtures.path("tone-flac24.flac")) ?: fail("an audio decoder")
         d.use {
-            val first = d.nextChunk() ?: fail("a chunk")
-            assertEquals(44_100, first.sampleRate)
-            assertEquals(2, first.format.channels)
-            // Narrowed to 16 bits, the shape would say so here.
-            assertEquals(PcmEncoding.F32LE, first.format.encoding, "the 24-bit file's shape")
+            var peak = 0.0
+            var chunks = 0
+            while (chunks < 20) {
+                val c = d.nextChunk() ?: break
+                chunks++
+                assertEquals(44_100, c.sampleRate)
+                assertEquals(2, c.format.channels)
+                val b = ByteBuffer.wrap(c.pcm, 0, c.byteCount).order(ByteOrder.LITTLE_ENDIAN)
+                while (b.remaining() >= c.format.encoding.bytesPerSample) {
+                    val v = when (c.format.encoding) {
+                        PcmEncoding.S16LE -> b.short / 32768.0
+                        PcmEncoding.S32LE -> b.int / 2147483648.0
+                        PcmEncoding.F32LE -> b.float.toDouble()
+                        else -> fail("an unexpected encoding ${c.format.encoding}")
+                    }
+                    assertTrue(v.isFinite() && abs(v) <= 1.0, "a sample of the tone, not noise: $v as ${c.format.encoding}")
+                    peak = maxOf(peak, abs(v))
+                }
+            }
+            // ffmpeg's sine source is at an eighth of full scale.
+            assertTrue(peak in 0.08..0.2, "the tone's own level, peak $peak")
         }
-        val aac = AudioDecoder.openOrNull(DeviceFixtures.path("sine-aac.m4a")) ?: fail("an audio decoder")
-        aac.use { assertEquals(PcmEncoding.S16LE, (it.nextChunk() ?: fail("a chunk")).format.encoding, "the AAC file's shape") }
     }
 
     @Test

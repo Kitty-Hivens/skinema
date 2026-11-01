@@ -129,8 +129,9 @@ decoder, converting to RGBA on the CPU with the same colour rules the
 desktop follows. HDR in PQ or HLG is tone-mapped to SDR from Android 13,
 where the platform hands out ten-bit frames. A `MediaSource` has to be
 seekable, since the platform extractor reads by offset. Closed-caption bytes
-are not available. A 24-bit lossless source arrives as float, which carries
-its 24 bits exactly.
+are not available. A 24-bit FLAC arrives as 16-bit: the platform's FLAC
+extractor narrows it before any decoder sees it, which the player does not
+share, since Media3 reads FLAC itself.
 
 ## Writing
 

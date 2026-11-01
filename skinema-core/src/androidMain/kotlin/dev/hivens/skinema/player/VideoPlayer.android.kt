@@ -271,6 +271,10 @@ actual class VideoPlayer actual constructor(
     @Volatile
     private var bridge: FrameBridge? = null
     private var everReady = false
+
+    // Read on ExoPlayer's playback thread too, where the frame callback asks
+    // whether a frame released while the clock stands is a seek landing.
+    @Volatile
     private var seekPending = false
     private var intendedNanos = 0L
     @Volatile
@@ -1214,7 +1218,10 @@ actual class VideoPlayer actual constructor(
             if (clipActive) return@setVideoFrameMetadataListener
             val pts = presentationTimeUs * NANOS_PER_MICRO
             releaseToPts[releaseTimeNs] = pts
-            sampleClock(pts, releaseTimeNs, clockRunning)
+            // A standing clock moves for a seek's landing frame and for
+            // nothing else: a frame already on its way when a pause landed
+            // would set it back to wherever the picture lagged the clock.
+            if (clockRunning || seekPending) sampleClock(pts, releaseTimeNs, clockRunning)
         }
         p.repeatMode = if (loopField) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
         p.volume = if (audio) volumeField else 0f

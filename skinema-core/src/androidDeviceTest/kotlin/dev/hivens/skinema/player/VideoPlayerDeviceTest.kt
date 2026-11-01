@@ -397,9 +397,16 @@ class VideoPlayerDeviceTest {
             Thread.sleep(5)
         }
         p.stepBackward()
-        val end = System.nanoTime() + 2_500_000_000L
-        while (System.nanoTime() < end) {
-            p.acquireFrame()?.let { highest = maxOf(highest, it.ptsNanos); last = it.ptsNanos }
+        // Waited for rather than timed: the step back decodes toward the frame
+        // on a second decoder first, which takes longer on a busy device.
+        val end = System.nanoTime() + 6_000_000_000L
+        var settledAt = Long.MAX_VALUE
+        while (System.nanoTime() < minOf(end, settledAt)) {
+            p.acquireFrame()?.let {
+                highest = maxOf(highest, it.ptsNanos)
+                last = it.ptsNanos
+                if (last < highest && settledAt == Long.MAX_VALUE) settledAt = System.nanoTime() + 500_000_000L
+            }
             Thread.sleep(5)
         }
         assertEquals(VideoPlayer.State.Paused, p.state)

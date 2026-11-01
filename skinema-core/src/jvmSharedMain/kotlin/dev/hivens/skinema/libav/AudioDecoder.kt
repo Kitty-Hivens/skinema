@@ -12,9 +12,11 @@ import java.nio.file.Path
  *
  * On the desktop this is FFmpeg, and the shape is whatever the decoder emits,
  * 24-bit content arriving as 32-bit integer. On Android it is the platform
- * extractor and a MediaCodec decoder, which produce 16-bit integer or float,
- * so 24-bit content arrives as float; conversion is done in Kotlin. Chapters
- * there are read as [VideoDecoder] reads them.
+ * extractor and a MediaCodec decoder, which produce 16-bit integer or float;
+ * a compressed source deeper than 16 bits is asked for float, and FLAC
+ * arrives as 16-bit, because the platform's FLAC extractor narrows it before
+ * any decoder sees it. Conversion is done in Kotlin. Chapters there are read
+ * as [VideoDecoder] reads them.
  */
 expect class AudioDecoder : AutoCloseable {
 

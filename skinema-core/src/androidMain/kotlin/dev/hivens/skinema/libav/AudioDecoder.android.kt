@@ -27,9 +27,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * [convertLastAs] asks for another.
  *
  * The platform decoders produce 16-bit integer or float, and more channels
- * than two only where the codec carries them; a 24-bit lossless file comes
- * out as float rather than as 32-bit integer, which carries those 24 bits
- * exactly.
+ * than two only where the codec carries them. A compressed source deeper than
+ * 16 bits is asked for float. FLAC is not compressed by the time it gets
+ * here: the platform's FLAC extractor decodes it itself and hands out PCM
+ * narrowed to 16 bits, which is what arrives.
  */
 actual class AudioDecoder private constructor(
     private val input: Input,
@@ -210,9 +211,11 @@ actual class AudioDecoder private constructor(
 
         /**
          * Whether a decoder would narrow this source: a compressed track that
-         * says it is deeper than 16 bits. A raw PCM track is never asked: the
-         * platform's raw decoder passes the bytes through as they are and would
-         * only relabel them.
+         * says it is deeper than 16 bits. A raw PCM track is never asked. The
+         * platform's raw decoder relabels the bytes it is handed rather than
+         * converting them, and the platform's FLAC extractor is one that hands
+         * out raw PCM, already narrowed to 16 bits: asked for float, it
+         * called those samples float, and the sound came out as noise.
          */
         private fun deeperThan16(format: MediaFormat): Boolean {
             if (format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_AUDIO_RAW) return false
