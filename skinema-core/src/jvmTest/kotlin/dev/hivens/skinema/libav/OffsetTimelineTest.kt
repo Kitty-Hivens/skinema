@@ -106,7 +106,7 @@ class OffsetTimelineTest {
         // its own length takes about a second, one that measures the declared
         // duration takes eleven.
         val file = offset("loop.mkv", "1")
-        VideoPlayer(file, loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(file), loop = true, audio = false).use { player ->
             fun awaitWrap(deadlineMs: Long): Long? {
                 val deadline = System.currentTimeMillis() + deadlineMs
                 var last = -1L

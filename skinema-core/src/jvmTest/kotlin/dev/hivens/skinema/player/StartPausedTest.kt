@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -49,7 +50,7 @@ class StartPausedTest {
     }
 
     private fun player(source: ScriptedFrameSource, startPaused: Boolean) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, startPaused, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, startPaused, 1f, ChannelPreference.Source,
     ) { source }
 
     /** Media time forward by [millis], the way a device consuming would. */
@@ -137,7 +138,7 @@ class StartPausedTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
         VideoPlayer(
-            audioOnly("held.flac", "3"),
+            MediaInput.File(audioOnly("held.flac", "3")),
             loop = false,
             audio = true,
             sink = sink,
@@ -176,7 +177,7 @@ class StartPausedTest {
             "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "flac",
         )
-        VideoPlayer(av, loop = false, audio = true, sink = sink, startPaused = true).use { p ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink, startPaused = true).use { p ->
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "state=${p.state}")
             assertTrue(awaitTrue { p.acquireFrame() != null }, "the poster frame must publish")
             Thread.sleep(500)
@@ -196,7 +197,7 @@ class StartPausedTest {
     fun `the volume asked for is on the line before the first sample`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        VideoPlayer(audioOnly("quiet.flac", "2"), loop = false, audio = true, sink = sink, volume = 0.25f)
+        VideoPlayer(MediaInput.File(audioOnly("quiet.flac", "2")), loop = false, audio = true, sink = sink, volume = 0.25f)
             .use { p ->
                 assertTrue(awaitTrue { sink.totalBytes > 0 }, "sound must reach the sink, state=${p.state}")
                 assertEquals(
@@ -212,7 +213,7 @@ class StartPausedTest {
     fun `an out-of-range volume is clamped rather than passed on`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        VideoPlayer(audioOnly("loud.flac", "2"), loop = false, audio = true, sink = sink, volume = 4f)
+        VideoPlayer(MediaInput.File(audioOnly("loud.flac", "2")), loop = false, audio = true, sink = sink, volume = 4f)
             .use { p ->
                 assertTrue(awaitTrue { sink.totalBytes > 0 }, "sound must reach the sink, state=${p.state}")
                 assertEquals(1f, sink.volumeAtFirstWrite, "a sink must never be handed a gain above one")
@@ -229,7 +230,7 @@ class StartPausedTest {
     fun `NaN is not a volume and leaves the default standing`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        VideoPlayer(audioOnly("nan.flac", "2"), loop = false, audio = true, sink = sink, volume = Float.NaN)
+        VideoPlayer(MediaInput.File(audioOnly("nan.flac", "2")), loop = false, audio = true, sink = sink, volume = Float.NaN)
             .use { p ->
                 assertTrue(awaitTrue { sink.totalBytes > 0 }, "sound must reach the sink, state=${p.state}")
                 assertEquals(1f, sink.volumeAtFirstWrite, "NaN must not reach the sink")

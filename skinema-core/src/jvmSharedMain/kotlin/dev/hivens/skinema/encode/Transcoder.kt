@@ -6,6 +6,7 @@ import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Path
 
 /**
@@ -298,16 +299,20 @@ class Transcoder private constructor(
          * when the input carries no video, or when either decoder refuses
          * it.
          */
-        fun open(input: Path, output: Path, config: TranscodeConfig): Transcoder {
-            val video = FrameSources.open(input)
+        fun open(input: MediaInput, output: Path, config: TranscodeConfig): Transcoder {
+            val file = when (input) {
+                is MediaInput.File -> input.path
+                is MediaInput.Stream -> throw LibavException("a MediaSource does not transcode yet")
+            }
+            val video = FrameSources.open(file)
             val audio = if (config.audioCodec != null) {
-                runCatching { AudioDecoder.openOrNull(input) }.getOrNull()
+                runCatching { AudioDecoder.openOrNull(file) }.getOrNull()
             } else {
                 null
             }
             if (config.audioCodec != null && audio == null) {
                 runCatching { video.close() }
-                throw LibavException("'$input' has no audio stream to encode as '${config.audioCodec}'")
+                throw LibavException("'$file' has no audio stream to encode as '${config.audioCodec}'")
             }
             val rate = audio?.let { d ->
                 d.tracks.firstOrNull { it.streamIndex == d.streamIndex }?.sampleRate

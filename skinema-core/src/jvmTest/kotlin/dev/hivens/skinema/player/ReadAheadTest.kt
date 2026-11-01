@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -38,7 +39,7 @@ class ReadAheadTest {
     }
 
     private fun player(source: ScriptedFrameSource, depth: Int, loop: Boolean = false) = VideoPlayer(
-        Path.of("scripted"), loop, false, clock, null, depth, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), loop, false, clock, null, depth, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     @Test
@@ -330,7 +331,7 @@ class WrapStrandedTailTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = 8).use { p ->
+        VideoPlayer(MediaInput.File(av), loop = true, audio = true, sink = sink, readAheadFrames = 8).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
             // Walk the device to the end of the audio; from there the sound is
             // over and the timeline runs on without it.

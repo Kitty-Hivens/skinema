@@ -5,6 +5,7 @@ import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -244,7 +245,7 @@ class MediaWriterDeviceTest {
     @Test
     fun theTranscoderRunsOnTheAndroidDecodersAndWriter() {
         val path = out("transcoded.mp4")
-        Transcoder.open(DeviceFixtures.path("red-with-sound.mp4"), path, TranscodeConfig(videoCodec = "h264", audioCodec = "aac")).use { it.run() }
+        Transcoder.open(MediaInput.File(DeviceFixtures.path("red-with-sound.mp4")), path, TranscodeConfig(videoCodec = "h264", audioCodec = "aac")).use { it.run() }
         val (count, colour) = decodeVideo(path)
         assertEquals(30, count)
         val c = colour!!

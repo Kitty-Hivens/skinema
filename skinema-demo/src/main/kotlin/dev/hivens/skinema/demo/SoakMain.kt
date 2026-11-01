@@ -1,6 +1,7 @@
 package dev.hivens.skinema.demo
 
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.skiko.VideoFrameImage
 import java.nio.file.Files
@@ -89,7 +90,7 @@ fun main(args: Array<String>) {
     )
     val frameImage = if (images) VideoFrameImage() else null
     VideoPlayer(
-        video,
+        MediaInput.File(video),
         loop = true,
         audio = audio,
         readAheadFrames = readAhead,

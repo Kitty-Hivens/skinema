@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
@@ -50,7 +51,7 @@ class ScriptedFrameSourceTest {
         val clock = AudioClock(48_000) { frames.get() }
         val source = ScriptedFrameSource(frameCount = 10)
         val player = VideoPlayer(
-            Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+            MediaInput.File(Path.of("scripted")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { source }
         player.use {
             val deadline = System.currentTimeMillis() + 10_000

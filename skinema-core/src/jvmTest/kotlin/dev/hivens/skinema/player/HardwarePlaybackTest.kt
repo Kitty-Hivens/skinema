@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
@@ -55,7 +56,7 @@ class HardwarePlaybackTest {
     @Test
     fun `a hardware player runs a file to its end and hands out pictures`() {
         assumeHwAcceptance()
-        VideoPlayer(video("play.mp4", "1"), loop = false, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(video("play.mp4", "1")), loop = false, hardware = HwAccel.AUTO).use { player ->
             var frames = 0
             var pixels = 0
             val ended = awaitTrue {
@@ -77,7 +78,7 @@ class HardwarePlaybackTest {
         // The drop-run toward an exact landing asks for frames with convert
         // off, and on this path that reads a GPU frame's header without
         // downloading it -- the cheap seek the hw path is supposed to keep.
-        VideoPlayer(video("seek.mp4", "3"), loop = false, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(video("seek.mp4", "3")), loop = false, hardware = HwAccel.AUTO).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             player.seek(2_000_000_000L)
@@ -94,7 +95,7 @@ class HardwarePlaybackTest {
     @Test
     fun `a step backward crosses a keyframe on the hardware path`() {
         assumeHwAcceptance()
-        VideoPlayer(video("step.mp4", "3"), loop = false, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(video("step.mp4", "3")), loop = false, hardware = HwAccel.AUTO).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             player.seek(1_500_000_000L)

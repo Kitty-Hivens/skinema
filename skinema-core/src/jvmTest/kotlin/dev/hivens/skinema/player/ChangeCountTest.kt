@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
@@ -42,7 +43,7 @@ class ChangeCountTest {
     }
 
     private fun player(source: ScriptedFrameSource) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     @Test
@@ -85,13 +86,13 @@ class ChangeCountTest {
     fun `a refused switch ends the wait`() {
         val refused = ScriptedFrameSource(frameCount = 60, failAt = 0)
         val player = VideoPlayer(
-            Path.of("first"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+            MediaInput.File(Path.of("first")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { asked -> if (asked == Path.of("second")) refused else ScriptedFrameSource(frameCount = 60) }
         player.use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
             Thread.sleep(100)
             val before = p.changeCount
-            p.setSource(Path.of("second"))
+            p.setSource(MediaInput.File(Path.of("second")))
             val after = p.awaitChange(before, 5_000_000_000L)
             assertTrue(after > before, "the refusal must move the count")
             assertTrue(p.sourceFailure != null, "and the refusal must be readable when it does")
@@ -176,7 +177,7 @@ class ChangeCountTest {
             "-map", "0:v", "-map", "1", "-t", "3",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-c:s", "srt",
         )
-        VideoPlayer(video, loop = false, startPaused = true).use { p ->
+        VideoPlayer(MediaInput.File(video), loop = false, startPaused = true).use { p ->
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused && p.subtitleTracks.isNotEmpty() }, "the file must open paused")
             val track = p.subtitleTracks.first()
 

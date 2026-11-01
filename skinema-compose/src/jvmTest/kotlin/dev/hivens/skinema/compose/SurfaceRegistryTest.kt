@@ -1,5 +1,6 @@
 package dev.hivens.skinema.compose
 
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlin.test.Test
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
  */
 class SurfaceRegistryTest {
 
-    private fun player(): VideoPlayer = VideoPlayer(Path.of("no-such-file.mkv"), loop = false)
+    private fun player(): VideoPlayer = VideoPlayer(MediaInput.File(Path.of("no-such-file.mkv")), loop = false)
 
     @Test
     fun `the first surface is silent and the second is not`() {

@@ -1,6 +1,7 @@
 package dev.hivens.skinema.player
 
 import dev.hivens.skinema.libav.DeviceFixtures
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.subtitles.SubtitleOverlay
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -17,7 +18,7 @@ class SubtitleDeviceTest {
     fun closeAll() = players.forEach { it.close() }
 
     private fun player(name: String, audio: Boolean = false) =
-        VideoPlayer(DeviceFixtures.path(name), loop = false, audio = audio).also { players += it }
+        VideoPlayer(MediaInput.File(DeviceFixtures.path(name)), loop = false, audio = audio).also { players += it }
 
     private fun awaitTrue(timeoutMillis: Long = 5_000, what: String, condition: () -> Boolean) {
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000

@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.PacedPcmSink
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicReference
@@ -117,7 +118,7 @@ class PlayerStormTest {
         val sink = PacedPcmSink(bufferFrames = 8_820)
         val failure = AtomicReference<VideoPlayer.State.Failed?>(null)
         val longestStall = java.util.concurrent.atomic.AtomicLong(0)
-        VideoPlayer(av("storm.mkv"), loop = true, audio = true, sink = sink, readAheadFrames = 3).use { player ->
+        VideoPlayer(MediaInput.File(av("storm.mkv")), loop = true, audio = true, sink = sink, readAheadFrames = 3).use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
 
@@ -223,7 +224,7 @@ class PlayerStormTest {
     fun `pause and resume hammered at the queue still settles`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(av("hammer.mkv"), loop = true, audio = true, sink = sink, readAheadFrames = 2).use { player ->
+        VideoPlayer(MediaInput.File(av("hammer.mkv")), loop = true, audio = true, sink = sink, readAheadFrames = 2).use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
                 repeat(200) {

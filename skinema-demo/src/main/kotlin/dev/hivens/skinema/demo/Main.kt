@@ -35,6 +35,7 @@ import dev.hivens.skinema.compose.VideoScale
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.rememberPlayerState
 import dev.hivens.skinema.libav.AudioTrack
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
@@ -73,7 +74,7 @@ fun main(args: Array<String>) {
     application {
         Window(onCloseRequest = ::exitApplication, title = "skinema demo") {
             val player = remember {
-                VideoPlayer(queue.first(), loop = queue.size == 1, audio = sound, readAheadFrames = readAhead)
+                VideoPlayer(MediaInput.File(queue.first()), loop = queue.size == 1, audio = sound, readAheadFrames = readAhead)
             }
             DisposableEffect(player) {
                 onDispose { player.close() }
@@ -89,7 +90,7 @@ fun main(args: Array<String>) {
             fun jump(step: Int) {
                 if (order.size < 2) return
                 position = (position + step + order.size) % order.size
-                player.setSource(queue[order[position]])
+                player.setSource(MediaInput.File(queue[order[position]]))
             }
             var volume by remember { mutableFloatStateOf(1f) }
             var positionMs by remember { mutableLongStateOf(0L) }

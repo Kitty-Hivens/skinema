@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.hasHardwareDecoder
 import dev.hivens.skinema.libav.onEmulator
 import org.junit.Assume.assumeFalse
@@ -31,7 +32,7 @@ class VideoPlayerDeviceTest {
         hardware: HwAccel = HwAccel.AUTO,
         explicitClock: MediaClock? = null,
     ): VideoPlayer = VideoPlayer(
-        path = DeviceFixtures.path(name), loop = loop, audio = audio, startPaused = startPaused,
+        input = MediaInput.File(DeviceFixtures.path(name)), loop = loop, audio = audio, startPaused = startPaused,
         unwatched = unwatched, hardware = hardware, explicitClock = explicitClock,
     ).also { players += it }
 
@@ -178,7 +179,7 @@ class VideoPlayerDeviceTest {
         awaitTrue(what = "Failed") { clocked.state is VideoPlayer.State.Failed }
         val clockCause = assertIs<VideoPlayer.State.Failed>(clocked.state).cause
         assertTrue("explicitClock" in clockCause.message.orEmpty(), "the refusal names the parameter: ${clockCause.message}")
-        val missing = VideoPlayer(Path.of("/nonexistent/skinema.mp4")).also { players += it }
+        val missing = VideoPlayer(MediaInput.File(Path.of("/nonexistent/skinema.mp4"))).also { players += it }
         awaitTrue(what = "Failed") { missing.state is VideoPlayer.State.Failed }
     }
 
@@ -186,12 +187,12 @@ class VideoPlayerDeviceTest {
     fun aFailedPlayerTakesNoMoreFilesAndKeepsItsFailureThroughTheClose() {
         // With sound on, so the file switched to below is one this player's
         // shape takes, and only the failure can refuse it.
-        val missing = VideoPlayer(Path.of("/nonexistent/skinema.m4a"), audio = true).also { players += it }
+        val missing = VideoPlayer(MediaInput.File(Path.of("/nonexistent/skinema.m4a")), audio = true).also { players += it }
         awaitTrue(what = "Failed") { missing.state is VideoPlayer.State.Failed }
         // The desktop's thread has ended by now, and a switch finds nothing to run it.
-        missing.setSource(DeviceFixtures.path("sine-aac.m4a"))
+        missing.setSource(MediaInput.File(DeviceFixtures.path("sine-aac.m4a")))
         Thread.sleep(1_500)
-        assertEquals("skinema.m4a", missing.source.fileName.toString(), "the switch was not taken")
+        assertEquals("skinema.m4a", (missing.source as MediaInput.File).path.fileName.toString(), "the switch was not taken")
         assertTrue(missing.audioTracks.isEmpty(), "nothing plays after the failure")
         assertIs<VideoPlayer.State.Failed>(missing.state)
         missing.close()
@@ -208,14 +209,14 @@ class VideoPlayerDeviceTest {
     fun aSoundPlayerKeepsItsShapeThroughAVideo() {
         val p = player("sine-aac.m4a", audio = true, loop = true)
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
-        p.setSource(DeviceFixtures.path("red-with-sound.mp4"))
-        awaitTrue(what = "the switch") { p.source.fileName.toString() == "red-with-sound.mp4" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("red-with-sound.mp4")))
+        awaitTrue(what = "the switch") { (p.source as MediaInput.File).path.fileName.toString() == "red-with-sound.mp4" }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         Thread.sleep(500)
         assertNull(p.acquireFrame(), "a sound player plays a video frameless")
         // Still a sound player, so a sound file is taken.
-        p.setSource(DeviceFixtures.path("chapters.m4a"))
-        awaitTrue(what = "the second switch") { p.source.fileName.toString() == "chapters.m4a" || p.sourceFailure != null }
+        p.setSource(MediaInput.File(DeviceFixtures.path("chapters.m4a")))
+        awaitTrue(what = "the second switch") { (p.source as MediaInput.File).path.fileName.toString() == "chapters.m4a" || p.sourceFailure != null }
         assertNull(p.sourceFailure, "a sound player took a sound file")
     }
 
@@ -242,8 +243,8 @@ class VideoPlayerDeviceTest {
         awaitFrame(p)
         p.reportVisible(false)
         awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
-        p.setSource(DeviceFixtures.path("red-with-sound.mp4"))
-        awaitTrue(what = "the switch") { p.source.fileName.toString() == "red-with-sound.mp4" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("red-with-sound.mp4")))
+        awaitTrue(what = "the switch") { (p.source as MediaInput.File).path.fileName.toString() == "red-with-sound.mp4" }
         awaitTrue(what = "the new file open") { p.state != VideoPlayer.State.Opening }
         val stood = p.positionNanos()
         Thread.sleep(500)
@@ -259,12 +260,12 @@ class VideoPlayerDeviceTest {
         awaitFrame(p)
         p.reportVisible(false)
         Thread.sleep(200)
-        p.setSource(DeviceFixtures.path("rgb.gif"))
-        awaitTrue(what = "the image") { p.source.fileName.toString() == "rgb.gif" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("rgb.gif")))
+        awaitTrue(what = "the image") { (p.source as MediaInput.File).path.fileName.toString() == "rgb.gif" }
         p.reportVisible(true)
         awaitFrame(p) { it.width == 64 }
-        p.setSource(DeviceFixtures.path("red-h264.mp4"))
-        awaitTrue(what = "the video") { p.source.fileName.toString() == "red-h264.mp4" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("red-h264.mp4")))
+        awaitTrue(what = "the video") { (p.source as MediaInput.File).path.fileName.toString() == "red-h264.mp4" }
         // Watched again, so the video's picture is on.
         val red = awaitFrame(p) { it.width == 320 }
         assertTrue(centre(red)[0] > 200, "the video's own picture")
@@ -291,12 +292,12 @@ class VideoPlayerDeviceTest {
     fun aSwitchTakesAGoodFileAndRefusesABadOne() {
         val p = player("red-h264.mp4", loop = true)
         awaitFrame(p)
-        p.setSource(Path.of("/nonexistent/skinema.mp4"))
+        p.setSource(MediaInput.File(Path.of("/nonexistent/skinema.mp4")))
         awaitTrue(what = "the refusal") { p.sourceFailure != null }
-        assertEquals("red-h264.mp4", p.source.fileName.toString())
+        assertEquals("red-h264.mp4", (p.source as MediaInput.File).path.fileName.toString())
         assertFalse(p.state is VideoPlayer.State.Failed)
-        p.setSource(DeviceFixtures.path("green-vp9.webm"))
-        awaitTrue(what = "the switch") { p.source.fileName.toString() == "green-vp9.webm" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("green-vp9.webm")))
+        awaitTrue(what = "the switch") { (p.source as MediaInput.File).path.fileName.toString() == "green-vp9.webm" }
         val green = awaitFrame(p) { val c = centre(it); c[1] > 200 && c[0] < 40 }
         assertNotNull(green)
         assertNull(p.sourceFailure)
@@ -305,8 +306,8 @@ class VideoPlayerDeviceTest {
     @Test
     fun aSwitchStraightAfterConstructionKeepsThePictureShape() {
         val p = player("red-h264.mp4", loop = true)
-        p.setSource(DeviceFixtures.path("green-vp9.webm"))
-        awaitTrue(what = "the switch") { p.source.fileName.toString() == "green-vp9.webm" || p.sourceFailure != null }
+        p.setSource(MediaInput.File(DeviceFixtures.path("green-vp9.webm")))
+        awaitTrue(what = "the switch") { (p.source as MediaInput.File).path.fileName.toString() == "green-vp9.webm" || p.sourceFailure != null }
         assertNull(p.sourceFailure, "a picture player took a picture file")
         assertNotNull(awaitFrame(p) { val c = centre(it); c[1] > 200 && c[0] < 40 })
     }
@@ -449,8 +450,8 @@ class VideoPlayerDeviceTest {
         awaitFrame(p)
         // FLV plays through Media3, and the platform extractor does not open
         // it: a switch checked with the platform's refused it.
-        p.setSource(DeviceFixtures.path("red.flv"))
-        awaitTrue(what = "the switch or its refusal") { p.source.fileName.toString() == "red.flv" || p.sourceFailure != null }
+        p.setSource(MediaInput.File(DeviceFixtures.path("red.flv")))
+        awaitTrue(what = "the switch or its refusal") { (p.source as MediaInput.File).path.fileName.toString() == "red.flv" || p.sourceFailure != null }
         assertNull(p.sourceFailure, "a file the player plays was taken")
         assertTrue(centre(awaitFrame(p))[0] > 200, "the FLV's own red")
     }

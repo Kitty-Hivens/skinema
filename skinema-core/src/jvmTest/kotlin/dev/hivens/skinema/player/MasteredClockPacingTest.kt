@@ -1,6 +1,7 @@
 package dev.hivens.skinema.player
 
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -45,7 +46,7 @@ class MasteredClockPacingTest {
             "-c:a", "flac",
         )
 
-        VideoPlayer(file, loop = false, audio = true, readAheadFrames = 4).use { player ->
+        VideoPlayer(MediaInput.File(file), loop = false, audio = true, readAheadFrames = 4).use { player ->
             // The device takes a buffer's length to start reporting progress
             // at all; measuring through that would measure the start-up.
             val settle = System.nanoTime() + 2_000_000_000L

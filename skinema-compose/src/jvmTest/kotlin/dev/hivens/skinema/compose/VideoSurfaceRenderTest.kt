@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.use
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import org.jetbrains.skia.Image
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -94,9 +95,9 @@ class VideoSurfaceRenderTest {
     fun `the state helper follows the player`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI -- the fixture cannot be built")
         val video = redClip()
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             var seen: VideoPlayer.State? = null
             ImageComposeScene(16, 16, Density(1f)) {
                 seen = rememberPlayerState(player)
@@ -133,9 +134,9 @@ class VideoSurfaceRenderTest {
     fun `Fit paints its letterbox in the colour it was given`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI -- the fixture cannot be built")
         val video = redClip()
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             ImageComposeScene(64, 32, Density(1f)) {
                 VideoSurface(
                     player,
@@ -180,9 +181,9 @@ class VideoSurfaceRenderTest {
         val video = redClip()
         // A player that cannot open its file leaves the surface drawing
         // nothing, which would fail this for the wrong reason.
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             ImageComposeScene(64, 64, Density(1f)) {
                 VideoSurface(player, Modifier.size(64.dp))
             }.use { scene ->
@@ -223,9 +224,9 @@ class VideoSurfaceRenderTest {
     fun `the surface tells the player what size to rasterize text at`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI -- the fixture cannot be built")
         val video = subbedClip()
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             var canvas = 0 to 0
             var selected = false
             var activeSince = 0L
@@ -336,9 +337,9 @@ class VideoSurfaceRenderTest {
     fun `a surface on a paused player asks for no frames`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
         val video = redClip()
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true, startPaused = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true, startPaused = true).use { player ->
             ImageComposeScene(64, 64, Density(1f)) {
                 VideoSurface(player, Modifier.size(64.dp))
             }.use { scene ->
@@ -382,9 +383,9 @@ class VideoSurfaceRenderTest {
     fun `the state helper asks for no frames while nothing changes`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
         val video = redClip()
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true, startPaused = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true, startPaused = true).use { player ->
             var seen: VideoPlayer.State? = null
             ImageComposeScene(16, 16, Density(1f)) {
                 seen = rememberPlayerState(player)
@@ -416,9 +417,9 @@ class VideoSurfaceRenderTest {
     fun `a playing surface asks for frames at the file's rate, not the display's`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
         val video = redClipAt(fps = 10, seconds = 10)
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             ImageComposeScene(64, 64, Density(1f)) {
                 VideoSurface(player, Modifier.size(64.dp))
             }.use { scene ->
@@ -464,9 +465,9 @@ class VideoSurfaceRenderTest {
     fun `a surface that stops being drawn lets the player notice, and drawing again revives it`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
         val video = redClipAt(fps = 30, seconds = 20)
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             ImageComposeScene(64, 64, Density(1f)) {
                 VideoSurface(player, Modifier.size(64.dp))
             }.use { scene ->
@@ -518,9 +519,9 @@ class VideoSurfaceRenderTest {
     fun `a window that draws once a second is taken for hidden, and drawing at full rate brings it back`() {
         assumeTrue(ffmpegAvailable(), "no ffmpeg CLI, so the fixture cannot be built")
         val video = redClipAt(fps = 30, seconds = 20)
-        assumeTrue(runCatching { VideoPlayer(video, loop = true).close(); true }.getOrDefault(false), "no natives")
+        assumeTrue(runCatching { VideoPlayer(MediaInput.File(video), loop = true).close(); true }.getOrDefault(false), "no natives")
 
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             ImageComposeScene(64, 64, Density(1f)) {
                 VideoSurface(player, Modifier.size(64.dp))
             }.use { scene ->

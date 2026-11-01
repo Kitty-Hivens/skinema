@@ -3,6 +3,7 @@ package dev.hivens.skinema.encode
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -48,7 +49,7 @@ class TranscoderTest {
         Fixtures.assumeLibraryEncoder("libx264")
         val input = source("plain.mp4")
         val out = dir.resolve("plain-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
 
         VideoDecoder.open(out).use { d ->
             assertEquals(64 to 48, d.videoSize(), "the source's geometry carries")
@@ -82,7 +83,7 @@ class TranscoderTest {
             Triple(f.rgba[mid].toInt() and 0xFF, f.rgba[mid + 1].toInt() and 0xFF, f.rgba[mid + 2].toInt() and 0xFF)
         }
         val out = dir.resolve("green-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("crf" to "18")))
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("crf" to "18")))
             .use { it.run() }
 
         VideoDecoder.open(out).use { d ->
@@ -116,7 +117,7 @@ class TranscoderTest {
         )
         val out = dir.resolve("sound-out.mp4")
         Transcoder.open(
-            input,
+            MediaInput.File(input),
             out,
             TranscodeConfig(videoCodec = "libx264", audioCodec = "aac"),
         ).use { it.run() }
@@ -169,7 +170,7 @@ class TranscoderTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-c:a", "flac",
         )
         val out = dir.resolve("late-out.mkv")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264", audioCodec = "flac")).use { it.run() }
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264", audioCodec = "flac")).use { it.run() }
 
         // Where the sound actually begins in the output, in sample frames.
         val audio = assertNotNull(AudioDecoder.openOrNull(out), "the output carries no audio")
@@ -230,7 +231,7 @@ class TranscoderTest {
         assertEquals(270, VideoDecoder.open(tagged).use { it.rotationDegrees() }, "the fixture must carry a rotation")
 
         val out = dir.resolve("upright-out.mp4")
-        Transcoder.open(tagged, out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
+        Transcoder.open(MediaInput.File(tagged), out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
 
         VideoDecoder.open(out).use { d ->
             assertEquals(96 to 128, d.videoSize(), "a quarter turn swaps the sides")
@@ -265,7 +266,7 @@ class TranscoderTest {
         Fixtures.assumeLibraryEncoder("libx264")
         val input = source("long.mp4", seconds = "5")
         val out = dir.resolve("long-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264")).use { t ->
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264")).use { t ->
             // Cancelled before the run rather than from a thread racing it.
             // Watching framesWritten and cancelling at ten is a bet on the
             // machine being slower than the watcher, and a quick runner wins
@@ -355,7 +356,7 @@ class TranscoderTest {
         )
         val out = dir.resolve("one-shot.mp4")
         Transcoder.open(
-            src,
+            MediaInput.File(src),
             out,
             TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("preset" to "ultrafast")),
         ).use { t ->
@@ -426,7 +427,7 @@ class TranscoderTest {
         }
 
         val thrown = assertFailsWith<LibavException> {
-            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
+            Transcoder.open(MediaInput.File(mixed), dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
                 .use { it.run() }
         }
         assertTrue(
@@ -481,7 +482,7 @@ class TranscoderTest {
 
         val thrown = assertFailsWith<LibavException> {
             Transcoder.open(
-                mixed,
+                MediaInput.File(mixed),
                 dir.resolve("rate-switch.mp4"),
                 TranscodeConfig(videoCodec = encoder!!, audioCodec = audioEncoder!!),
             ).use { it.run() }

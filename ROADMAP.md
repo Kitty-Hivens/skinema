@@ -1940,6 +1940,43 @@ README once the library is usable.
   point there, and the architecture page describes the two engines behind
   one API.
 
+- **M24: streams through the player (decided 2026-11-01).** `MediaSource`
+  (M15) reached the two decoders and nothing else: the player, its
+  `setSource` and the transcoder took a `Path`, so no stream could be played.
+  M15 stopped there because the desktop player runs separate demuxers (the
+  picture on the decode thread, the sound in its pipeline, subtitles in
+  theirs), and one forward-only byte stream cannot feed three. That decision
+  was left to a streaming consumer, and none has asked. It is taken now
+  anyway: what a consumer needs is not this library's to decide, so the
+  player plays streams, live ones included, before 0.9.0 ships.
+
+  **One input type at the edge.** `MediaInput` is `File(path)` or
+  `Stream(source)`, and the player's constructor, `source`, `setSource` and
+  `Transcoder.open` take it in place of a `Path`. That breaks every call
+  site, which a minor release allows and which one honest type is worth: an
+  overload pair would have left `source` unable to say what is playing.
+
+  **Two shapes of stream, two answers.** A stream that can seek is read the
+  way a file is: each side opens its own demuxer, through a cursor of its
+  own over the one source, and the cursors take turns. Track switches,
+  subtitles turned on mid-play and a step back then behave exactly as on a
+  file. A stream that reads forward only gets one shared demuxer whose
+  thread routes packets to the picture, the selected sound and the selected
+  subtitles. One demuxer for every stream was the other option and was
+  turned down: on a seekable stream it makes every track switch and
+  subtitle selection re-seek the picture. What a forward-only stream cannot
+  do, the player says through `seekable` (seeks and the step back do
+  nothing, a loop ends at the end of the stream) rather than pretending.
+
+  On Android the player already has one demuxer, Media3's, which reads
+  through a `DataSource`. The stream reaches it through an adapter, and a
+  forward-only one through a tape that keeps the head of the stream, so
+  Media3's format sniffing and the switch's probe can read it again. The
+  decoders there read a forward-only stream through Media3's
+  `MediaExtractorCompat`, which ships in `media3-inspector` (Apache-2.0,
+  40 KB, nothing reported anywhere), where the platform extractor needs
+  random access.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

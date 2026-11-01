@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.PacedPcmSink
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -72,7 +73,7 @@ class MismatchedStreamEndsTest {
             "-c:a", "flac", "-disposition:a:0", "default",
         )
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(file, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(file), loop = false, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(awaitTrue { player.audioTracks.size == 2 }, "both tracks must surface")
                 assertTrue(
@@ -114,7 +115,7 @@ class MismatchedStreamEndsTest {
     fun `a seek into the picture-only tail puts the timeline at the target`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(mismatched("picture-tail.mkv", "4", "2"), loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(mismatched("picture-tail.mkv", "4", "2")), loop = false, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(
                     awaitTrue(5_000) { player.acquireFrame(); player.positionNanos() > 200_000_000L },
@@ -159,7 +160,7 @@ class MismatchedStreamEndsTest {
     fun `a looping seek past the end of the sound does not restart the lap`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(mismatched("loop-tail.mkv", "4", "2"), loop = true, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(mismatched("loop-tail.mkv", "4", "2")), loop = true, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(
                     awaitTrue(5_000) { player.acquireFrame(); player.positionNanos() > 200_000_000L },
@@ -214,7 +215,7 @@ class MismatchedStreamEndsTest {
     fun `a seek past the last frame plays out the sound that is left`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(mismatched("past-picture.mkv", "1", "4"), loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(mismatched("past-picture.mkv", "1", "4")), loop = false, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(
                     awaitTrue(5_000) { player.acquireFrame(); player.positionNanos() > 200_000_000L },
@@ -248,7 +249,7 @@ class MismatchedStreamEndsTest {
     fun `pause and resume in the sound-only tail does not rewind the timeline`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(mismatched("sound-tail.mkv", "1", "4"), loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(mismatched("sound-tail.mkv", "1", "4")), loop = false, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(
                     awaitTrue(15_000) { player.acquireFrame(); player.positionNanos() > 2_500_000_000L },
@@ -282,7 +283,7 @@ class MismatchedStreamEndsTest {
     @Test
     fun `a silent player laps on its picture, not on the sound it is not playing`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(mismatched("silent-lap.mp4", "2", "6"), loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(mismatched("silent-lap.mp4", "2", "6")), loop = true, audio = false).use { player ->
             assertTrue(awaitTrue(8_000) { player.acquireFrame() != null }, "playback must start")
 
             // Wrap to wrap, measured on the published pts falling back.

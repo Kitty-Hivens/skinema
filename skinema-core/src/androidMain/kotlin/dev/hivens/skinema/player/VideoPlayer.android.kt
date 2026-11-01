@@ -59,6 +59,7 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.NoVideoStreamException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
@@ -98,7 +99,7 @@ import android.media.AudioFormat as PlatformAudioFormat
  * between the two freely.
  */
 actual class VideoPlayer actual constructor(
-    path: Path,
+    input: MediaInput,
     loop: Boolean,
     private val audio: Boolean,
     explicitClock: MediaClock?,
@@ -257,8 +258,14 @@ actual class VideoPlayer actual constructor(
         }
 
     @Volatile
-    actual var source: Path = path
+    actual var source: MediaInput = input
         private set
+
+    // The file behind [source].
+    @Volatile
+    private var sourcePath: Path = (input as? MediaInput.File)?.path ?: Path.of("")
+
+    actual val seekable: Boolean get() = true
 
     @Volatile
     actual var sourceFailure: Throwable? = null
@@ -712,7 +719,7 @@ actual class VideoPlayer actual constructor(
             issueStepSeek((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI)
             return
         }
-        val file = source
+        val file = sourcePath
         // For when the decode below cannot answer. An exact seek lands on the
         // first frame at or after its target, so a target a millisecond back,
         // or half a frame back, lands on the frame already shown. A frame and
@@ -905,7 +912,13 @@ actual class VideoPlayer actual constructor(
         }
     }
 
-    actual fun setSource(path: Path) = post {
+    actual fun setSource(input: MediaInput) = post {
+        if (input !is MediaInput.File) {
+            sourceFailure = LibavException(STREAM_NOT_YET)
+            noteChange()
+            return@post
+        }
+        val path = input.path
         // Read on the player thread, behind the open, where the player
         // knows its shape: a switch asked for straight after construction
         // would otherwise find a picture player not yet knowing it has one.
@@ -939,7 +952,8 @@ actual class VideoPlayer actual constructor(
                 val ended = if (clip != null) clipEnded else player?.playbackState == Player.STATE_ENDED
                 if (ended) userPaused = false
                 sourceFailure = null
-                source = path
+                source = input
+                sourcePath = path
                 everReady = false
                 seekPending = false
                 lastPublishedPts = 0L
@@ -1064,7 +1078,7 @@ actual class VideoPlayer actual constructor(
             val position = p.currentPosition
             val playing = p.playWhenReady
             reapplyChoices = true
-            p.setMediaItem(mediaItem(source), position)
+            p.setMediaItem(mediaItem(sourcePath), position)
             p.prepare()
             p.playWhenReady = playing
         }
@@ -1156,9 +1170,10 @@ actual class VideoPlayer actual constructor(
         )
         .build()
 
-    private fun open(path: Path, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
+    private fun open(input: MediaInput, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
         if (closing) return
         try {
+            val path = (input as? MediaInput.File)?.path ?: throw LibavException(STREAM_NOT_YET)
             require(explicitClock == null) { "explicitClock is not supported on Android: ExoPlayer takes no external media clock" }
             bridge = FrameBridge(::onImage, ::fail)
             if (isImageFile(path)) {
@@ -1544,7 +1559,7 @@ actual class VideoPlayer actual constructor(
                 // Nothing to show and nothing asked to be heard: the desktop
                 // fails here too, since there is nothing to play.
                 if (!hasVideo && !audio) {
-                    fail(NoVideoStreamException("$source carries no video stream, and the player was made without sound"))
+                    fail(NoVideoStreamException("$sourcePath carries no video stream, and the player was made without sound"))
                     return
                 }
             }
@@ -1684,11 +1699,13 @@ actual class VideoPlayer actual constructor(
     // Last, after every property above is initialised: the open runs on the
     // player thread, which can reach it before the constructor returns.
     init {
-        handler.post { open(path, explicitClock, audioTrack, startPaused) }
+        handler.post { open(input, explicitClock, audioTrack, startPaused) }
     }
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
+
+        const val STREAM_NOT_YET = "a MediaSource does not play through the player yet"
 
         /** A frame's length when the track declares no rate: 30 fps, the common case. */
         const val FALLBACK_FRAME_NANOS = 33_333_333L

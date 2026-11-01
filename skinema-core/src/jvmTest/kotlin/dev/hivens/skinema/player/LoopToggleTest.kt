@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
@@ -35,7 +36,7 @@ class LoopToggleTest {
     }
 
     private fun player(source: ScriptedFrameSource, loop: Boolean) = VideoPlayer(
-        Path.of("scripted"), loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     /**

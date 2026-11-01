@@ -2,6 +2,7 @@ package dev.hivens.skinema.subtitles
 
 import dev.hivens.skinema.libav.ClosedCaptionFixture
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Files
 import java.nio.file.Path
@@ -54,14 +55,14 @@ class ClosedCaptionPlaybackTest {
             "-c:v", "libx264", "-preset", "ultrafast",
         )
 
-        VideoPlayer(captioned, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(captioned), loop = false).use { player ->
             assertTrue(
                 awaitTrue { player.subtitleTracks.any { it.codecName == "eia_608" } },
                 "the caption track must appear once a frame carries captions, saw ${player.subtitleTracks.size}",
             )
         }
 
-        VideoPlayer(plain, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(plain), loop = false).use { player ->
             // Long enough that a file WITH captions would have advertised one
             // several times over, so this is a statement rather than a race.
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "the plain file must play out")
@@ -80,7 +81,7 @@ class ClosedCaptionPlaybackTest {
         Fixtures.assumeClosedCaptions()
         val captioned = ClosedCaptionFixture.generate(dir, "render.mp4", text = "HI", seconds = "4")
 
-        VideoPlayer(captioned, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(captioned), loop = true).use { player ->
             assertTrue(
                 awaitTrue { player.subtitleTracks.any { it.codecName == "eia_608" } },
                 "the caption track must appear",

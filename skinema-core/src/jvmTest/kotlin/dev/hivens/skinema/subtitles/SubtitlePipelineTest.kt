@@ -2,6 +2,7 @@ package dev.hivens.skinema.subtitles
 
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.player.VideoPlayer
@@ -946,7 +947,7 @@ class SubtitleTrackSwitchTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
             "-c:s", "srt",
         )
-        VideoPlayer(path, loop = false, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(path), loop = false, audio = false).use { player ->
             assertTrue(awaitTrue { player.subtitleTracks.size == 2 }, "both tracks must surface")
             val ids = player.subtitleTracks.map { it.id }
             player.selectSubtitleTrack(ids[0])

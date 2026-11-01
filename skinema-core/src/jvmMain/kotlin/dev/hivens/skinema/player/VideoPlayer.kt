@@ -15,6 +15,8 @@ import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.NoVideoStreamException
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
@@ -49,7 +51,7 @@ import kotlin.math.abs
  * static fallback.
  */
 actual class VideoPlayer internal constructor(
-    path: Path,
+    input: MediaInput,
     loop: Boolean,
     audio: Boolean,
     private val explicitClock: MediaClock?,
@@ -68,7 +70,7 @@ actual class VideoPlayer internal constructor(
 ) : AutoCloseable {
 
     actual constructor(
-        path: Path,
+        input: MediaInput,
         loop: Boolean,
         /**
          * Decode and play the file's audio stream. The audio sink then
@@ -185,7 +187,7 @@ actual class VideoPlayer internal constructor(
          */
         audioChannels: ChannelPreference,
     ) : this(
-        path, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
+        input, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
         startPaused, volume, audioChannels,
         { FrameSources.open(it, hardware) },
     )
@@ -248,7 +250,7 @@ actual class VideoPlayer internal constructor(
          * and its turn in the queue, so it is weighed again when handled.
          */
         data object Revive : Command
-        data class SetSource(val path: Path) : Command
+        data class SetSource(val input: MediaInput) : Command
         data object Close : Command
 
         /**
@@ -473,9 +475,9 @@ actual class VideoPlayer internal constructor(
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     private val audioPipeline: AudioPipeline? =
-        if (audio) {
+        if (audio && input is MediaInput.File) {
             AudioPipeline(
-                path,
+                input.path,
                 sink ?: JavaSoundSink(),
                 audioTrack,
                 // Clamped here because this is the public edge; the pipeline
@@ -867,8 +869,14 @@ actual class VideoPlayer internal constructor(
      * one that was asked for.
      */
     @Volatile
-    actual var source: Path = path
+    actual var source: MediaInput = input
         private set
+
+    // The file behind [source], which every side opens on its own.
+    @Volatile
+    private var sourcePath: Path = (input as? MediaInput.File)?.path ?: Path.of("")
+
+    actual val seekable: Boolean get() = true
 
     /**
      * Why the last [setSource] did not take, or null when the last one did.
@@ -913,7 +921,7 @@ actual class VideoPlayer internal constructor(
      * runs on the wall clock, which is what a silent file means anywhere else
      * in this player.
      */
-    actual fun setSource(path: Path) = submit(Command.SetSource(path))
+    actual fun setSource(input: MediaInput) = submit(Command.SetSource(input))
 
     /**
      * Switches the sound to another of [audioTracks], in place: the
@@ -1151,7 +1159,7 @@ actual class VideoPlayer internal constructor(
         }
 
         val decoder = try {
-            frameSourceFactory(source)
+            frameSourceFactory(fileOf(source))
         } catch (t: Throwable) {
             // Frameless is the answer to a file with nothing to show, and to
             // nothing else. Every throw used to take this door when the file
@@ -1319,9 +1327,9 @@ actual class VideoPlayer internal constructor(
      * are read off the audio side: published without the wait, they would be
      * the last file's.
      */
-    private fun switchSource(old: FrameSource, wanted: Path): FrameSource {
+    private fun switchSource(old: FrameSource, wanted: MediaInput): FrameSource {
         val next = try {
-            frameSourceFactory(wanted)
+            frameSourceFactory(fileOf(wanted))
         } catch (t: Throwable) {
             sourceFailure = t
             // A refusal changes no state, and a queue reads it off
@@ -1345,7 +1353,7 @@ actual class VideoPlayer internal constructor(
         // plays; only a pause the consumer asked for survives the switch.
         val resumePlaying = state !is State.Paused
         publishState(State.Opening)
-        val sound = audioPipeline?.takeIf { it.alive }?.setSource(wanted)
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(fileOf(wanted))
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
         runCatching { old.close() }
         resetForNewSource(wanted)
@@ -1355,10 +1363,15 @@ actual class VideoPlayer internal constructor(
     }
 
     /** The frameless half of [switchSource]: no picture to open or to land. */
-    private fun switchFramelessSource(wanted: Path) {
+    private fun switchFramelessSource(wanted: MediaInput) {
+        if (wanted is MediaInput.Stream) {
+            sourceFailure = LibavException(STREAM_NOT_YET)
+            noteChange()
+            return
+        }
         val resumePlaying = state !is State.Paused
         publishState(State.Opening)
-        val sound = audioPipeline?.takeIf { it.alive }?.setSource(wanted)
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(fileOf(wanted))
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
         resetForNewSource(wanted)
         durationNanos = audioPipeline?.durationNanos
@@ -1378,7 +1391,7 @@ actual class VideoPlayer internal constructor(
      * to replace it. What that would cost if it were left alone is a lap end
      * measured against a pts from another file.
      */
-    private fun resetForNewSource(wanted: Path) {
+    private fun resetForNewSource(wanted: MediaInput) {
         queue.clear()
         eofPending = false
         rejoinFloorPts = Long.MIN_VALUE
@@ -1396,6 +1409,7 @@ actual class VideoPlayer internal constructor(
         externalSubtitleIds.set(0)
         synchronized(subtitleTracksLock) { subtitleTracks = emptyList() }
         source = wanted
+        sourcePath = fileOf(wanted)
         sourceFailure = null
     }
 
@@ -1814,7 +1828,7 @@ actual class VideoPlayer internal constructor(
             // is also reached from inside a seek landing and from the wait at
             // the end of a lap, and both hold a decoder mid-flight: the top of
             // the loop is the one place where nothing is in the air.
-            pendingSourceSwitch = cmd.path
+            pendingSourceSwitch = cmd.input
             true
         }
         is Command.SetRate -> {
@@ -1915,7 +1929,7 @@ actual class VideoPlayer internal constructor(
 
     // The file a setSource asked for, from the moment the command is read to
     // the moment the loop leaves to perform it. Owned by the decode thread.
-    private var pendingSourceSwitch: Path? = null
+    private var pendingSourceSwitch: MediaInput? = null
 
     // Started last, after every field the thread it starts can reach. Kotlin
     // runs initializers in declaration order, so a thread started higher up
@@ -2437,7 +2451,7 @@ actual class VideoPlayer internal constructor(
         if (track.isText && !Ass.available) return
         current?.announceClose()
         val fresh = SubtitlePipeline(
-            path = track.externalPath ?: source,
+            path = track.externalPath ?: sourcePath,
             clock = clock,
             track = track,
             storageSize = decoder?.videoSize(),
@@ -2833,6 +2847,13 @@ actual class VideoPlayer internal constructor(
     }
 
     private companion object {
+        const val STREAM_NOT_YET = "a MediaSource does not play through the player yet"
+
+        fun fileOf(input: MediaInput): Path = when (input) {
+            is MediaInput.File -> input.path
+            is MediaInput.Stream -> throw LibavException(STREAM_NOT_YET)
+        }
+
         /**
          * Longest uninterrupted pace sleep. The wait is computed from one
          * clock reading, and the audio thread re-anchors the clock from

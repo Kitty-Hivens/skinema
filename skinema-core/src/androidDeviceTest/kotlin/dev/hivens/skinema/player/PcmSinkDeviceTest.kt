@@ -14,6 +14,7 @@ import dev.hivens.skinema.audio.PcmEncoding
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.DeviceFixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.test.AfterTest
@@ -151,7 +152,7 @@ class PcmSinkDeviceTest {
     @Test
     fun soundGoesToTheSinkAndTheSinkIsTheClock() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = false, audio = true, sink = sink, volume = 0.4f).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("long-with-sound.mp4")), loop = false, audio = true, sink = sink, volume = 0.4f).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         awaitTrue(what = "a frame") { p.acquireFrame() != null }
         val accepted = sink.format ?: fail("the sink was opened")
@@ -169,7 +170,7 @@ class PcmSinkDeviceTest {
     @Test
     fun aSwitchToASoundOfAnotherShapeReopensTheSinkAndKeepsPlaying() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("two-sounds.mp4"), loop = false, audio = true, sink = sink, volume = 0.4f).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("two-sounds.mp4")), loop = false, audio = true, sink = sink, volume = 0.4f).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         awaitTrue(what = "two sound tracks") { p.audioTracks.size == 2 }
         awaitTrue(what = "the first line") { sink.format?.channels == 2 }
@@ -190,7 +191,7 @@ class PcmSinkDeviceTest {
     @Test
     fun aRateChangeLeavesThePositionWhereItWas() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = false, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("long-with-sound.mp4")), loop = false, audio = true, sink = sink).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         Thread.sleep(1_500)
         // A second and a half played at 1x, counted again at 2x, would put the
@@ -213,7 +214,7 @@ class PcmSinkDeviceTest {
     @Test
     fun aSinkThatStopsTakingSoundFailsThePlayerByName() {
         val sink = PacedSink(stuckAfter = 20)
-        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = true, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("long-with-sound.mp4")), loop = true, audio = true, sink = sink).also { players += it }
         // Stuck in a write, the stop and the flush behind it never reach the
         // sink; the watchdog closes it under the write and the player fails.
         awaitTrue(10_000, "Failed") { p.state is VideoPlayer.State.Failed }
@@ -223,7 +224,7 @@ class PcmSinkDeviceTest {
     @Test
     fun multichannelVorbisReachesTheSinkInTheOrderTheLayoutNames() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("centre-5.1.ogg"), loop = false, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("centre-5.1.ogg")), loop = false, audio = true, sink = sink).also { players += it }
         awaitTrue(what = "Ended") { p.state == VideoPlayer.State.Ended }
         assertEquals(6, sink.format?.channels, "the sink took the six channels")
         // The sound is in the centre alone, which "5.1" puts third. The
@@ -292,7 +293,7 @@ class PcmSinkDeviceTest {
     @Test
     fun aRefusingSinkIsWalkedDownToTheFloor() {
         val sink = PacedSink { it == PcmFormat.floor(it.sampleRate) }
-        val p = VideoPlayer(DeviceFixtures.path("sine-aac.m4a"), loop = false, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("sine-aac.m4a")), loop = false, audio = true, sink = sink).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         assertEquals(PcmFormat.floor(48_000), p.activeAudioFormat)
         assertTrue(sink.offered.size > 1, "more than one shape was offered: ${sink.offered}")
@@ -302,7 +303,7 @@ class PcmSinkDeviceTest {
     @Test
     fun pauseStopsTheSinkAndResumeStartsIt() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = false, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("long-with-sound.mp4")), loop = false, audio = true, sink = sink).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         Thread.sleep(300)
         // Counted from here: the adapter stops the device once right after
@@ -323,7 +324,7 @@ class PcmSinkDeviceTest {
     @Test
     fun doubleSpeedPlaysTwiceTheMediaThroughTheSameDevice() {
         val sink = PacedSink()
-        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = false, audio = true, sink = sink).also { players += it }
+        val p = VideoPlayer(MediaInput.File(DeviceFixtures.path("long-with-sound.mp4")), loop = false, audio = true, sink = sink).also { players += it }
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
         p.setRate(2f)
         Thread.sleep(400)

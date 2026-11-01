@@ -10,6 +10,7 @@ import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -55,7 +56,7 @@ class SourceSwitchTest {
     }
 
     private fun player(sources: Map<Path, FrameSource>, loop: Boolean = false) = VideoPlayer(
-        first, loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        MediaInput.File(first), loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { asked -> sources[asked] ?: throw NoSuchFileException(asked.toString()) }
 
     @Test
@@ -67,8 +68,8 @@ class SourceSwitchTest {
             frames.set(framesFor(200))
             assertTrue(awaitTrue { one.maxStartedIndex.get() >= 2 }, "the first file must be playing")
 
-            p.setSource(second)
-            assertTrue(awaitTrue { p.source == second }, "the switch must take, source=${p.source}")
+            p.setSource(MediaInput.File(second))
+            assertTrue(awaitTrue { p.source == MediaInput.File(second) }, "the switch must take, source=${p.source}")
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "and it must run on, state=${p.state}")
             assertNull(p.sourceFailure, "nothing was refused")
             assertTrue(one.closed.get(), "the file that left must be closed")
@@ -91,10 +92,10 @@ class SourceSwitchTest {
         player(mapOf(first to one)).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
 
-            p.setSource(missing)
+            p.setSource(MediaInput.File(missing))
             assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported")
             assertIs<NoSuchFileException>(p.sourceFailure, "with the cause the open gave")
-            assertEquals(first, p.source, "and the file playing must not change")
+            assertEquals(MediaInput.File(first), p.source, "and the file playing must not change")
             assertIs<VideoPlayer.State.Playing>(p.state, "nor may the player stop")
             assertFalse(one.closed.get(), "the file playing must not be closed under it")
 
@@ -116,10 +117,10 @@ class SourceSwitchTest {
         player(mapOf(first to one, second to two)).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
 
-            p.setSource(second)
+            p.setSource(MediaInput.File(second))
             assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported, state=${p.state}")
             assertIs<IllegalStateException>(p.sourceFailure, "with the cause the first frame gave")
-            assertEquals(first, p.source, "and the file playing must not change")
+            assertEquals(MediaInput.File(first), p.source, "and the file playing must not change")
             assertIs<VideoPlayer.State.Playing>(p.state, "nor may the player stop")
             assertFalse(one.closed.get(), "the file playing must not be closed under it")
             assertTrue(two.closed.get(), "the file that was refused must be closed, not leaked")
@@ -139,9 +140,9 @@ class SourceSwitchTest {
             p.pause()
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "the pause must land")
 
-            p.setSource(second)
+            p.setSource(MediaInput.File(second))
             assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported")
-            assertEquals(first, p.source)
+            assertEquals(MediaInput.File(first), p.source)
             assertIs<VideoPlayer.State.Paused>(p.state, "the pause must survive a refused switch")
             assertTrue(two.closed.get(), "the refused file must be closed")
         }
@@ -156,9 +157,9 @@ class SourceSwitchTest {
             frames.set(framesFor(300))
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Ended }, "the first file must end")
 
-            p.setSource(second)
+            p.setSource(MediaInput.File(second))
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "the next file must play, state=${p.state}")
-            assertEquals(second, p.source)
+            assertEquals(MediaInput.File(second), p.source)
             var seen = -1L
             assertTrue(
                 awaitTrue { p.acquireFrame()?.let { seen = it.ptsNanos }; seen == 0L },
@@ -181,8 +182,8 @@ class SourceSwitchTest {
             p.pause()
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "the pause must land")
 
-            p.setSource(second)
-            assertTrue(awaitTrue { p.source == second }, "the switch must take")
+            p.setSource(MediaInput.File(second))
+            assertTrue(awaitTrue { p.source == MediaInput.File(second) }, "the switch must take")
             assertIs<VideoPlayer.State.Paused>(p.state, "and it must stay paused")
             var seen = -1L
             assertTrue(
@@ -221,8 +222,8 @@ class SourceSwitchTest {
             Thread.sleep(200)
             assertEquals(0, one.seekCount.get(), "the wrap must still be waiting the tail out")
 
-            p.setSource(second)
-            assertTrue(awaitTrue { p.source == second }, "the switch must take from inside the wait")
+            p.setSource(MediaInput.File(second))
+            assertTrue(awaitTrue { p.source == MediaInput.File(second) }, "the switch must take from inside the wait")
             assertEquals(0, one.seekCount.get(), "and the lap must not have turned on the way out")
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "state=${p.state}")
         }
@@ -303,19 +304,19 @@ class SourceSwitchAudioTest {
         val two = sounded("two.mkv", "1", tracks = 2)
         val slow = SlowOpenSink(delayMs = 300)
         val sink = slow.inner
-        VideoPlayer(one, loop = false, audio = true, sink = slow).use { p ->
+        VideoPlayer(MediaInput.File(one), loop = false, audio = true, sink = slow).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null && p.audioTracks.size == 1 }, "the first file must play")
             val opensBefore = sink.opens
             val bytesBefore = sink.totalBytes
 
-            p.setSource(two)
+            p.setSource(MediaInput.File(two))
             // Settled facts only. Whether the file is still running when this
             // looks is not one of them: the sink takes every write the moment
             // it is offered, so a one-second file can be through the device
             // between two polls, and a state assertion here would be a race the
             // slowest runner loses. What the switch owes is that it happened.
             assertTrue(
-                awaitTrue { p.source == two && p.state !is VideoPlayer.State.Opening },
+                awaitTrue { p.source == MediaInput.File(two) && p.state !is VideoPlayer.State.Opening },
                 "the switch must take and settle, source=${p.source} state=${p.state}",
             )
             assertTrue(p.state !is VideoPlayer.State.Failed, "and it must not have failed: ${p.state}")
@@ -358,12 +359,12 @@ class SourceSwitchAudioTest {
         // silent file would then inherit a clock that was already right, and
         // what happens at the switch itself would be unobservable.
         sink.positionFrames.set(0)
-        VideoPlayer(sounded, loop = false, audio = true, sink = sink).use { p ->
+        VideoPlayer(MediaInput.File(sounded), loop = false, audio = true, sink = sink).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null && p.audioTracks.size == 1 }, "the first file must play")
 
-            p.setSource(silent)
+            p.setSource(MediaInput.File(silent))
             assertTrue(
-                awaitTrue { p.source == silent && p.state !is VideoPlayer.State.Opening },
+                awaitTrue { p.source == MediaInput.File(silent) && p.state !is VideoPlayer.State.Opening },
                 "the silent file must be taken, state=${p.state}",
             )
             assertTrue(p.state !is VideoPlayer.State.Failed, "and it must not have failed: ${p.state}")
@@ -375,8 +376,8 @@ class SourceSwitchAudioTest {
             )
 
             val bytesWhileSilent = sink.totalBytes
-            p.setSource(sounded)
-            assertTrue(awaitTrue { p.source == sounded }, "the file after it must be taken too")
+            p.setSource(MediaInput.File(sounded))
+            assertTrue(awaitTrue { p.source == MediaInput.File(sounded) }, "the file after it must be taken too")
             assertTrue(awaitTrue { p.audioTracks.size == 1 }, "its track must come back")
             assertTrue(
                 awaitTrue { sink.totalBytes > bytesWhileSilent },
@@ -402,17 +403,17 @@ class SourceSwitchAudioTest {
         )
         val refused = Fixtures.av1(dir.resolve("refused.mp4"))
         val player = VideoPlayer(
-            one, false, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+            MediaInput.File(one), false, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { path ->
             if (path == refused) VideoDecoder.openWithoutDevice(path, HwAccel.REQUIRE, "av1") else FrameSources.open(path)
         }
         player.use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "the first file must play")
 
-            p.setSource(refused)
+            p.setSource(MediaInput.File(refused))
             assertTrue(awaitTrue { p.sourceFailure != null }, "the refusal must be reported, state=${p.state}")
             assertIs<LibavException>(p.sourceFailure)
-            assertEquals(one, p.source, "the file playing must not change")
+            assertEquals(MediaInput.File(one), p.source, "the file playing must not change")
             assertTrue(p.state !is VideoPlayer.State.Failed, "and the player must not fail: ${p.state}")
             val before = p.positionNanos()
             assertTrue(awaitTrue { p.positionNanos() > before + 200_000_000L }, "the first file must carry on")
@@ -433,15 +434,15 @@ class SourceSwitchAudioTest {
             "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=44100", "-t", "3", "-c:a", "libmp3lame",
         )
         val sink = FakePcmSink()
-        VideoPlayer(one, loop = false, audio = true, sink = sink).use { p ->
+        VideoPlayer(MediaInput.File(one), loop = false, audio = true, sink = sink).use { p ->
             assertTrue(
                 awaitTrue { p.state is VideoPlayer.State.Playing && p.durationNanos != null },
                 "the first file must play, state=${p.state}",
             )
             assertEquals(1_000L, p.durationNanos!! / 100_000_000 * 100, "one second to start with")
 
-            p.setSource(two)
-            assertTrue(awaitTrue { p.source == two }, "the switch must take")
+            p.setSource(MediaInput.File(two))
+            assertTrue(awaitTrue { p.source == MediaInput.File(two) }, "the switch must take")
             assertEquals(0, sink.closes, "the sink must survive it here too")
             assertEquals(
                 3_000L,
