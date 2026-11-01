@@ -90,14 +90,14 @@ Pinned line: **FFmpeg n9.0.x, LGPL, shared** (pinned 2026-08; n8.1.x before it).
 The n8.1 -> n9.0 move changed no struct offset the bindings read -- only the
 six sonames and `AV_CODEC_ID_VP9`, both re-captured with the oracle.
 
-| Library     | soname major (n9.0) |
-|-------------|---------------------|
-| avutil      | 61                  |
-| swresample  | 7                   |
-| swscale     | 10                  |
-| avcodec     | 63                  |
-| avformat    | 63                  |
-| avfilter    | 12                  |
+| Library    | soname major (n9.0) |
+|------------|---------------------|
+| avutil     | 61                  |
+| swresample | 7                   |
+| swscale    | 10                  |
+| avcodec    | 63                  |
+| avformat   | 63                  |
+| avfilter   | 12                  |
 
 Rules:
 
@@ -111,11 +111,11 @@ Rules:
 
 Binary sources, by stage:
 
-| Stage    | Linux              | Windows            | macOS              |
-|----------|--------------------|--------------------|--------------------|
-| Spike    | system FFmpeg 8.1  | --                 | --                 |
-| v0.1     | BtbN n8.1 lgpl-shared | BtbN n8.1 lgpl-shared | skipped       |
-| Endgame  | own trimmed CI build | own trimmed CI build | own trimmed CI build |
+| Stage   | Linux                 | Windows               | macOS                |
+|---------|-----------------------|-----------------------|----------------------|
+| Spike   | system FFmpeg 8.1     | --                    | --                   |
+| v0.1    | BtbN n8.1 lgpl-shared | BtbN n8.1 lgpl-shared | skipped              |
+| Endgame | own trimmed CI build  | own trimmed CI build  | own trimmed CI build |
 
 BtbN (github.com/BtbN/FFmpeg-Builds) does not build macOS; Homebrew dylibs
 drag a dependency tree and are not redistributable as-is. macOS support
@@ -153,11 +153,11 @@ weighs a lot and not every consumer wants it. The always-on base is the
 core playback set (H.264/HEVC, the native audio decoders, the still images,
 the containers, the atempo chain); each tier layers features on:
 
-| Tier     | Features over the base                                            | License |
-|----------|-------------------------------------------------------------------|---------|
-| `core`   | av1 vpx webp                                                      | LGPL    |
-| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi enc-av1 enc-opus  | LGPL    |
-| `full`   | + enc-h264 enc-hevc (x264/x265)                                   | GPL     |
+| Tier     | Features over the base                                           | License |
+|----------|------------------------------------------------------------------|---------|
+| `core`   | av1 vpx webp                                                     | LGPL    |
+| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi enc-av1 enc-opus | LGPL    |
+| `full`   | + enc-h264 enc-hevc (x264/x265)                                  | GPL     |
 
 Three of the five encoder features carry no GPL surface, so they ride
 `decode` as well as `full`. `enc-vaapi` (M13) is the hardware H.264/HEVC
@@ -1414,6 +1414,520 @@ README once the library is usable.
   player with sound on that paused when its window was hidden now plays its
   sound on. The guides say so and the release notes have to.
 
+- **M23: Android, on the platform's own engine (decided 2026-10-31).** The
+  primary consumer is getting an Android build, and on it the moving
+  backgrounds, the pack banners and the video component draw nothing, while
+  its music plays through a Media3 wiring of its own written in the
+  meantime. The consumer wants one API on both platforms rather than two
+  implementations to keep in step, so the charter grows a second platform.
+  Recorded before any code, as M10 was, so the decisions below are not
+  re-argued later.
+
+  **The engine is Media3, not FFmpeg.** The core cannot run on ART at all:
+  Android implements no `java.lang.foreign`, and every binding here is FFM.
+  JNI would be acceptable on Android, so this is not a ruling against native
+  code. It is that the phone already ships the better engine: MediaCodec
+  decodes on dedicated hardware on every device, at a fraction of the power a
+  software FFmpeg decode costs on the same battery, and Media3 (Apache-2.0,
+  free) paces, syncs and renders on top of it. Porting the FFmpeg pipeline
+  would buy format breadth the consumer's files do not need at a cost its
+  users would feel. JNI stays available for a specific gap the platform
+  cannot fill, decided gap by gap, because native code on Android is also
+  bytes in an AAR counted against the Central quota (M17). The known
+  candidates: animated WebP and APNG, libass-grade ASS styling, writing mkv,
+  and the legacy containers MediaCodec has no extractor for. Until a real
+  file needs one, each is a documented limitation rather than a native
+  library.
+
+  **One API, two engines, through Kotlin Multiplatform.** `skinema-core` and
+  `skinema-compose` become multiplatform with a `jvm` target (the desktop,
+  unchanged) and an `android` target. The shared source set is shared by two
+  JVM-family targets only, so it keeps JDK types such as `Path` and
+  `AutoCloseable`, which is what lets the consumer move its existing calls
+  into shared code without rewriting them. The value types (state, tracks,
+  chapters, the overlay, the PCM types, the encode configs, the exceptions)
+  move there as they are. `VideoPlayer`, `VideoDecoder`, `AudioDecoder` and
+  `MediaWriter` become `expect` classes, and the desktop `actual` of each is
+  the existing class: the player is three thousand lines of concurrency with
+  tests written against it, and leaving it in place beats routing forty
+  members through a facade. `Transcoder` is already written against those
+  four classes' public surface, so it moves to shared code and runs on both.
+
+  Package names stay, `dev.hivens.skinema.libav` included, although nothing
+  on Android is libav: renaming would break every consumer's imports for the
+  sake of a word. The published coordinates stay for Gradle, which resolves
+  the platform variant from module metadata. They do not stay for a Maven,
+  sbt or Bazel build: those read the root POM, which for a multiplatform
+  module carries no classes, and have to name `skinema-core-jvm` (and
+  `skinema-compose-jvm`) instead. That is a break for those builds, so the
+  release that carries the Android target bumps the minor digit rather than
+  the patch, and the release notes and README have to say so. `skinema-skiko` stays desktop
+  only, and `skinema-natives` is not touched: Android needs no bundle.
+
+  **What a parameter cannot mean on Android, it says.** A consumer clock
+  (`explicitClock`) is refused by name, because ExoPlayer takes no external
+  media clock to sync video against. A VAAPI device path is ignored and
+  documented as such. The FFmpeg encoder names are mapped onto MediaCodec
+  types, and a codec the device has no encoder for is refused by name, as on
+  the desktop. Family names (`h264`, `hevc`, `av1` and the audio set) become
+  valid on both platforms, so shared code can ask for a codec without
+  knowing which platform picks the encoder.
+
+  The network guarantee carries over, though not by construction alone. The
+  Android player is built on a file data source and the `MediaSource`
+  adapter only, so no network data source is wired and the library needs no
+  INTERNET permission. But Media3 does more by default than that suggests,
+  and an earlier line here said it carried no telemetry, which was wrong. An
+  ExoPlayer left to its defaults reports every playback session to the
+  system's media metrics service (platform diagnostics, on from API 31), and
+  its default bandwidth meter reads the network's country and watches the
+  network type. Both are turned off where the player is built, the meter
+  replaced by one that measures nothing (Media3 refuses its own no-op there).
+  Its manifests also ask for ACCESS_NETWORK_STATE and WAKE_LOCK for features
+  this library never turns on. They stay: removing them from a library's
+  manifest removes them from every library merged after it, and an app whose
+  WorkManager checks the network would then fail at run time. Both are normal
+  permissions, granted without a prompt, and an app that wants them gone
+  removes them in its own manifest. It also brings Guava and androidx, which
+  the README says.
+
+  The work runs in phases, each recorded below when it lands: the build
+  restructure with no change in behaviour, the shared API, the Android
+  decoders, the Android player, Compose, subtitles, writing, animated
+  images, chapters, then CI and the documents. Acceptance is the consumer
+  itself: its shared code playing backgrounds, banners and music through
+  this API on a phone, with its own Media3 wiring deleted.
+
+  The shared API is in place with the desktop as its only `actual`, and the
+  suite runs the same tests it ran before. Two things the expect form costs
+  are worth knowing before the Android side is written. `State.Failed`
+  cannot be declared a data class in the expect: a data class needs
+  property parameters and an expected constructor may not have them. So the
+  expect declares a plain class and the desktop actual stays a data class,
+  which keeps its equality and its `toString`. Every actual has to make the
+  same choice, or `Failed` compares differently per platform. And the full
+  contract KDoc stayed on the desktop actuals at first, with a short summary
+  on each expect, because it was written against FFmpeg (JavaSound, libass,
+  swresample) and rewriting it for two engines was worth doing once, when the
+  Android behaviour it had to describe existed. Once the Android player,
+  decoders and subtitles had landed it was done: the contract of
+  `VideoPlayer`, `VideoDecoder` and `AudioDecoder` lives on the expect, worded
+  for both platforms with each difference marked where it applies, which is
+  what a consumer's shared code reads; the actuals keep what is about their
+  own implementation. `MediaWriter` follows once its Android side exists.
+
+  The Android decoders are in. `VideoDecoder` is the platform extractor and
+  a MediaCodec decoder in buffer mode, with the RGBA conversion done on the
+  CPU from the flexible YUV image the codec hands out. Done there rather
+  than on the GPU because the colour handling is then ours: the declared
+  matrix and range, BT.709 for HD that declares nothing, and HDR in P010
+  through the same `ToneMapper` the desktop uses (moved to shared code
+  unchanged), with no graphics context needed, so it runs on any thread and
+  in a test. The player will not decode through it; it renders through
+  Media3. `AudioDecoder` is the same pair for sound, and `convertLastAs`
+  converts in Kotlin, since the platform decoders produce 16-bit or float and
+  nothing in between. What these cannot give against the desktop's: closed
+  captions (the codec in buffer mode hands out no A53 payload), chapters (the
+  extractor reads none), and a `MediaSource` that cannot seek (the extractor
+  reads by offset). `HwAccel` keeps its three meanings, so OFF is software
+  decode on a phone too, which is the expensive answer there.
+
+  The suite for them runs on a device: MediaCodec exists nowhere else.
+  Fixtures are generated on the host by the ffmpeg CLI, as the desktop's
+  are, and packaged into the test APK. Eighteen tests pass on a moto g84
+  (Android 16). Mutation-checked, and one mutation survived for a reason
+  worth keeping: forcing the untagged-HD fallback to BT.601 changed nothing,
+  because Codec2 decoders fill in an untagged stream's colour aspects
+  themselves, by resolution, with the same rule. The fallback is reached only
+  on a decoder that reports nothing, so the rule is held by a test of its
+  own rather than through a decode.
+
+  The Android target configures only where an SDK exists, so every desktop
+  run in CI passes `-Pskinema.android=false`: the Alpine container, the
+  natives runners and the arm images carry none.
+
+  The Android player is in, and the frame path it runs on was settled by
+  measuring on the phone rather than by the plan, which had it wrong twice.
+  Media3's effects pipeline into an `ImageReader` produced no frame at all
+  and said nothing, most likely because a bare `Surface` gives it no output
+  size. Rendering the codec straight into an RGBA `ImageReader` did deliver
+  frames, and reading one on the CPU crashed the process with a SIGSEGV in
+  the reader thread, on more than one file and with no stack the user build
+  would show: those buffers belong to the vendor codec. What works is the
+  classic shape. ExoPlayer renders into a `SurfaceTexture` on a GL thread of
+  ours, and each frame is drawn into the window surface of an RGBA
+  `ImageReader` whose images this library owns (`FrameBridge`). The GPU does
+  the colour conversion and applies the transform the codec attached, so
+  frames arrive already turned for display and `rotationDegrees` is zero on
+  Android, which is what that property's contract asks for. An image's
+  timestamp is the frame's release time, which `VideoFrameMetadataListener`
+  maps back to its media time exactly. The first frame is released before the
+  size the output is built from is known, so the bridge redraws it once the
+  output exists, or a paused start would show a black rectangle.
+
+  `KeepTime` disables the video track and re-enables it, and that was the
+  riskiest assumption in the plan: measured, the picture comes back at the
+  clock (hidden at 905 ms, shown at 1909 ms, first frame at 1933 ms). The
+  context ExoPlayer needs arrives through a provider in the library's
+  manifest that records the application context and answers nothing, so a
+  consumer's shared code opens a player with no platform call;
+  `AppContext.install` covers a consumer that removes it.
+
+  A consumer's `PcmSink` plays through an adapter (`PcmSinkAudioSink`) that
+  bridges two contracts that disagree: ExoPlayer wants a buffer handed over
+  without blocking and the sink blocks in its write, from one thread. So a
+  writer thread owns every call into the sink. Mutation-checking the first
+  version found a real defect: with one queue, the writer held the next chunk
+  waiting for playback to resume and the stop sat behind it, so a paused
+  player's device played its buffer out instead of stopping. Control
+  commands now have a queue of their own that always goes first. The shape is
+  negotiated down `formatLadder` as on the desktop, and speed is applied with
+  Sonic, pitch preserved.
+
+  Thirty-seven device tests pass on the phone, every behavioural one
+  mutation-checked. Subtitles on the Android player and HDR through the
+  bridge are still to do; until their phases land the subtitle calls do
+  nothing and say so.
+
+  Compose is on both platforms. `VideoSurface`, `rememberPlayerState` and
+  the sight tracker are shared code, and what differs is only how a frame is
+  held and drawn: a public `VideoFrameHolder` (and an internal overlay
+  holder), Skia images through `VideoFrameImage` on the desktop and the
+  player's hardware frames on Android, lent by `acquireFrameBitmap` and
+  wrapped as bitmaps with no copy. Rotation and the clip moved from Skia's
+  canvas to Compose transforms, and the geometry to Compose's `Rect`. The
+  holder is public because the consumer draws frames through a painter of its
+  own, and that painter can now live in shared code too.
+
+  Android's holder gives a frame back two draws after the one that used it,
+  not one, because the render thread draws a recorded frame after the code
+  that recorded it has moved on; the reader holds five images to cover it. A
+  device test of that, mutation-checked, needed a second scenario before it
+  meant anything: drawing after every update passes even a holder that never
+  gives superseded frames back, since every frame then leaves through the
+  draw side. Updates outpacing draws, which is a window drawing slowly, is the
+  case that exposes it (four frames and a stall, against sixty).
+
+  Subtitles on the Android player take the desktop's shape end to end:
+  embedded tracks listed off Media3's tracks under the same numbering as the
+  sound tracks, side-loaded files under negative ids, and Media3's cues drawn
+  into the same `SubtitleOverlay` the desktop publishes, at the size the
+  surface announces, so the surface composites them with no branch of its
+  own. Text is laid out with the platform's text engine, white over a dark
+  outline, at the cue's own size and place or the convention renderers share;
+  bitmap cues are scaled into their rect. Three differences are stated rather
+  than hidden. ASS styling goes no further than Media3's parser keeps
+  (position, alignment, size): no per-run fonts, karaoke or vector drawing,
+  which is libass's and stays the desktop's. A side-loaded file is attached
+  by preparing the item again at the current position, so the sound pauses
+  for as long as that takes. And closed captions are not offered: the
+  desktop finds CEA-608 in the bitstream lazily, and Media3 surfaces it only
+  for containers that declare it. Track languages come back in three letters,
+  because Media3 normalises them to two and shared code should read one form;
+  the platform gives the terminology code, so "ger" reads "deu".
+
+  Six device tests cover it, each mutation run on its own once two of them
+  turned out to share a test whose first assertion fell before the second
+  could.
+
+  Writing works on Android, and the `Transcoder` with it, unchanged: it was
+  shared code written against the decoders and the writer, so it ran on the
+  Android ones the first time. `MediaWriter` there is the platform's
+  MediaCodec encoders and MediaMuxer, frames converted to YUV on the CPU in
+  the matrix the desktop picks for the geometry and the file tagged with it;
+  mp4, webm, ogg and 3gp through the muxer, .flac and .wav written here, and
+  Matroska refused by name because the platform does not write it. The muxer
+  takes every track before its first sample, so packets an encoder hands out
+  before the last track exists are held and written once it starts.
+
+  Codec family names (`h264`, `hevc`, `av1`, `vp9`, `vp8`, `aac`, `opus`,
+  `flac`) are valid on both platforms now, so shared code can ask for a codec
+  without knowing which platform picks the encoder. On the desktop a family
+  tries the hardware encoder first and the bundle's software one after, which
+  is only safe because a refused open leaves nothing behind; an encoder named
+  outright still fails closed.
+
+  Two of the first round's tests passed against the defects they were written
+  for, and the reasons are worth keeping. A colour round trip proves the
+  matrix only for a colour the matrices disagree on: the blue first used came
+  back six levels off through the wrong one, inside the tolerance, where a
+  saturated green comes back twenty-eight off. And the muxer's holding path
+  never ran while sound and pictures alternated, since both tracks then exist
+  before the first packet; only every picture before any sound reaches it.
+
+  `skinema-demo-android` is the device harness, the desktop demo's
+  counterpart. Watched on the phone: H.264 on the hardware decoder, a 1280x720
+  AV1 file on the software one because that SoC has no AV1 block, and
+  `hardwareActive` saying which, Fit and Cover, sound, seek and rate.
+
+  Animated images play on Android too, by reading the containers rather than
+  through native code. The platform animates GIF and WebP inside a drawable
+  and hands out neither the frames nor their times, and does not animate APNG
+  at all, but it decodes a single frame of each. So `ImageFrames` takes the
+  three containers apart in Kotlin, wraps each frame's data as a standalone
+  single-frame file (the pixels untouched, only the header rewritten to the
+  frame's size), lets the platform decode that, and `ImageFrameSource`
+  composes the frames by each format's disposal and blending rules. No pixel
+  decoding was written, and that is what kept JNI out: the WebP and APNG gap
+  listed above as a native candidate closed without one. Stills (JPEG, PNG,
+  WebP, GIF, BMP, HEIF, AVIF) are the one-frame case of the same source, and
+  `VideoDecoder` hands anything whose first bytes say image to it. The
+  composition is held against ffmpeg's own composition of the tenth frame of
+  each format, on files whose frames depend on the ones before them.
+
+  The player plays them without ExoPlayer, which plays none of them as
+  video. It paces the frames against a clock of its own and draws each
+  composed picture into the same bridge, uploaded as a texture rather than
+  through the input surface, with a timestamp it picks, so the mailbox, the
+  hardware bitmaps and Compose see one kind of frame and `setSource` moves
+  between images and video either way. ExoPlayer is built only when the
+  first file that is not an image arrives. A still reads `Ended` unless it
+  loops and its clock never runs, where the desktop's turns a 40 ms lap over
+  and over. An image takes no side-loaded subtitle file, since ExoPlayer is
+  what lays out cues. A composed picture comes off the GPU premultiplied, as
+  Android draws every bitmap, so `acquireFrame` straightens it.
+
+  The switch test found a defect older than the images: closing an
+  `ImageReader` closes every image it handed out, so a change of size (any
+  switch between files of different sizes) invalidated the frame in the
+  mailbox and any frame a consumer held, and the next `acquireFrame` threw.
+  A replaced reader is now kept until the last of its images comes back. The
+  full suite then found a second one under load: a decoder being stopped can
+  still release a frame, which landed in the reader already sized for the
+  image as a stray frame of the wrong file. The bridge now holds decoder
+  frames back while an image plays, ordered with the resize on its own
+  thread.
+
+  Thirteen player tests cover it, mutation-checked. Two first survivals
+  sharpened the tests. A schedule that ignored the rate showed nearly every
+  frame at 2x anyway, because each late wake caught up on the next, so the
+  test now holds each frame to its time rather than counting frames. And
+  drawing while hidden is guarded twice (the schedule wakes only at a lap's
+  end while the frames are off, and the wake draws nothing), so only both
+  mutated at once is caught, which is the answer wanted. One survives for a
+  reason: drawing the decoder's last frame again into the image's new reader
+  is overwritten in the one-slot mailbox within milliseconds, before any
+  poll sees it, so the flag that prevents it guards a one-frame flash a
+  surface could draw and no public call can observe.
+
+  Chapters are read on Android too, by a parser here, since neither the
+  platform extractor nor Media3 reads any. Matroska and WebM: the Chapters
+  element among the segment's first children or, written after the
+  clusters as a muxer adding chapters later does, through the seek head;
+  the default edition, its top-level atoms, hidden and disabled ones left
+  out. MP4 and QuickTime: the chapter track a video track names in its
+  `tref`, which Apple's tools write, else the Nero `chpl` list, which mp4v2
+  writes. ffmpeg writes both and libavformat lets the track win, so this
+  does too. Ends a container leaves out are filled as libavformat fills
+  them: the next start, and the duration for the last. Both decoders and
+  the player report them, through a `MediaSource` as well; other containers
+  have none on Android, and the contract says so.
+
+  The fixtures are ffmpeg's own chaptered mp4, mov, mkv and webm, plus that
+  mp4 twice more with one of its two chapter structures renamed out of the
+  way, so each mp4 path is shown to be read on its own. The seek-head path,
+  the edition choice and hidden atoms have no ffmpeg recipe that produces
+  them, so a test builds that Matroska structure byte by byte, in a segment
+  of unknown size. The first device run caught the element reader counting
+  the id's length twice, which every Matroska file showed as no chapters.
+
+  The player test for chapters found a defect in `setSource` on Android.
+  The shape a switch keeps (a picture player takes files with a picture)
+  was read when the call was made, and the player learns it has a picture
+  only from ExoPlayer's track report, which arrives after the prepare. A
+  switch asked for straight after construction therefore found a video
+  player that thought it played sound alone, and refused the video file
+  for carrying no sound. The open now asks the extractor whether the file
+  has a picture, and the switch reads the shape on the player's thread,
+  behind the open, as the desktop's queues behind its own.
+
+  A review of the whole branch before the CI phase, six readers each on one
+  part, found more than the phases had, and the two worst were about what
+  leaves the phone and what a hostile file can do. The diagnostics and the
+  bandwidth meter above are the first. The second: the QuickTime chapter
+  track was laid out by expanding each stsc entry's samples per chunk as the
+  file claimed, so a 400 KB file claiming 2^31 samples a chunk for a hundred
+  thousand chunks held the open for 2e14 steps, on the player's thread. The
+  walk is now bounded by the chunks and samples that exist. The image
+  containers threw whatever a short read threw on a file cut short (where
+  libavformat reads the frames before the cut, and now so does this) and
+  believed any canvas size a header gave, so a cut GIF failed with an index
+  exception from a call promised to throw `LibavException`, and a 65535 by
+  65535 one asked for sixteen gigabytes.
+
+  The consumer sink adapter had four. It opened a line and stopped it at
+  once, so a renderer started before its format was known (an audio-only
+  file at the open) played into a stopped line and stood. It counted all the
+  sound since the last flush at the current speed, so a change of rate moved
+  the clock by everything played so far (a minute at 1x read as two at 2x).
+  It forwarded volume changes but never set the volume on a line it opened,
+  which the `PcmSink` contract leaves to the player. And it ignored gaps in
+  the timestamps, which the platform sink absorbs. The clock is now a list
+  of stretches, each with the speed it was stretched at and any jump at its
+  start, so a rate change or a gap reaches the clock at the frame it happens
+  on. The audio decoder narrowed a 24-bit FLAC to 16 bits, against its own
+  contract, because the platform decoder does unless asked for float.
+
+  The player had more, mostly in what survives a change of engine or file.
+  A video track kept off for a hidden picture stayed off for ExoPlayer after
+  an image played in between, because the image engine cleared the flag
+  without telling it. A switch while stopped for a hidden picture started the
+  new file anyway. A sound player switched to a video took the video's shape
+  and then refused sound files. A failed player rebuilt ExoPlayer on the next
+  switch and played under a Failed state, and a close replaced the failure
+  with Closed, where the desktop keeps it. REQUIRE with no hardware decoder,
+  or a codec no decoder takes, played sound with no picture instead of
+  failing, since ExoPlayer drops an unsupported track quietly. Quick steps
+  aimed at the same frame, a side-loaded subtitle file dropped the chosen
+  sound track (the re-prepared item renames every group, and the overrides
+  then match none), and after a step the position read the seek's target,
+  one frame short, instead of the frame shown. The open was posted from an
+  `init` above properties the player thread reads, so it could run before
+  they were set.
+
+  The writer deleted a file that was already there when it refused before
+  touching it (a .mkv, an unknown codec, a codec the device lacks), and a
+  container that cannot hold a codec surfaced mid-write as an
+  `IllegalStateException`. Refusals now come before the file is opened, a
+  muxer refusal later is a `LibavException` that leaves no file, and a
+  failed finish can be retried. On the desktop a family standing for one
+  encoder was refused under the encoder's name rather than the family's.
+  Smaller: ten-bit limited range was scaled with the eight-bit factors (white
+  at 1020 of 1023), a stream with no declared duration reported its last
+  frame's start as its end, a translucent picture copied out of a hardware
+  frame came back premultiplied, a throw on the frame thread ended the
+  process instead of failing the player, and a frame left queued while every
+  image was out stayed there.
+
+  Every fix has a test, and every test was mutation-checked. Three first
+  passed against the fix they were written for. A loop whose sound is
+  shorter than its picture showed no stall through the player, so the gap
+  handling is held by feeding the adapter directly, and the same for a start
+  before the format is known. And a failed player switched to a video was
+  refused by the shape check before the failure could be what refused it
+  (it had failed on a missing file, so it knew no picture), so the test now
+  switches it to a sound file its shape takes. Left open: the first frame after a switch
+  between sizes is drawn at the old size for one frame, since ExoPlayer
+  releases it before it reports the new size, and HDR through the bridge.
+
+  CI runs the Android target in a job of its own: both libraries compiled
+  for it, the demo built, and both device suites on an x86_64 emulator at
+  API 34 under KVM, one level rather than a matrix. The emulator has the
+  software codecs alone, so the one assertion that expected a hardware
+  decoder now asserts what the device has: AUTO on hardware where there is
+  one, software where there is none. Skips are held to a ceiling as on the
+  desktop rows. Two skip there: the image player's tests that hold every
+  frame to its time, since the emulated GPU's first draws are slow enough
+  that the newest picture replaces one a phone shows. The first emulator run
+  also showed one of them racy everywhere: it drained the mailbox without
+  waiting for the poster frame, so whether frame 0 counted as played
+  depended on which came first, which is what made it fail now and then on
+  the phone too. It takes the poster first now and times the rest from the
+  resume.
+
+  A later emulator run had a step back put up no frame at all, and the path
+  it points at was wrong regardless of what set it off there. When the
+  decode that finds the previous frame fails, the step fell back to an
+  exact seek a millisecond before the frame shown, and an exact seek lands
+  on the first frame at or after its target, which is the frame shown: the
+  step stood still and said nothing. The fallback now aims a frame and a
+  half back, by the track's rate, which lands on the previous frame at a
+  steady rate. Half a frame back, the first fix tried, lands on the shown
+  frame for the same reason, and the test that forces the discovery to fail
+  catches both.
+
+  What set it off on the emulator is the emulator's own. Its log shows the
+  player's decoder unable to dequeue an output buffer for four seconds right
+  after the discovery's decoder ran beside it, and the host ffmpeg behind
+  both reporting slices with no parameter sets: the goldfish decoders lose
+  state when two instances run at once. A phone runs the same pair every
+  step without trouble. So the two step tests that discover on a second
+  decoder skip on the emulator, the fallback test still runs there, and the
+  job's skip ceiling is four (six once the second round added two more
+  tests that step back the same way).
+
+  The next run caught a real one, which a phone hides. A pause, and the
+  freeze for a hidden picture, published Paused at once, while the clock
+  stopped only when ExoPlayer reported it had stopped playing. Until then
+  it ran on from the last frame's release time, a vsync ahead, and then
+  jumped to ExoPlayer's position: on the emulator more than 50 ms after the
+  state said Paused. The clock now stops at ExoPlayer's position in the same
+  step as the pause. On a phone that window is a few milliseconds, too short
+  for any assertion to see, so this fix is held by the emulator run and not
+  by a mutation on the device: a tolerance tight enough to see it on the
+  phone also sees the frame already on its way when the pause lands, which
+  sets the position to itself and is correct.
+
+  A second review of the fixes and the documents found the first round's
+  work incomplete in places, and two of its own changes wrong. The manifest
+  removal above was one: it reached past Media3. The check for an
+  unsupported video track asked Media3's strict question, which also fails a
+  stream merely past what its decoder declares, a file ExoPlayer plays. The
+  step queue lost presses three ways: a frame already on its way when a
+  press paused a playing player counted as the step's landing, a settle timer
+  left by one step ended the next, and a seek that ran off the end never
+  passed READY and stalled the queue for good. Steps now carry a token, land
+  only on a frame published after their own seek, and settle on ENDED too.
+
+  The hostile-input fixes did not go far enough. Titles of a chapter track
+  had no total bound (a hundred thousand chapters sharing one 64 KiB title is
+  6.5 billion characters), the stsc walk was bounded per entry but not
+  across entries that do not increase, and every animated frame's file was
+  built when the container was read, so a profile or palette every frame
+  shares was copied once per frame. Titles stop at a megabyte, the walk
+  never revisits a chunk, and frame files are built from ranges of the
+  original bytes when they are decoded. The canvas cap moved to 2^27 pixels,
+  enough for a 108 MP photo, and a canvas the device has no memory for is
+  refused by name.
+
+  The sink adapter had no way out of a write that never returns, which the
+  `PcmSink` contract leaves to the player, and a reconfigure behind one
+  threw a TimeoutException out of ExoPlayer's playback thread. A watchdog now
+  closes the sink under a write blocked for three seconds, which fails the
+  player by name. It also ignored the channel order Media3 asks for, so 5.1
+  Vorbis and Opus from the platform decoders reached the sink in Vorbis
+  order, counted a write that finished after a flush into the next
+  generation, and let a format change play the old shape's tail into the new
+  line.
+
+  A switch checked the new file with the platform extractor, which reads a
+  different set of containers than Media3, so it refused FLV the player
+  plays and could pass a file the player then failed on. It now opens the
+  file in a throwaway ExoPlayer with every track type off and asks whether a
+  decoder takes the track the player's shape needs.
+
+  The device run of those fixes then turned up one the first round had made
+  itself. The platform's FLAC extractor does not hand out FLAC: it decodes
+  the file and hands out PCM already narrowed to 16 bits, under audio/raw,
+  and the raw decoder relabels whatever it is told rather than converting.
+  So asking it for float, the first round's fix for a 24-bit FLAC, labelled
+  16-bit samples as float and the decoder produced noise, while the test,
+  which looked only at the label, passed. Raw tracks are no longer asked, a
+  24-bit FLAC arrives through the decoder as 16-bit, which is what the
+  platform gives, and the test now holds the samples to the tone they are.
+  The player is not affected: Media3 reads FLAC itself.
+
+  Two of the round's guards are not visible on the phone, and are kept as
+  defence rather than proven: the step that lands only on a frame published
+  after its own seek, and the wait for frames still on their way when a
+  press pauses a playing player. Mutated singly or together, nothing fails,
+  because this phone's ExoPlayer releases no frame after the pause. The
+  same holds for a seek that ends at ENDED without READY, which this
+  phone's player does not do on the fixtures. And on the emulator the clock
+  of a paused player was set back to the last frame released after the
+  pause, which lags the clock there by two frames: frames released while
+  the clock stands now move it only for a seek's landing.
+
+  The documents close the phase. The README names Android in its opening,
+  gives the Android dependency and the `-jvm` coordinates a non-Gradle build
+  now needs, and its modules table states both floors.
+  `docs/guide/android.md` is the consumer's page for the platform: the
+  engine, what leaves the phone (nothing, and which Media3 defaults it took to
+  say so), hardware frames, and every member whose answer differs, each with
+  its reason. The other guides say where they describe the desktop alone and
+  point there, and the architecture page describes the two engines behind
+  one API.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
@@ -1538,15 +2052,15 @@ outside this file.
 
 ## 12. Version pins (2026-09)
 
-| Component  | Version        | Note                                   |
-|------------|----------------|----------------------------------------|
-| JDK floor  | 22             | java.lang.foreign final                |
-| Toolchain  | 25 (LTS)       | foojay resolver fetches if absent      |
-| Kotlin     | 2.4.10         | matches the primary consumer           |
-| Compose    | 1.12.0         | matches the primary consumer           |
-| Skiko      | 0.150.1        | what Compose 1.12.0 ships; compileOnly |
-| Gradle     | 9.7.1 (wrapper)|                                        |
-| FFmpeg     | n9.0.x         | sonames in section 4                   |
+| Component | Version         | Note                                   |
+|-----------|-----------------|----------------------------------------|
+| JDK floor | 22              | java.lang.foreign final                |
+| Toolchain | 25 (LTS)        | foojay resolver fetches if absent      |
+| Kotlin    | 2.4.10          | matches the primary consumer           |
+| Compose   | 1.12.0          | matches the primary consumer           |
+| Skiko     | 0.150.1         | what Compose 1.12.0 ships; compileOnly |
+| Gradle    | 9.7.1 (wrapper) |                                        |
+| FFmpeg    | n9.0.x          | sonames in section 4                   |
 
 Compose and Skiko are ONE pin in two lines, and a bot that reads the catalog
 cannot know it. Skiko is `compileOnly` here on purpose (section 10's

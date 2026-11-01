@@ -4,7 +4,7 @@ Video decode, encode and playback for JVM desktop apps: FFmpeg through
 hand-written Java FFM (Panama) bindings, frames out as raw RGBA or Skia
 images, a Compose Desktop surface on top, and frames back in to a muxed
 file. No JNI wrapper stacks, no embedded player engines, no network
-access.
+access. The same API runs on Android on Media3, the platform's own engine.
 
 This tree has two audiences. Pick the half you need.
 
@@ -32,6 +32,9 @@ You depend on `dev.hivens:skinema-*` and embed a player in your app.
 - [guide/formats-and-behavior.md](guide/formats-and-behavior.md) --
   what plays, and the behavior contract every consumer relies on
   (fail-closed, drop-late, threading, read-ahead).
+- [guide/android.md](guide/android.md) -- the same API on Android: the
+  Media3 engine, what leaves the phone (nothing), hardware frames, and every
+  place the answers differ from the desktop's.
 
 ## Working on skinema (contributors)
 

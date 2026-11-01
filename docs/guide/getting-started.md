@@ -39,15 +39,27 @@ If you are not on Compose, depend on `skinema-core` alone (the player
 and decoders) and optionally `skinema-skiko` (frames as
 `org.jetbrains.skia.Image`). The module split:
 
-| Module            | Contents                                                | Runtime floor                    |
-|-------------------|---------------------------------------------------------|----------------------------------|
-| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
+| Module            | Contents                                                                       | Runtime floor                    |
+|-------------------|--------------------------------------------------------------------------------|----------------------------------|
+| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`                              | JDK 22                           |
 | `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
-| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop 1.12             |
-| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`                            | Compose Desktop 1.12             |
+| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform                      | --                               |
 
 The library is compiled to JVM 22 bytecode, because `java.lang.foreign`
 (the FFM API) went final in 22. You run on any JDK 22 or newer.
+
+A Maven, sbt or Bazel build names `skinema-core-jvm` and
+`skinema-compose-jvm` from 0.9.0 on: those tools read the root POM of a
+multiplatform module, which carries no classes. Gradle resolves the plain
+coordinates through the module metadata and needs nothing of that.
+
+### On Android
+
+The same `implementation("dev.hivens:skinema-compose:0.9.0")` resolves to the
+Android build, with no natives to add and nothing else on this page applying:
+the engine there is Media3 on the platform's decoders, and minSdk is 29. See
+[android.md](android.md).
 
 ## Native runtime
 

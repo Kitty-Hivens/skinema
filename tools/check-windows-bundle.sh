@@ -29,8 +29,8 @@ set -uo pipefail
 
 BUNDLE="${1:?usage: check-windows-bundle.sh <bundle-dir> [repo-root]}"
 ROOT="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
-LIBAV_KT="$ROOT/skinema-core/src/main/kotlin/dev/hivens/skinema/libav/Libav.kt"
-ASS_KT="$ROOT/skinema-core/src/main/kotlin/dev/hivens/skinema/ass/Ass.kt"
+LIBAV_KT="$ROOT/skinema-core/src/jvmMain/kotlin/dev/hivens/skinema/libav/Libav.kt"
+ASS_KT="$ROOT/skinema-core/src/jvmMain/kotlin/dev/hivens/skinema/ass/Ass.kt"
 
 lower() { tr 'A-Z' 'a-z'; }
 

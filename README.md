@@ -9,6 +9,14 @@ I/O of its own -- it works on the file you hand it and nothing more.
 (`VideoDecoder` also opens a `MediaSource`, so bytes from anywhere can be
 decoded directly; the player itself takes a path.)
 
+The same API runs on Android, on the platform's own engine: Media3 over the
+phone's decoders rather than FFmpeg, so shared code plays, decodes and writes
+through one set of calls on both. Media3 brings Guava and a few androidx
+libraries with it, and no native code ships for Android. Pass
+`hardware = HwAccel.AUTO` there for the hardware decoders, since the default is
+the desktop's software one. What differs, and why, is in
+[the Android guide](docs/guide/android.md).
+
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)
 
@@ -46,6 +54,18 @@ runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-arm64")
 runtimeOnly("dev.hivens:skinema-natives:9.0.1-1:decode-macos-x64")
 ```
 
+On Android the same coordinate resolves to the Android build, and there are
+no natives to add:
+
+```kotlin
+implementation("dev.hivens:skinema-compose:0.9.0")   // brings -core; Media3 underneath
+```
+
+That one is Gradle reading the module metadata. A Maven, sbt or Bazel build
+reads the root POM instead, which for a multiplatform module carries no
+classes, so from 0.9.0 such a build names the desktop artifacts directly:
+`skinema-core-jvm` and `skinema-compose-jvm`.
+
 0.8.2 compiles against Skiko 0.150.1, which is what Compose Multiplatform
 1.12.0 ships. Skiko is `compileOnly` here, so the copy that runs is the one
 your Compose brings: that makes Compose 1.12 a floor rather than a
@@ -69,11 +89,11 @@ The natives classifier is `<tier>-<platform>`: pick one tier for the
 platforms you target. The tier sets what the bundle carries -- and its
 license:
 
-| Tier     | Carries                                                            | License |
-|----------|-------------------------------------------------------------------|---------|
-| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode | LGPL |
-| `decode` | core + GPU decode + subtitles + every format FFmpeg decodes natively; and writing -- AV1 video, Opus/AAC/FLAC audio, the mp4/mkv/webm containers and the audio-only .opus/.flac/.wav ones, plus GPU H.264/HEVC encode on Linux | LGPL |
-| `full`   | decode + H.264 and HEVC **software** encode (x264/x265)             | GPL     |
+| Tier     | Carries                                                                                                                                                                                                                        | License |
+|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|
+| `core`   | the modern essentials (H.264/HEVC/VP8/VP9/AV1, mainstream audio, images), no subtitles, no GPU decode                                                                                                                          | LGPL    |
+| `decode` | core + GPU decode + subtitles + every format FFmpeg decodes natively; and writing -- AV1 video, Opus/AAC/FLAC audio, the mp4/mkv/webm containers and the audio-only .opus/.flac/.wav ones, plus GPU H.264/HEVC encode on Linux | LGPL    |
+| `full`   | decode + H.264 and HEVC **software** encode (x264/x265)                                                                                                                                                                        | GPL     |
 
 `core` is the lean tier -- the modern codecs only, no subtitles, no GPU
 decode -- for apps that just play current video. It is also the portable one:
@@ -100,16 +120,16 @@ Compose -- are restricted methods that otherwise warn on every run.
 Every tier ships for eight platforms -- x64 and arm64 on all three desktop
 operating systems, and both C libraries on Linux:
 
-| Platform        | Bundle built                 | Acceptance suite |
-|-----------------|------------------------------|------------------|
-| `linux-x64`     | on metal                     | on metal         |
-| `linux-arm64`   | on metal                     | on metal         |
-| `linux-musl-x64`| in Alpine, on metal          | on metal, musl JVM |
-| `linux-musl-arm64` | in Alpine, on metal       | on metal, musl JVM |
-| `windows-x64`   | on metal (MSYS2 MINGW64)     | on metal         |
-| `windows-arm64` | on metal (MSYS2 CLANGARM64)  | on metal         |
-| `macos-arm64`   | on metal                     | on metal         |
-| `macos-x64`     | cross-compiled on an arm mac | none             |
+| Platform           | Bundle built                 | Acceptance suite   |
+|--------------------|------------------------------|--------------------|
+| `linux-x64`        | on metal                     | on metal           |
+| `linux-arm64`      | on metal                     | on metal           |
+| `linux-musl-x64`   | in Alpine, on metal          | on metal, musl JVM |
+| `linux-musl-arm64` | in Alpine, on metal          | on metal, musl JVM |
+| `windows-x64`      | on metal (MSYS2 MINGW64)     | on metal           |
+| `windows-arm64`    | on metal (MSYS2 CLANGARM64)  | on metal           |
+| `macos-arm64`      | on metal                     | on metal           |
+| `macos-x64`        | cross-compiled on an arm mac | none               |
 
 Linux ships twice because a glibc shared object cannot load into a musl
 process at all -- Alpine and Void-musl take the `linux-musl-*` bundles, and
@@ -141,14 +161,14 @@ driver on the machine is versioned against it rather than against ours.
 
 ## What it plays
 
-|                 |                                                                                               |
-|-----------------|-----------------------------------------------------------------------------------------------|
-| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
-| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
-| Animated images | GIF, APNG, animated WebP                                                                      |
+|                 |                                                                                                                                                                                                             |
+|-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3                                                                                     |
+| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG                                 |
+| Animated images | GIF, APNG, animated WebP                                                                                                                                                                                    |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
-| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass |
-| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass                                               |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR                                                                                             |
 
 The table names what is worth naming, not everything that is there. The `decode` and `full` tiers carry every decoder, demuxer and parser FFmpeg builds without an external library -- some five hundred of them -- so the legacy, broadcast and archival formats are in whether or not a row above mentions them. The lean `core` tier is the one with a list: the modern essentials (H.264/HEVC/VP8/VP9/AV1 and the mainstream audio), and nothing else. H.266/VVC decodes through FFmpeg's native decoder (CPU-only, no GPU path yet).
 
@@ -209,12 +229,12 @@ file. What a bundle can write is set by its tier, and there the split is about
 licence rather than size: everything below except the software H.264/HEVC pair
 is LGPL or BSD and rides `decode`.
 
-|                 |                                                                                               |
-|-----------------|-----------------------------------------------------------------------------------------------|
-| Video           | AV1 (SVT-AV1), and on Linux H.264/HEVC on the GPU through VAAPI -- both in `decode`; H.264 and HEVC (x264/x265) in `full`, which is what makes that tier GPL |
-| Audio           | AAC, Opus, FLAC, WAV PCM                                                                      |
-| Containers      | mp4/mov, mkv and webm; .opus, .flac and .wav for a file with sound and no picture              |
-| Pixels in       | RGBA8888, reverse-scaled into whatever the encoder accepts; the matrix the conversion used is tagged on the file, so a player reading the tag and one guessing from the geometry agree |
+|            |                                                                                                                                                                                        |
+|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Video      | AV1 (SVT-AV1), and on Linux H.264/HEVC on the GPU through VAAPI -- both in `decode`; H.264 and HEVC (x264/x265) in `full`, which is what makes that tier GPL                           |
+| Audio      | AAC, Opus, FLAC, WAV PCM                                                                                                                                                               |
+| Containers | mp4/mov, mkv and webm; .opus, .flac and .wav for a file with sound and no picture                                                                                                      |
+| Pixels in  | RGBA8888, reverse-scaled into whatever the encoder accepts; the matrix the conversion used is tagged on the file, so a player reading the tag and one guessing from the geometry agree |
 
 Nothing is assumed about an encoder: the pixel format, sample format, channel
 layout and sample rate are all negotiated against what it advertises, and one
@@ -279,12 +299,12 @@ quietly falling back to software. See [the encoding guide](docs/guide/encoding.m
 
 ## Modules
 
-| Module            | Contents                                                | Floor                            |
-|-------------------|---------------------------------------------------------|----------------------------------|
-| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`       | JDK 22                           |
-| `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image` | Skiko (provided by your Compose) |
-| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`     | Compose Desktop 1.12             |
-| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform| --                               |
+| Module            | Contents                                                                        | Floor                                    |
+|-------------------|---------------------------------------------------------------------------------|------------------------------------------|
+| `skinema-core`    | FFM bindings, demux/decode, pacing, `VideoPlayer`; on Android the Media3 engine | JDK 22; Android 10 (API 29)              |
+| `skinema-skiko`   | `VideoFrameImage`/`SubtitleOverlayImage`: pixels as `org.jetbrains.skia.Image`  | Skiko (provided by your Compose)         |
+| `skinema-compose` | `VideoSurface`, `rememberPlayerState`, `VideoScale`, `VideoFrameHolder`         | Compose 1.12, on the desktop and Android |
+| `skinema-natives` | trimmed FFmpeg in tiers, classifier jar per tier+platform                       | --                                       |
 
 ROADMAP.md is the project's working memory: every architectural
 decision, with its reasoning, lives there.

@@ -145,7 +145,7 @@ jobs:
           # The musl bundles are published like every other platform and were
           # the only ones no test here ever loaded. They run inside Alpine,
           # because the question is whether a musl JVM can load them -- a
-          # glibc runner cannot answer it. Scoped to :skinema-core:test rather
+          # glibc runner cannot answer it. Scoped to :skinema-core:jvmTest rather
           # than the whole build for the same reason the natives workflow is:
           # skiko ships no musl native, so :skinema-skiko cannot run there.
           - os: ubuntu-latest
@@ -341,7 +341,7 @@ jobs:
               apk add --no-cache bash openjdk25 ffmpeg font-dejavu fontconfig libva libstdc++ >/dev/null
               export JAVA_HOME=/usr/lib/jvm/java-25-openjdk
               export SKINEMA_LIBAV_DIR=/src/libav-bundle
-              ./gradlew :skinema-core:test
+              ./gradlew :skinema-core:jvmTest -Pskinema.android=false
             '
 
       - name: Build and test
@@ -358,7 +358,10 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -iEv 'mingw|msys' | paste -sd ':' -)"
           fi
-          ./gradlew build
+          # Desktop only: the Android target has a job of its own (android,
+          # below), and the arm runner images carry no Android SDK to
+          # configure it with.
+          ./gradlew build -Pskinema.android=false
 
       # The XML the counter reads, kept for the runs where the count itself
       # raises a question -- which suites skipped, and why. Uploaded even on
@@ -371,6 +374,112 @@ jobs:
           # both linux-x64 jobs uploaded under one name, and while the upload
           # allows it, the pair is then impossible to tell apart.
           name: test-results-${{ matrix.platform }}-${{ matrix.tier }}
-          path: "**/build/test-results/test/*.xml"
+          # Both layouts: the multiplatform modules report under jvmTest, the
+          # plain JVM ones (skiko) under test.
+          path: |
+            **/build/test-results/test/*.xml
+            **/build/test-results/jvmTest/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The Android target: both libraries compiled for it, the demo app built,
+  # and the device suites run on an emulator, since MediaCodec, the GL
+  # bridge and ExoPlayer exist on a device and nowhere else. One current API
+  # level, x86_64 under KVM. The emulator decodes in software only, which the
+  # suites allow for where hardware matters. Timing on it is looser than on
+  # a phone, so a test failing here alone is read for that before anything
+  # is changed.
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # A skip is an assumption a test could not meet, and reads as green, so
+      # the ceiling holds it at what a run measures. Six here. The image
+      # player's two tests that hold every frame to its time, which the
+      # emulated GPU cannot meet (its first draws are slow enough that the
+      # newest picture replaces one a phone shows). And the four step tests
+      # whose step back runs a second decoder beside the player's, which the
+      # emulator's host-side decoder does not survive reliably. On a phone
+      # nothing skips.
+      MAX_SKIPPED: 6
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: 25
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The fixtures are generated on the host by the CLI, as the desktop's
+      # are. Not Ubuntu's build: it is 6.1, which cannot decode an animated
+      # WebP, and the composition reference for that format is ffmpeg's own
+      # decode of one. A static build on the project's FFmpeg line instead,
+      # which carries x264, libvpx, libwebp and libaom. The asset is the
+      # newest build of that line, so it moves within 9.0 and its name has to
+      # follow the pin when FFmpeg moves to the next line.
+      - name: Install ffmpeg CLI (fixtures)
+        run: |
+          curl -fsSL --retry 3 -o ffmpeg.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf ffmpeg.tar.xz -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -hide_banner -version | head -1
+
+      # Without KVM the emulator falls back to software emulation and takes
+      # minutes to boot instead of seconds.
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Compile for Android and build the demo
+        run: ./gradlew :skinema-core:compileAndroidMain :skinema-compose:compileAndroidMain :skinema-demo-android:assembleDebug
+
+      - name: Device suites on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: ./gradlew :skinema-core:connectedAndroidDeviceTest :skinema-compose:connectedAndroidDeviceTest
+
+      - name: Count what was skipped
+        run: |
+          python3 - <<'EOF'
+          import glob, os, re, sys
+          ran = skipped = 0
+          missing = []
+          # Each module's results, so one that ran nothing fails here rather
+          # than hiding behind the other's count.
+          for module in ('skinema-core', 'skinema-compose'):
+              files = glob.glob(f'{module}/build/outputs/androidTest-results/connected/**/TEST-*.xml', recursive=True)
+              if not files:
+                  missing.append(module)
+              for f in files:
+                  head = open(f).read(2000)
+                  m = re.search(r'tests="(\d+)"[^>]*skipped="(\d+)"', head)
+                  if m:
+                      ran += int(m[1]); skipped += int(m[2])
+          ceiling = int(os.environ['MAX_SKIPPED'])
+          print(f"{ran} device tests, {skipped} skipped, ceiling {ceiling}")
+          if missing:
+              sys.exit("no device test results from " + ", ".join(missing))
+          if skipped > ceiling:
+              sys.exit("more device tests skipped than the ceiling allows")
+          EOF
+
+      - name: Keep the device reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-test-results
+          path: |
+            */build/outputs/androidTest-results/connected/
+            */build/reports/androidTests/connected/
           if-no-files-found: warn
           retention-days: 14

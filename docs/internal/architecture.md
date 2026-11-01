@@ -6,15 +6,19 @@ they fit and the rules that shaped them.
 ## Modules
 
 ```
-skinema-core      FFM bindings + demux/decode + pacing + VideoPlayer
-                  + MediaWriter (encode/mux); emits RGBA frames with pts,
-                  takes them back in; zero UI dependency
-skinema-skiko     frame bytes and subtitle patches -> org.jetbrains.skia.Image
-                  (one raster copy), under one borrow rule for both
-skinema-compose   VideoSurface, rememberPlayerState, VideoScale
-skinema-demo      the in-repo harness: run, harness, spike, seekbench, soak
-skinema-natives   trimmed FFmpeg + libass, one classifier jar per tier
-                  and platform
+skinema-core          FFM bindings + demux/decode + pacing + VideoPlayer
+                      + MediaWriter (encode/mux); emits RGBA frames with pts,
+                      takes them back in; zero UI dependency. Multiplatform:
+                      the desktop engine above, and a Media3 one on Android
+skinema-skiko         frame bytes and subtitle patches -> org.jetbrains.skia.Image
+                      (one raster copy), under one borrow rule for both;
+                      desktop only
+skinema-compose       VideoSurface, rememberPlayerState, VideoScale,
+                      VideoFrameHolder; multiplatform like core
+skinema-demo          the in-repo harness: run, harness, spike, seekbench, soak
+skinema-demo-android  the device harness: one file with a timeline, on a phone
+skinema-natives       trimmed FFmpeg + libass, one classifier jar per tier
+                      and platform; desktop only
 ```
 
 `skinema-core` is the whole engine and has no UI dependency, so it is
@@ -25,9 +29,39 @@ behind the `Libav` facade, so the pure-Kotlin upper layers (pacer,
 frame queue, clocks, rational math) compile and unit-test with no
 natives present.
 
+## Two engines behind one API
+
+`skinema-core` and `skinema-compose` are Kotlin Multiplatform with two
+targets: `jvm`, the desktop, and `android`. A source set shared by those two
+alone, `jvmSharedMain`, holds the public API and every type that does not
+depend on an engine: the states, tracks, chapters, the overlay, the PCM types,
+the encode configs, the exceptions, the tone mapper and `Transcoder`, which is
+written against the public surface and runs on both. Sharing it between two
+JVM-family targets is what lets it keep JDK types such as `Path` and
+`AutoCloseable`.
+
+`VideoPlayer`, `VideoDecoder`, `AudioDecoder` and `MediaWriter` are `expect`
+classes there, and the contract KDoc lives on the expect, worded for both
+platforms, with each difference marked on the member it touches. The desktop
+`actual` of each is the FFmpeg implementation this page describes. The
+Android `actual` is the platform's own:
+
+| Class          | Android engine                                                                                                                                                        |
+|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `VideoPlayer`  | ExoPlayer on MediaCodec, rendered into a SurfaceTexture and drawn on the GPU into RGBA images the player owns (`FrameBridge`); image files paced by the player itself |
+| `VideoDecoder` | the platform extractor and a MediaCodec decoder in buffer mode, YUV to RGBA on the CPU with the desktop's colour rules                                                |
+| `AudioDecoder` | the platform extractor and a MediaCodec decoder                                                                                                                       |
+| `MediaWriter`  | MediaCodec encoders and the platform muxer, with .flac and .wav written by the library                                                                                |
+
+What the platform does not read, the library reads in Kotlin: chapters
+(Matroska, MP4 and QuickTime) and the frames of animated GIF, APNG and WebP,
+which are taken apart at the container level and decoded a frame at a time by
+the platform. No native code ships for Android. The reasoning for Media3 over
+an FFmpeg port, and for `expect` classes over a facade, is in ROADMAP M23.
+
 ## The data path
 
-One file, from disk to pixel:
+One file, from disk to pixel, on the desktop:
 
 ```
 [decode thread]   av_read_frame -> avcodec_send_packet
@@ -43,8 +77,8 @@ One file, from disk to pixel:
                   late frames were already dropped
 ```
 
-With sound, a third thread runs the audio: it decodes, resamples to
-stereo S16LE, and writes to the device. The device's consumed-sample
+With sound, a third thread runs the audio: it decodes, and writes to the
+device in the shape the file has, walking down to one the device takes. The device's consumed-sample
 count *is* the clock the pacer waits against -- audio masters, video
 follows. A fourth watches that thread: a write that never returns is a
 device that died silently, and the watchdog hands the clock to wall time
@@ -58,14 +92,14 @@ read-ahead inventory lasts. This split is the core of the runtime; see
 
 ## Where each concern lives
 
-| Concern                         | Page                                                  |
-|---------------------------------|-------------------------------------------------------|
-| Panama bindings, ABI, loader    | [ffm-bindings.md](ffm-bindings.md)                    |
-| Decoders, swscale, HDR, atempo  | [decoding.md](decoding.md)                            |
-| Encoders, muxing, transcode     | [encoding.md](encoding.md)                            |
-| Threads, queue, pacer, clocks   | [threading-and-clocks.md](threading-and-clocks.md)    |
-| Native build, bundle, CI ship   | [natives-build.md](natives-build.md)                  |
-| Tests, capability gates, doubles| [testing.md](testing.md)                              |
+| Concern                          | Page                                               |
+|----------------------------------|----------------------------------------------------|
+| Panama bindings, ABI, loader     | [ffm-bindings.md](ffm-bindings.md)                 |
+| Decoders, swscale, HDR, atempo   | [decoding.md](decoding.md)                         |
+| Encoders, muxing, transcode      | [encoding.md](encoding.md)                         |
+| Threads, queue, pacer, clocks    | [threading-and-clocks.md](threading-and-clocks.md) |
+| Native build, bundle, CI ship    | [natives-build.md](natives-build.md)               |
+| Tests, capability gates, doubles | [testing.md](testing.md)                           |
 
 ## Design rules
 
@@ -77,7 +111,9 @@ arbitrary. The full reasoning is in `../ROADMAP.md` sections 2-10.
   heroics.
 - **No network.** Local files only; the bundled FFmpeg is built
   `--disable-network`. A video library that physically cannot do I/O
-  beyond the file given to it is a feature.
+  beyond the file given to it is a feature. On Android the player wires a
+  file data source alone, and turns off the two Media3 defaults that reach
+  outside the app (platform diagnostics and the bandwidth meter).
 - **Hand-written bindings.** jextract (here, a tiny C program against
   the pinned headers) is an offline oracle for struct layouts and
   constants, never a code generator wired into the build. The binding

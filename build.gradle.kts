@@ -5,6 +5,9 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.kotlin.multiplatform) apply false
+    alias(libs.plugins.android.kmp.library) apply false
+    alias(libs.plugins.android.application) apply false
     alias(libs.plugins.maven.publish) apply false
     alias(libs.plugins.kover)
 }
@@ -21,6 +24,8 @@ val nativesVersion = providers.gradleProperty("nativesVersion").get()
 // Present only where the key cannot come from a keyring -- see the signing
 // block below.
 val inMemoryKey = providers.gradleProperty("signingInMemoryKey")
+
+val skipSigning = providers.gradleProperty("skipSigning")
 
 // The library modules are skinema's own code. skinema-natives is not: it
 // ships trimmed FFmpeg builds, LGPL for the core and decode tiers and GPL
@@ -51,6 +56,9 @@ allprojects {
 // this" is.
 subprojects {
     plugins.withId("org.jetbrains.kotlin.jvm") {
+        apply(plugin = "org.jetbrains.kotlinx.kover")
+    }
+    plugins.withId("org.jetbrains.kotlin.multiplatform") {
         apply(plugin = "org.jetbrains.kotlinx.kover")
     }
 
@@ -147,7 +155,11 @@ subprojects {
         // build here, ship, and fail at the consumer on the very version the
         // documentation tells them is enough. The Java half already does this
         // through options.release.
-        compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
+        //
+        // Not on the Android compilations, whose class library is the
+        // platform's android.jar rather than a JDK release.
+        val android = name.contains("Android") || project.pluginManager.hasPlugin("com.android.application")
+        if (!android) compilerOptions.freeCompilerArgs.add("-Xjdk-release=22")
     }
 }
 
@@ -159,7 +171,11 @@ subprojects {
             // Explicit auto-release: the no-arg form leaves the deployment
             // VALIDATED in the portal, waiting for a manual Publish click.
             publishToMavenCentral(automaticRelease = true)
-            signAllPublications()
+            // -PskipSigning is for publishing to mavenLocal, where a build
+            // without an unlocked key could not publish at all: signing runs
+            // for every repository, snapshots included. Central refuses an
+            // unsigned upload, so the switch cannot ship anything unsigned.
+            if (!skipSigning.isPresent) signAllPublications()
             coordinates("dev.hivens", project.name, project.version.toString())
             pom {
                 name.set(project.name)

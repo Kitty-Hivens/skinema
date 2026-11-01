@@ -11,6 +11,11 @@ With sound on, aac, ac3/eac3, alac, opus, vorbis, mp3, flac and WAV PCM
 files (an mp3, a flac) play frameless through the normal lifecycle -- no
 frames, just sound and metadata.
 
+On Android the player plays through Media3: the platform audio track by
+default, or your `sink` through an adapter. The rate is applied with Sonic
+rather than atempo, pitch preserved either way, and the device's played
+frames are still the clock. See [android.md](android.md).
+
 The sound reaches the device in the shape the file has it: six channels
 stay six, twenty-four bits stay twenty-four, and the rate is never
 converted. What the device will not take is folded, and only then. See

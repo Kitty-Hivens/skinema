@@ -3,6 +3,11 @@
 Subtitles are off by default. Nothing subtitle-related runs until you
 select a track -- the pipeline starts lazily on the first select.
 
+What follows is the desktop, where libass renders text. On Android Media3
+parses the tracks and the platform's text engine lays them out, without
+libass's per-run styling, side-loaded files are told by extension, and closed
+captions are not offered. See [android.md](android.md).
+
 ## Enumerate and select
 
 ```kotlin

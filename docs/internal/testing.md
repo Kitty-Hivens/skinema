@@ -130,13 +130,13 @@ SCENARIO is weak rather than that the threshold needs loosening.
 diagnostics; all take `-Pvideo=<file>` (or `-Pinput`/`-Pout` for the
 spike):
 
-| Command                          | Purpose                                                        |
-|----------------------------------|----------------------------------------------------------------|
-| `:skinema-demo:run`              | play one file in a bare Compose window                         |
-| `:skinema-demo:spike`            | headless decode spike -- dump frames, measure decode cost      |
-| `:skinema-demo:seekbench`        | scripted seeks, seek-to-frame latency percentiles              |
-| `:skinema-demo:soak`             | long looped run, RSS/heap FLOOR per minute (memory proof)      |
-| `:skinema-demo:harness`          | multi-player grid with optional mount/unmount churn            |
+| Command                   | Purpose                                                   |
+|---------------------------|-----------------------------------------------------------|
+| `:skinema-demo:run`       | play one file in a bare Compose window                    |
+| `:skinema-demo:spike`     | headless decode spike -- dump frames, measure decode cost |
+| `:skinema-demo:seekbench` | scripted seeks, seek-to-frame latency percentiles         |
+| `:skinema-demo:soak`      | long looped run, RSS/heap FLOOR per minute (memory proof) |
+| `:skinema-demo:harness`   | multi-player grid with optional mount/unmount churn       |
 
 Useful flags and env:
 
@@ -191,7 +191,7 @@ Useful flags and env:
   fallback for a decoder with no software path of its own is covered on
   every row without either switch (`SoftwareFallbackTest`).
 
-A note on CI flakes: `taskset -c 0 ./gradlew test --no-daemon` pins the
+A note on CI flakes: `taskset -c 0 ./gradlew jvmTest --no-daemon` pins the
 build to one core and reproduces runner-starvation flakes locally that
 otherwise only appear on thrashed shared runners.
 

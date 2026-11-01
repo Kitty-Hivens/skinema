@@ -7,10 +7,19 @@ sitting and maintain it years from now. Keep that bar.
 ## Build and test
 
 ```
-./gradlew build          # compile + all modules' tests
-./gradlew :skinema-core:test
-./gradlew compileKotlin   # quick compile check
+./gradlew build                         # compile both targets + the host tests
+./gradlew build -Pskinema.android=false # the same without an Android SDK
+./gradlew :skinema-core:jvmTest
+./gradlew compileKotlinJvm              # quick compile check
+./gradlew :skinema-core:connectedAndroidDeviceTest  # the Android suite, on a device
 ```
+
+The Android target needs an Android SDK to configure at all (compileSdk 37,
+pointed at by `ANDROID_HOME` or `local.properties`). Without one, pass
+`-Pskinema.android=false` and the desktop builds and tests alone. `build`
+runs the host tests only: the Android suite drives MediaCodec, which exists
+on a device or an emulator and nowhere else, so it runs through
+`connectedAndroidDeviceTest` with one attached.
 
 Toolchain: build on **JDK 25** (the foojay resolver fetches one if it
 is absent), emitting **JVM 22** bytecode -- `java.lang.foreign` went
@@ -149,6 +158,10 @@ an option -- same tasks, `-PappVersion=X.Y.Z` for the libraries, and
 `--no-configuration-cache` on both. Signing then goes through the gpg agent
 against the key in the local keyring (`signing.gnupg.keyName`) instead of
 the CI path.
+
+Publishing to `mavenLocal` to try a build in another project signs as well,
+and fails without an unlocked key. `-PskipSigning` turns signing off for that
+case. Central refuses an unsigned upload, so the switch cannot ship anything.
 
 The workflow needs four repository secrets: `MAVEN_CENTRAL_USERNAME` and
 `MAVEN_CENTRAL_PASSWORD` (a Central Portal user token, not the account
