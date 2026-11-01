@@ -1430,7 +1430,12 @@ actual class VideoPlayer actual constructor(
             }
             val p = player ?: return
             if (!hasVideo || stopMode != null) {
-                sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
+                // No frames drive the clock here, so ExoPlayer's position does
+                // while it plays. A standing clock is left where the pause put
+                // it: ExoPlayer's position settles after a pause, at wherever
+                // its own thread stopped, and following it would move a clock
+                // the state already calls Paused.
+                if (p.isPlaying || clockRunning) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
             } else {
                 clockRunning = p.isPlaying
             }
