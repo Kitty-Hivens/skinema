@@ -2,14 +2,14 @@
 
 ## What it plays
 
-|                 |                                                                                               |
-|-----------------|-----------------------------------------------------------------------------------------------|
-| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3 |
-| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG |
-| Animated images | GIF, APNG, animated WebP                                                                      |
+|                 |                                                                                                                                                                                                             |
+|-----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Containers      | mp4/mov/m4a, webm/mkv, avi, MPEG-PS/TS, flv, asf/wmv, dv, RealMedia, ogg, mp3, flac, wav, gif, apng, webp, raw ac3/eac3                                                                                     |
+| Video           | H.264, HEVC, H.266/VVC, VP8, VP9 (incl. webm alpha), AV1; MPEG-1/2, MPEG-4 Part 2, VC-1, WMV 7-9, H.263, Theora, ProRes, DNxHD, FFV1, RealVideo, Cinepak, Indeo, VP6; MJPEG                                 |
+| Animated images | GIF, APNG, animated WebP                                                                                                                                                                                    |
 | Audio           | AAC, AC-3/E-AC-3, DTS, TrueHD, ALAC, Opus, Vorbis, MP1/MP2/MP3, FLAC, WMA (v1/v2/Pro), AMR, WavPack, Monkey's Audio, TTA, ADPCM, G.72x, RealAudio, ATRAC, GSM, WAV PCM -- the device clock masters A/V sync |
-| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass |
-| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR |
+| Subtitles       | ASS/SSA, SRT, mov_text, WebVTT (libass-rendered); PGS, VobSub, DVB (bitmap); CEA-608/708 closed captions, read out of the video bitstream; external .srt/.ass                                               |
+| Pixels out      | RGBA8888, straight alpha, exact-pts pacing, BT.601/709/2020 matrix and range honored, PQ/HLG tone-mapped to SDR                                                                                             |
 
 The supported set is exactly the trimmed FFmpeg whitelist plus libass
 (see [../internal/natives-build.md](../internal/natives-build.md) for
@@ -27,6 +27,13 @@ H.264/HEVC pair is GPL; see the "What it writes" table in the README.
 What it is either way is offline by construction -- the bundled FFmpeg is
 built `--disable-network`, so the library physically cannot perform any
 I/O beyond the file you hand it.
+
+On Android what plays is what the device's decoders and Media3's extractors
+take: the common modern codecs and containers (MPEG-TS, FLV, AVI and Ogg
+among them), far less of the legacy set above, and the image formats the
+library reads itself. The
+contract below holds there too, with the differences
+[android.md](android.md) lists.
 
 HDR (PQ or HLG over BT.2020) is tone-mapped to SDR on the decode path,
 so it no longer plays washed out. Driving an actual HDR display

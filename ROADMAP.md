@@ -90,14 +90,14 @@ Pinned line: **FFmpeg n9.0.x, LGPL, shared** (pinned 2026-08; n8.1.x before it).
 The n8.1 -> n9.0 move changed no struct offset the bindings read -- only the
 six sonames and `AV_CODEC_ID_VP9`, both re-captured with the oracle.
 
-| Library     | soname major (n9.0) |
-|-------------|---------------------|
-| avutil      | 61                  |
-| swresample  | 7                   |
-| swscale     | 10                  |
-| avcodec     | 63                  |
-| avformat    | 63                  |
-| avfilter    | 12                  |
+| Library    | soname major (n9.0) |
+|------------|---------------------|
+| avutil     | 61                  |
+| swresample | 7                   |
+| swscale    | 10                  |
+| avcodec    | 63                  |
+| avformat   | 63                  |
+| avfilter   | 12                  |
 
 Rules:
 
@@ -111,11 +111,11 @@ Rules:
 
 Binary sources, by stage:
 
-| Stage    | Linux              | Windows            | macOS              |
-|----------|--------------------|--------------------|--------------------|
-| Spike    | system FFmpeg 8.1  | --                 | --                 |
-| v0.1     | BtbN n8.1 lgpl-shared | BtbN n8.1 lgpl-shared | skipped       |
-| Endgame  | own trimmed CI build | own trimmed CI build | own trimmed CI build |
+| Stage   | Linux                 | Windows               | macOS                |
+|---------|-----------------------|-----------------------|----------------------|
+| Spike   | system FFmpeg 8.1     | --                    | --                   |
+| v0.1    | BtbN n8.1 lgpl-shared | BtbN n8.1 lgpl-shared | skipped              |
+| Endgame | own trimmed CI build  | own trimmed CI build  | own trimmed CI build |
 
 BtbN (github.com/BtbN/FFmpeg-Builds) does not build macOS; Homebrew dylibs
 drag a dependency tree and are not redistributable as-is. macOS support
@@ -153,11 +153,11 @@ weighs a lot and not every consumer wants it. The always-on base is the
 core playback set (H.264/HEVC, the native audio decoders, the still images,
 the containers, the atempo chain); each tier layers features on:
 
-| Tier     | Features over the base                                            | License |
-|----------|-------------------------------------------------------------------|---------|
-| `core`   | av1 vpx webp                                                      | LGPL    |
-| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi enc-av1 enc-opus  | LGPL    |
-| `full`   | + enc-h264 enc-hevc (x264/x265)                                   | GPL     |
+| Tier     | Features over the base                                           | License |
+|----------|------------------------------------------------------------------|---------|
+| `core`   | av1 vpx webp                                                     | LGPL    |
+| `decode` | + hwaccel + subs (libass) + formats + enc-vaapi enc-av1 enc-opus | LGPL    |
+| `full`   | + enc-h264 enc-hevc (x264/x265)                                  | GPL     |
 
 Three of the five encoder features carry no GPL surface, so they ride
 `decode` as well as `full`. `enc-vaapi` (M13) is the hardware H.264/HEVC
@@ -1854,6 +1854,16 @@ README once the library is usable.
   phone also sees the frame already on its way when the pause lands, which
   sets the position to itself and is correct.
 
+  The documents close the phase. The README names Android in its opening,
+  gives the Android dependency and the `-jvm` coordinates a non-Gradle build
+  now needs, and its modules table states both floors.
+  `docs/guide/android.md` is the consumer's page for the platform: the
+  engine, what leaves the phone (nothing, and which Media3 defaults it took to
+  say so), hardware frames, and every member whose answer differs, each with
+  its reason. The other guides say where they describe the desktop alone and
+  point there, and the architecture page describes the two engines behind
+  one API.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived
@@ -1978,15 +1988,15 @@ outside this file.
 
 ## 12. Version pins (2026-09)
 
-| Component  | Version        | Note                                   |
-|------------|----------------|----------------------------------------|
-| JDK floor  | 22             | java.lang.foreign final                |
-| Toolchain  | 25 (LTS)       | foojay resolver fetches if absent      |
-| Kotlin     | 2.4.10         | matches the primary consumer           |
-| Compose    | 1.12.0         | matches the primary consumer           |
-| Skiko      | 0.150.1        | what Compose 1.12.0 ships; compileOnly |
-| Gradle     | 9.7.1 (wrapper)|                                        |
-| FFmpeg     | n9.0.x         | sonames in section 4                   |
+| Component | Version         | Note                                   |
+|-----------|-----------------|----------------------------------------|
+| JDK floor | 22              | java.lang.foreign final                |
+| Toolchain | 25 (LTS)        | foojay resolver fetches if absent      |
+| Kotlin    | 2.4.10          | matches the primary consumer           |
+| Compose   | 1.12.0          | matches the primary consumer           |
+| Skiko     | 0.150.1         | what Compose 1.12.0 ships; compileOnly |
+| Gradle    | 9.7.1 (wrapper) |                                        |
+| FFmpeg    | n9.0.x          | sonames in section 4                   |
 
 Compose and Skiko are ONE pin in two lines, and a bot that reads the catalog
 cannot know it. Skiko is `compileOnly` here on purpose (section 10's

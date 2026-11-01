@@ -3,7 +3,11 @@
 ## VideoSurface
 
 `dev.hivens.skinema.compose.VideoSurface` draws a player's frames in a
-Compose Desktop layout.
+Compose layout, on the desktop and on Android. It is the same code on both,
+visibility rules included. What differs is the frame it draws: on Android
+the player's hardware frames with no copy, through the shared
+`VideoFrameHolder`, where the desktop draws Skia images. See
+[android.md](android.md).
 
 ```kotlin
 @Composable

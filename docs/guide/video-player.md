@@ -6,6 +6,11 @@ audio thread and its watchdog; a selected subtitle track adds a fifth),
 opens the file asynchronously, and exposes its progress through volatile
 fields you read on any thread. It is `AutoCloseable`.
 
+This page describes the desktop engine. On Android the same class plays
+through Media3, with its own threads, and the members whose answers differ
+there (`explicitClock`, `readAheadFrames`, `hardware`, `rotationDegrees`,
+image files, subtitles, chapters) are listed in [android.md](android.md).
+
 ## Constructing
 
 ```kotlin
@@ -110,15 +115,15 @@ val state: VideoPlayer.State   // @Volatile, read anywhere
 
 `State` is a sealed interface:
 
-| State        | Meaning                                                      |
-|--------------|-------------------------------------------------------------|
-| `Opening`    | Initial, and again while a `setSource` opens the next file. |
-| `Playing`    | Frames are advancing.                                       |
-| `Paused`     | Frozen; the last frame stays on screen. Also how a player reads while it has paused itself for a picture nobody takes, see below. |
-| `Seeking`    | A landing is in flight (a loading affordance can show).     |
-| `Ended`      | EOF with nothing left to play -- see below.                 |
-| `Failed`     | `Failed(cause: Throwable)` -- open or mid-decode error.     |
-| `Closed`     | `close()` has run.                                          |
+| State     | Meaning                                                                                                                           |
+|-----------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `Opening` | Initial, and again while a `setSource` opens the next file.                                                                       |
+| `Playing` | Frames are advancing.                                                                                                             |
+| `Paused`  | Frozen; the last frame stays on screen. Also how a player reads while it has paused itself for a picture nobody takes, see below. |
+| `Seeking` | A landing is in flight (a loading affordance can show).                                                                           |
+| `Ended`   | EOF with nothing left to play -- see below.                                                                                       |
+| `Failed`  | `Failed(cause: Throwable)` -- open or mid-decode error.                                                                           |
+| `Closed`  | `close()` has run.                                                                                                                |
 
 `Ended` is not only for non-looping files: a looping player ends too
 when a lap produces no frames at all, because the next lap has nothing
@@ -151,11 +156,11 @@ pictures into a mailbox nothing empties.
 What stopping costs the timeline is the `unwatched` constructor
 parameter's to say.
 
-| `WhenUnwatched` | While nobody watches | When the picture is wanted again |
-|---|---|---|
+| `WhenUnwatched`         | While nobody watches                                                                                                       | When the picture is wanted again                           |
+|-------------------------|----------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
 | `FollowSound` (default) | A player you can hear plays on without its picture. A silent one, one at volume zero, or one whose track has ended pauses. | The picture catches up with the sound, or the pause lifts. |
-| `Freeze` | Time stops with the picture. | Carries on from where it stopped. |
-| `KeepTime` | Time runs on. | The picture catches up with the clock. |
+| `Freeze`                | Time stops with the picture.                                                                                               | Carries on from where it stopped.                          |
+| `KeepTime`              | Time runs on.                                                                                                              | The picture catches up with the clock.                     |
 
 **Upgrading:** the default used to be `Freeze`. A player with sound on
 that paused when its window was hidden now plays its sound on. Pass
