@@ -26,7 +26,6 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.FileDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -37,16 +36,21 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.exoplayer.upstream.BandwidthMeter
 import dev.hivens.skinema.Debug
 import dev.hivens.skinema.android.AppContext
 import dev.hivens.skinema.android.CueRasterizer
 import dev.hivens.skinema.android.ContainerInfo
+import dev.hivens.skinema.android.ForwardTape
 import dev.hivens.skinema.android.FrameBridge
 import dev.hivens.skinema.android.ImageFrameSource
 import dev.hivens.skinema.android.ImageFrames
 import dev.hivens.skinema.android.Input
 import dev.hivens.skinema.android.PcmSinkAudioSink
+import dev.hivens.skinema.android.PlayerDataSourceFactory
 import dev.hivens.skinema.android.firstTrack
 import dev.hivens.skinema.android.layoutFor
 import dev.hivens.skinema.android.openExtractor
@@ -59,7 +63,11 @@ import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.NoVideoStreamException
+import dev.hivens.skinema.libav.ResolvedInput
+import dev.hivens.skinema.libav.discard
+import dev.hivens.skinema.libav.resolve
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.subtitles.SubtitleOverlay
@@ -98,7 +106,7 @@ import android.media.AudioFormat as PlatformAudioFormat
  * between the two freely.
  */
 actual class VideoPlayer actual constructor(
-    path: Path,
+    input: MediaInput,
     loop: Boolean,
     private val audio: Boolean,
     explicitClock: MediaClock?,
@@ -246,7 +254,7 @@ actual class VideoPlayer actual constructor(
         set(value) {
             loopField = value
             post {
-                player?.repeatMode = if (value) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                player?.repeatMode = if (value && seekable) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                 // A still stands at its end all the time, so looping off ends
                 // it now, which is the next end of the file.
                 if (!value && clip?.animated == false && !clipEnded) {
@@ -257,8 +265,62 @@ actual class VideoPlayer actual constructor(
         }
 
     @Volatile
-    actual var source: Path = path
+    actual var source: MediaInput = input
         private set
+
+    /**
+     * [source] as the readers open it, resolved on the player thread by the
+     * open. Owned by this player: a switch releases the one it leaves, and a
+     * close or a failure closes it.
+     */
+    // Why the constructor's input could not be resolved. The open fails with it.
+    private var openFailure: Throwable? = null
+
+    // Resolved here rather than at the open, as on the desktop, so [seekable]
+    // answers for the input from the first call on.
+    @Volatile
+    private var resolved: ResolvedInput? = try {
+        input.resolve()
+    } catch (t: Throwable) {
+        openFailure = t
+        null
+    }
+
+    actual val seekable: Boolean get() = resolved !is ResolvedInput.Live
+
+    // The streams Media3 may be reading, by the host of the URI they are
+    // played under. A switch's probe registers its candidate here too.
+    private val streams = ConcurrentHashMap<String, ResolvedInput>()
+    private val streamIds = AtomicInteger(0)
+    private val dataSources = PlayerDataSourceFactory { uri ->
+        when (val s = streams[uri.host]) {
+            is ResolvedInput.Seekable -> { { s.shared.cursor() } }
+            is ResolvedInput.Live -> { { tapeOf(s).reader() } }
+            else -> null
+        }
+    }
+
+    /**
+     * How Media3 is handed a forward-only stream. Matroska and WebM written
+     * by an ordinary muxer keep their Cues at the end, and Media3's extractor
+     * seeks there to read them, which such a stream cannot take: it would not
+     * open at all. So for these the extractor reads on without them. A file,
+     * or a stream that can seek, keeps the default and its cue-based seeking.
+     */
+    private val liveSources by lazy {
+        ProgressiveMediaSource.Factory(
+            dataSources,
+            DefaultExtractorsFactory().setMatroskaExtractorFlags(MatroskaExtractor.FLAG_DISABLE_SEEK_FOR_CUES),
+        )
+    }
+
+    /** Hands [item] for [input] to [p], through the forward-only path when [input] is one. */
+    private fun setItem(p: ExoPlayer, input: ResolvedInput, item: MediaItem) {
+        if (input is ResolvedInput.Live) p.setMediaSource(liveSources.createMediaSource(item)) else p.setMediaItem(item)
+    }
+
+    /** The one tape over a forward-only stream, kept by the stream for every reader of it. */
+    private fun tapeOf(input: ResolvedInput.Live): ForwardTape = input.attach { ForwardTape(it) }
 
     @Volatile
     actual var sourceFailure: Throwable? = null
@@ -542,6 +604,10 @@ actual class VideoPlayer actual constructor(
 
     private fun setVideoDisabled(disabled: Boolean) {
         val p = player ?: return
+        // A forward-only stream keeps its picture track: bringing a disabled
+        // track back makes Media3 reload the item from its start, which such a
+        // stream cannot give. Its hidden picture goes on decoding instead.
+        if (resolved is ResolvedInput.Live) return
         if (videoTrackDisabled == disabled) return
         videoTrackDisabled = disabled
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
@@ -602,14 +668,24 @@ actual class VideoPlayer actual constructor(
             setVideoDisabled(true)
             stopMode = StopMode.KEPT
         }
-        if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
+        if (p.playbackState == Player.STATE_ENDED) {
+            // A forward-only stream that ended is over: going back to its start
+            // is a seek it cannot take.
+            if (!seekable) return@post
+            p.seekTo(0)
+        }
         p.play()
         recomputeState()
     }
 
-    actual fun seek(ptsNanos: Long, exact: Boolean) = post { seekTo(ptsNanos.coerceAtLeast(0), exact) }
+    actual fun seek(ptsNanos: Long, exact: Boolean) = post {
+        // A stream that reads forward only cannot go anywhere else.
+        if (!seekable) return@post
+        seekTo(ptsNanos.coerceAtLeast(0), exact)
+    }
 
     actual fun seekBy(deltaNanos: Long, exact: Boolean) = post {
+        if (!seekable) return@post
         val base = when {
             clip != null -> positionNanos()
             seekPending -> intendedNanos
@@ -637,6 +713,9 @@ actual class VideoPlayer actual constructor(
     }
 
     actual fun stepForward() = post {
+        // Media3 steps by seeking, which a forward-only stream cannot take, so
+        // on Android such a stream does not step at all.
+        if (!seekable) return@post
         clip?.let { c ->
             val next = c.shown + 1
             stepClip(if (next < c.frameCount) next else if (loopField) 0 else c.shown)
@@ -646,6 +725,7 @@ actual class VideoPlayer actual constructor(
     }
 
     actual fun stepBackward() = post {
+        if (!seekable) return@post
         clip?.let { c ->
             stepClip((c.shown - 1).coerceAtLeast(0))
             return@post
@@ -712,7 +792,7 @@ actual class VideoPlayer actual constructor(
             issueStepSeek((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI)
             return
         }
-        val file = source
+        val file = checkNotNull(resolved)
         // For when the decode below cannot answer. An exact seek lands on the
         // first frame at or after its target, so a target a millisecond back,
         // or half a frame back, lands on the frame already shown. A frame and
@@ -799,12 +879,13 @@ actual class VideoPlayer actual constructor(
     }
 
     /**
-     * Opens [path] in a throwaway ExoPlayer with every track type off, so the
+     * Opens [input] in a throwaway ExoPlayer with every track type off, so the
      * container is parsed and no codec opens, and answers why it will not
      * play in a player of this shape: no such track, no decoder for it, or
      * the error Media3 gave. Null when it will. Off the player thread.
      */
-    private fun probe(path: Path, picture: Boolean): Throwable? {
+    private fun probe(input: ResolvedInput, picture: Boolean): Throwable? {
+        val label = input.label
         val probeThread = HandlerThread("skinema-probe").apply { start() }
         val probeHandler = Handler(probeThread.looper)
         val done = CountDownLatch(1)
@@ -815,7 +896,7 @@ actual class VideoPlayer actual constructor(
                 val context = AppContext.get()
                 val p = ExoPlayer.Builder(context, DefaultRenderersFactory(context).setMediaCodecSelector(codecSelector(hardware)))
                     .setLooper(probeThread.looper)
-                    .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+                    .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
                     .setBandwidthMeter(NoBandwidthMeter)
                     .setUsePlatformDiagnostics(false)
                     .build()
@@ -831,7 +912,7 @@ actual class VideoPlayer actual constructor(
                         val type = if (picture) C.TRACK_TYPE_VIDEO else C.TRACK_TYPE_AUDIO
                         val groups = tracks.groups.filter { it.type == type }
                         answer = when {
-                            groups.isEmpty() -> LibavException(if (picture) "$path gives no picture" else "$path carries no sound")
+                            groups.isEmpty() -> LibavException(if (picture) "$label gives no picture" else "$label carries no sound")
                             groups.none { it.isSupported(true) } -> {
                                 val mime = groups.first().getTrackFormat(0).sampleMimeType
                                 LibavException(
@@ -848,7 +929,7 @@ actual class VideoPlayer actual constructor(
                         done.countDown()
                     }
                 })
-                p.setMediaItem(MediaItem.fromUri(Uri.fromFile(path.toFile())))
+                setItem(p, input, MediaItem.fromUri(uriOf(input)))
                 p.prepare()
             } catch (t: Throwable) {
                 answer = t
@@ -857,7 +938,7 @@ actual class VideoPlayer actual constructor(
         }
         try {
             if (!done.await(PROBE_MILLIS, TimeUnit.MILLISECONDS)) {
-                answer = LibavException("$path did not open within ${PROBE_MILLIS / 1000} s")
+                answer = LibavException("$label did not open within ${PROBE_MILLIS / 1000} s")
             }
         } finally {
             probeHandler.post {
@@ -870,11 +951,11 @@ actual class VideoPlayer actual constructor(
 
     /** How a step back finds the frame before the one shown; a test replaces it to make the discovery fail. */
     @Volatile
-    internal var previousFrameFinder: (Path, Long) -> Long? = ::previousFramePts
+    internal var previousFrameFinder: (ResolvedInput, Long) -> Long? = ::previousFramePts
 
-    private fun previousFramePts(file: Path, shown: Long): Long? {
+    private fun previousFramePts(input: ResolvedInput, shown: Long): Long? {
         if (shown <= 0L) return 0L
-        VideoDecoder.open(file, hardware).use { d ->
+        openDecoder(input).use { d ->
             d.seekBefore(shown)
             var previous: Long? = null
             while (true) {
@@ -905,7 +986,35 @@ actual class VideoPlayer actual constructor(
         }
     }
 
-    actual fun setSource(path: Path) = post {
+    actual fun setSource(input: MediaInput) {
+        // A player that is gone takes no more files, and a stream handed to it
+        // is still its to close: nothing else will.
+        if (closing || stateField is State.Failed) {
+            input.discard()
+            return
+        }
+        // Held until the switch has resolved it, so a close in between closes
+        // it rather than leaving it to nobody.
+        pendingSwitches += input
+        switchWhenShaped(input, System.nanoTime() + SHAPE_WAIT_LIMIT_NANOS)
+    }
+
+    private fun switchWhenShaped(input: MediaInput, deadline: Long): Unit = post {
+        // A forward-only stream tells its shape only through the track report,
+        // and the switch keeps that shape: it waits for the report, and not for
+        // ever, since a feed that has not started may never send one.
+        if (resolved is ResolvedInput.Live && !shapeSettled && player != null) {
+            if (System.nanoTime() > deadline) {
+                pendingSwitches -= input
+                input.discard()
+                sourceFailure = LibavException("the stream playing never said what it carries, so a switch could not keep its shape")
+                noteChange()
+                return@post
+            }
+            handler.postDelayed({ switchWhenShaped(input, deadline) }, SHAPE_WAIT_MILLIS)
+            return@post
+        }
+        pendingSwitches -= input
         // Read on the player thread, behind the open, where the player
         // knows its shape: a switch asked for straight after construction
         // would otherwise find a picture player not yet knowing it has one.
@@ -920,26 +1029,39 @@ actual class VideoPlayer actual constructor(
             // platform extractor reads a different set of containers, so a
             // check through it refused files the player plays and passed
             // files it does not.
+            var candidate: ResolvedInput? = null
             val refusal = runCatching {
-                if (picture && isImageFile(path)) {
-                    VideoDecoder.open(path, hardware).use { it.nextFrame(convert = false) ?: error("$path gives no picture") }
+                if (closing) throw LibavException("the player was closed")
+                val r = input.resolve().also { candidate = it }
+                register(r)
+                if (picture && isImageFile(r)) {
+                    openDecoder(r).use { it.nextFrame(convert = false) ?: error("${r.label} gives no picture") }
                 } else {
-                    probe(path, picture)?.let { throw it }
+                    probe(r, picture)?.let { throw it }
                 }
             }.exceptionOrNull()
             if (refusal != null) {
+                // Closed rather than released: nothing of the player is going to
+                // read it, and a reader stuck inside it would hold a release open.
+                candidate?.let {
+                    streams.values.remove(it)
+                    it.close()
+                }
                 sourceFailure = refusal
                 noteChange()
                 return@execute
             }
-            val image = picture && isImageFile(path)
-            val info = if (image) null else ContainerInfo.read(Input.File(path))
+            val opened = checkNotNull(candidate)
+            val image = picture && isImageFile(opened)
+            val info = if (image) null else readContainer(opened)
             post {
                 // A player that had ended plays the next file, as on the desktop.
                 val ended = if (clip != null) clipEnded else player?.playbackState == Player.STATE_ENDED
                 if (ended) userPaused = false
                 sourceFailure = null
-                source = path
+                source = input
+                resolved?.let(::letGo)
+                resolved = opened
                 everReady = false
                 seekPending = false
                 lastPublishedPts = 0L
@@ -958,7 +1080,7 @@ actual class VideoPlayer actual constructor(
                         it.clearMediaItems()
                     }
                     publishCues()
-                    startClip(path)
+                    startClip(opened)
                     return@post
                 }
                 closeClip()
@@ -979,7 +1101,8 @@ actual class VideoPlayer actual constructor(
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, videoTrackDisabled || !picture)
                     .build()
                 publishCues()
-                p.setMediaItem(mediaItem(path))
+                p.repeatMode = if (loopField && seekable) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                setItem(p, opened, mediaItem(opened))
                 p.prepare()
                 // A player stopped for a hidden picture stays stopped: the
                 // switch does not start a file nobody is watching.
@@ -1049,7 +1172,9 @@ actual class VideoPlayer actual constructor(
      * out the cues.
      */
     actual fun addExternalSubtitles(file: Path): List<SubtitleTrack> {
-        if (closing || !hasVideo || clipActive) return emptyList()
+        // Attaching a file prepares the item again from where it stands, which
+        // a forward-only stream cannot be asked for.
+        if (closing || !hasVideo || clipActive || resolved is ResolvedInput.Live) return emptyList()
         val mime = subtitleMimeFor(file) ?: return emptyList()
         if (!Files.isReadable(file)) return emptyList()
         val id = externalIds.decrementAndGet()
@@ -1064,7 +1189,7 @@ actual class VideoPlayer actual constructor(
             val position = p.currentPosition
             val playing = p.playWhenReady
             reapplyChoices = true
-            p.setMediaItem(mediaItem(source), position)
+            p.setMediaItem(mediaItem(checkNotNull(resolved)), position)
             p.prepare()
             p.playWhenReady = playing
         }
@@ -1143,8 +1268,8 @@ actual class VideoPlayer actual constructor(
     private val decodeWork = Executors.newSingleThreadExecutor { r -> Thread(r, "skinema-player-work").apply { isDaemon = true } }
 
     /** The file, with every side-loaded subtitle file attached under its tagged id. */
-    private fun mediaItem(path: Path): MediaItem = MediaItem.Builder()
-        .setUri(Uri.fromFile(path.toFile()))
+    private fun mediaItem(input: ResolvedInput): MediaItem = MediaItem.Builder()
+        .setUri(uriOf(input))
         .setSubtitleConfigurations(
             externals.map { e ->
                 MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(e.path.toFile()))
@@ -1156,22 +1281,25 @@ actual class VideoPlayer actual constructor(
         )
         .build()
 
-    private fun open(path: Path, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
+    private fun open(input: MediaInput, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
         if (closing) return
         try {
             require(explicitClock == null) { "explicitClock is not supported on Android: ExoPlayer takes no external media clock" }
             bridge = FrameBridge(::onImage, ::fail)
-            if (isImageFile(path)) {
-                startClip(path)
+            openFailure?.let { throw it }
+            val opened = checkNotNull(resolved)
+            register(opened)
+            if (isImageFile(opened)) {
+                startClip(opened)
             } else {
-                hasVideo = carriesVideo(path)
-                val info = ContainerInfo.read(Input.File(path))
+                hasVideo = carriesVideo(opened)
+                val info = readContainer(opened)
                 tags = info.tags
                 coverArt = info.coverArt
                 chapters = info.chapters
                 val p = buildPlayer()
                 pendingAudioTrack = audioTrack
-                p.setMediaItem(mediaItem(path))
+                setItem(p, opened, mediaItem(opened))
                 p.playWhenReady = !startPaused
                 p.prepare()
             }
@@ -1206,7 +1334,7 @@ actual class VideoPlayer actual constructor(
         // default.
         val p = ExoPlayer.Builder(context, renderers)
             .setLooper(thread.looper)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
             .setBandwidthMeter(NoBandwidthMeter)
             .setUsePlatformDiagnostics(false)
             .build()
@@ -1223,7 +1351,8 @@ actual class VideoPlayer actual constructor(
             // would set it back to wherever the picture lagged the clock.
             if (clockRunning || seekPending) sampleClock(pts, releaseTimeNs, clockRunning)
         }
-        p.repeatMode = if (loopField) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        // A forward-only stream cannot be turned: its end is the end.
+        p.repeatMode = if (loopField && seekable) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
         p.volume = if (audio) volumeField else 0f
         p.playbackParameters = PlaybackParameters(rate)
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
@@ -1234,28 +1363,75 @@ actual class VideoPlayer actual constructor(
     }
 
     /**
-     * Whether [path] has a picture, asked of the extractor at the open rather
+     * Whether [input] has a picture, asked of the extractor at the open rather
      * than waited for from ExoPlayer's track report, which comes later: the
      * shape a [setSource] keeps has to be known from the start.
      */
-    private fun carriesVideo(path: Path): Boolean = runCatching {
-        val extractor = openExtractor(Input.File(path))
-        try {
-            extractor.firstTrack("video/") >= 0
-        } finally {
-            extractor.release()
+    // A forward-only stream is not asked: its shape comes from the track report.
+    private fun carriesVideo(input: ResolvedInput): Boolean = input !is ResolvedInput.Live && runCatching {
+        readerOf(input).use { reader ->
+            val extractor = openExtractor(reader)
+            try {
+                extractor.firstTrack("video/") >= 0
+            } finally {
+                extractor.release()
+            }
         }
     }.getOrDefault(false)
 
+    private fun readContainer(input: ResolvedInput): ContainerInfo = readerOf(input).use { ContainerInfo.read(it) }
+
+    /** A reader of its own over [input]: the file, or a fresh cursor over the stream. Closing it closes only the cursor. */
+    private fun readerOf(input: ResolvedInput): Input = when (input) {
+        is ResolvedInput.File -> Input.File(input.path)
+        is ResolvedInput.Seekable -> Input.Source(input.shared.cursor())
+        is ResolvedInput.Live -> Input.Stream(tapeOf(input), owns = false)
+    }
+
+    private fun openDecoder(input: ResolvedInput): VideoDecoder = when (input) {
+        is ResolvedInput.File -> VideoDecoder.open(input.path, hardware)
+        is ResolvedInput.Seekable -> VideoDecoder.open(input.shared.cursor(), hardware)
+        // Only the step back and an image's first frame come here, and neither does for a forward-only stream.
+        is ResolvedInput.Live -> throw LibavException("a stream that reads forward only has no frame to go back to")
+    }
+
+    /** What Media3 is handed for [input]: the file, or a URI the data source factory answers with the stream. */
+    private fun uriOf(input: ResolvedInput): Uri = when (input) {
+        is ResolvedInput.File -> Uri.fromFile(input.path.toFile())
+        is ResolvedInput.Seekable, is ResolvedInput.Live ->
+            Uri.parse("${PlayerDataSourceFactory.STREAM_SCHEME}://${streams.entries.first { it.value === input }.key}")
+    }
+
+    private fun register(input: ResolvedInput) {
+        if (input !is ResolvedInput.File) streams["s" + streamIds.incrementAndGet()] = input
+    }
+
+    /**
+     * Releases [input], which closes a stream once the last reader of it has
+     * let go, and keeps it until the close in case that reader is stuck.
+     */
+    private fun letGo(input: ResolvedInput) {
+        streams.values.remove(input)
+        released += input
+        input.release()
+    }
+
+    // Inputs a switch moved off, and switches not yet resolved. Both are this
+    // player's to close.
+    private val released = CopyOnWriteArrayList<ResolvedInput>()
+    private val pendingSwitches: MutableSet<MediaInput> = ConcurrentHashMap.newKeySet()
+
     // -- Image files --------------------------------------------------------------
 
-    private fun isImageFile(path: Path): Boolean =
-        runCatching { Input.File(path).use { ImageFrames.isImage(it.head(16)) } }.getOrDefault(false)
+    // An image is read whole, which a forward-only stream is not made for:
+    // such a stream is played as a stream.
+    private fun isImageFile(input: ResolvedInput): Boolean = input !is ResolvedInput.Live &&
+        runCatching { readerOf(input).use { ImageFrames.isImage(it.head(16)) } }.getOrDefault(false)
 
-    /** Puts the image at [path] on screen in place of whatever played, on its first frame. */
-    private fun startClip(path: Path) {
+    /** Puts the image [input] holds on screen in place of whatever played, on its first frame. */
+    private fun startClip(input: ResolvedInput) {
         if (hardware == HwAccel.REQUIRE) throw LibavException("no hardware decoder takes an image (HwAccel.REQUIRE)")
-        val image = ImageFrames.read(Files.readAllBytes(path))
+        val image = ImageFrames.read(readerOf(input).use { it.readAll() })
         closeClip()
         val c = ImageFrameSource(image)
         clip = c
@@ -1505,6 +1681,20 @@ actual class VideoPlayer actual constructor(
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = recomputeState()
 
+        override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+            // What a forward-only stream says about itself comes from Media3,
+            // since nothing here reads it by offset.
+            if (resolved !is ResolvedInput.Live) return
+            tags = buildMap {
+                mediaMetadata.title?.let { put("title", it.toString()) }
+                mediaMetadata.artist?.let { put("artist", it.toString()) }
+                mediaMetadata.albumTitle?.let { put("album", it.toString()) }
+                mediaMetadata.albumArtist?.let { put("album_artist", it.toString()) }
+                mediaMetadata.genre?.let { put("genre", it.toString()) }
+            }
+            mediaMetadata.artworkData?.let { coverArt = it }
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             // ExoPlayer stands idle while an image plays; a late word from
             // the file it was stopped on is not this player's failure.
@@ -1540,11 +1730,17 @@ actual class VideoPlayer actual constructor(
             // An empty report (the item cleared for the next one) settles nothing.
             if (!shapeSettled && groups.isNotEmpty()) {
                 shapeSettled = true
-                if (video.isNotEmpty()) hasVideo = true
+                if (video.isNotEmpty() && !hasVideo) {
+                    hasVideo = true
+                    // A forward-only stream learns it has a picture only here,
+                    // and a word on watching that came before was set aside
+                    // for want of one: it applies now.
+                    applyWatch(if (presentingSaid) presenting else reportedVisible ?: true)
+                }
                 // Nothing to show and nothing asked to be heard: the desktop
                 // fails here too, since there is nothing to play.
                 if (!hasVideo && !audio) {
-                    fail(NoVideoStreamException("$source carries no video stream, and the player was made without sound"))
+                    fail(NoVideoStreamException("${resolved?.label} carries no video stream, and the player was made without sound"))
                     return
                 }
             }
@@ -1646,12 +1842,20 @@ actual class VideoPlayer actual constructor(
             runCatching { player?.release() }
             player = null
             closeClip()
+            resolved?.close()
         }
     }
 
     actual fun closeAsync() {
         if (closing) return
         closing = true
+        // From the caller's thread, and first: the player thread can be inside
+        // a read of a stalled stream (the open reads the container), and the
+        // teardown posted below would wait behind it. Breaking the reads waits
+        // for nothing.
+        resolved?.interrupt()
+        streams.values.forEach { it.interrupt() }
+        released.forEach { it.interrupt() }
         handler.post {
             runCatching { player?.release() }
             player = null
@@ -1665,6 +1869,10 @@ actual class VideoPlayer actual constructor(
                 borrowed.clear()
             }
             decodeWork.shutdownNow()
+            resolved?.close()
+            streams.values.forEach { it.close() }
+            released.forEach { it.close() }
+            pendingSwitches.forEach { it.discard() }
             synchronized(changeMonitor) {
                 // A failure keeps its state through the close, as on the
                 // desktop: it is the answer a consumer polls for.
@@ -1684,11 +1892,17 @@ actual class VideoPlayer actual constructor(
     // Last, after every property above is initialised: the open runs on the
     // player thread, which can reach it before the constructor returns.
     init {
-        handler.post { open(path, explicitClock, audioTrack, startPaused) }
+        handler.post { open(input, explicitClock, audioTrack, startPaused) }
     }
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /** How often a switch looks again for the track report of a forward-only stream. */
+        const val SHAPE_WAIT_MILLIS = 50L
+
+        /** How long a switch waits for that report before it is refused. */
+        const val SHAPE_WAIT_LIMIT_NANOS = 10_000_000_000L
 
         /** A frame's length when the track declares no rate: 30 fps, the common case. */
         const val FALLBACK_FRAME_NANOS = 33_333_333L

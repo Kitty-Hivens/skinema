@@ -179,7 +179,7 @@ decoders and writes another with `MediaWriter`.
 
 ```kotlin
 Transcoder.open(
-    Path.of("in.mkv"),
+    MediaInput.File(Path.of("in.mkv")),
     Path.of("out.mp4"),
     TranscodeConfig(videoCodec = "libx264", audioCodec = "aac"),
 ).use { it.run() }
@@ -190,6 +190,12 @@ because this converts a file rather than resizing one. `fps = 0` (the
 default) measures the source's own cadence from its first two frames;
 either way it is a rate-control hint, since the timing that reaches the
 file is each frame's own timestamp. `audioCodec = null` drops the sound.
+
+The input is a `MediaInput`, so a stream transcodes as a file does: a
+`MediaInput.Stream` over a `MediaSource` you fetch yourself. The transcoder
+owns it from `open` on and closes it with itself. On Android a stream that
+reads forward only gives its picture alone, and asking for its sound as well
+is refused by name (see [android.md](android.md#streams)).
 
 `run()` blocks until the source ends, and is one-shot. `cancel()` stops
 it at the next frame and still writes the trailer, so a cancelled

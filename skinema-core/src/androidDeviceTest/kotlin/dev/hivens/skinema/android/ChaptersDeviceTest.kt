@@ -4,6 +4,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.DeviceFixtures
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.ByteBuffer
@@ -45,7 +46,7 @@ class ChaptersDeviceTest {
         VideoDecoder.open(DeviceFixtures.memorySource("chapters.mp4")).use { assertEquals(written, it.chapters().plain(), "through a MediaSource") }
         val audio = assertNotNull(AudioDecoder.openOrNull(DeviceFixtures.path("chapters.m4a")))
         audio.use { assertEquals(written, it.chapters.plain()) }
-        VideoPlayer(DeviceFixtures.path("chapters.mov"), loop = false).use { p ->
+        VideoPlayer(MediaInput.File(DeviceFixtures.path("chapters.mov")), loop = false).use { p ->
             val deadline = System.nanoTime() + 5_000_000_000L
             while (p.chapters.isEmpty()) {
                 if (System.nanoTime() > deadline) fail("no chapters on the player")
@@ -53,12 +54,12 @@ class ChaptersDeviceTest {
             }
             assertEquals(written, p.chapters.plain())
             // A switch takes the new file's chapters, none here.
-            p.setSource(DeviceFixtures.path("red-h264.mp4"))
+            p.setSource(MediaInput.File(DeviceFixtures.path("red-h264.mp4")))
             while (p.chapters.isNotEmpty()) {
                 if (System.nanoTime() > deadline + 5_000_000_000L) fail("the old file's chapters stayed: source ${p.source}, refusal ${p.sourceFailure}, state ${p.state}")
                 Thread.sleep(10)
             }
-            assertEquals("red-h264.mp4", p.source.fileName.toString())
+            assertEquals("red-h264.mp4", (p.source as MediaInput.File).path.fileName.toString())
         }
     }
 

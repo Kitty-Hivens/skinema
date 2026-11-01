@@ -3,7 +3,7 @@
 Sound is off by default. Pass `audio = true` to play it:
 
 ```kotlin
-val player = VideoPlayer(Path.of("clip.mkv"), audio = true)
+val player = VideoPlayer(MediaInput.File(Path.of("clip.mkv")), audio = true)
 ```
 
 With sound on, aac, ac3/eac3, alac, opus, vorbis, mp3, flac and WAV PCM
@@ -64,7 +64,7 @@ constructor that reliably beats it -- a player meant to fade in from silence
 would let a chunk through at full.
 
 ```kotlin
-val player = VideoPlayer(Path.of("clip.mkv"), audio = true, volume = 0f)
+val player = VideoPlayer(MediaInput.File(Path.of("clip.mkv")), audio = true, volume = 0f)
 ```
 
 Either way the value sticks to the player, not to the line: every line it
@@ -163,7 +163,7 @@ having: on a stereo device a 5.1 file reports stereo.
 `audioChannels` decides what gets asked for in the first place:
 
 ```kotlin
-VideoPlayer(path, audio = true, audioChannels = ChannelPreference.Stereo)
+VideoPlayer(MediaInput.File(path), audio = true, audioChannels = ChannelPreference.Stereo)
 ```
 
 `Source` is the default, on the same argument the sample rate is left

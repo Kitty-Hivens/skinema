@@ -1,5 +1,6 @@
 package dev.hivens.skinema.demo
 
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 
@@ -14,7 +15,7 @@ import java.nio.file.Path
 fun main(args: Array<String>) {
     val video = Path.of(requireNotNull(args.firstOrNull()) { "usage: seekbench <video>" })
     val audio = args.getOrNull(1) != "silent"
-    VideoPlayer(video, loop = true, audio = audio).use { player ->
+    VideoPlayer(MediaInput.File(video), loop = true, audio = audio).use { player ->
         Thread.sleep(800)
         player.seek(50_000_000_000L)
         Thread.sleep(1_000)

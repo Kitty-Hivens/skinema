@@ -10,6 +10,7 @@ import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.PlaybackClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import dev.hivens.skinema.libav.LibavException
 import java.nio.file.Files
@@ -57,7 +58,7 @@ class VideoPlayerTest {
     @Test
     fun `plays a non-looping video to Ended and serves frames on the way`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("ended.mp4", "0.5"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("ended.mp4", "0.5")), loop = false).use { player ->
             var frames = 0
             var lastWidth = 0
             awaitTrue {
@@ -76,7 +77,7 @@ class VideoPlayerTest {
     @Test
     fun `looping playback wraps back to the first frame`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("loop.mp4", "0.3"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("loop.mp4", "0.3")), loop = true).use { player ->
             var zeroPtsSeen = 0
             awaitTrue {
                 player.acquireFrame()?.let { if (it.ptsNanos == 0L) zeroPtsSeen++ }
@@ -89,7 +90,7 @@ class VideoPlayerTest {
     @Test
     fun `duration surfaces once the file opens`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("dur.mp4", "0.5"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("dur.mp4", "0.5")), loop = false).use { player ->
             assertTrue(awaitTrue { player.durationNanos != null }, "duration must surface")
             val d = player.durationNanos!!
             assertTrue(d in 400_000_000L..800_000_000L, "0.5s of footage, got ${d}ns")
@@ -113,7 +114,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
         )
         val boom = LibavException("no decoder for this video stream")
-        VideoPlayer(tone, false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { throw boom }.use { player ->
+        VideoPlayer(MediaInput.File(tone), false, true, null, FakePcmSink(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { throw boom }.use { player ->
             assertTrue(
                 awaitTrue { player.state is VideoPlayer.State.Failed },
                 "an unopenable video must surface as Failed, state=${player.state}",
@@ -125,7 +126,7 @@ class VideoPlayerTest {
     @Test
     fun `a missing file surfaces as Failed, not an exception`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(dir.resolve("missing.mp4"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(dir.resolve("missing.mp4")), loop = false).use { player ->
             awaitTrue { player.state is VideoPlayer.State.Failed }
             assertIs<VideoPlayer.State.Failed>(player.state)
         }
@@ -134,7 +135,7 @@ class VideoPlayerTest {
     @Test
     fun `pause freezes the frame flow and resume restarts it`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("pause.mp4", "10"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("pause.mp4", "10")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
 
             player.pause()
@@ -163,7 +164,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "flac",
         )
         val sink = FakePcmSink()
-        VideoPlayer(tone, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(tone), loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "audio-only playback must reach Ended")
             assertEquals(null, player.acquireFrame(), "frameless mode serves no frames")
             assertEquals(
@@ -194,7 +195,7 @@ class VideoPlayerTest {
     @Test
     fun `a file with no sound still finishes when audio was asked for`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(silent("mute.mp4"), loop = false, audio = true, sink = FakePcmSink()).use { player ->
+        VideoPlayer(MediaInput.File(silent("mute.mp4")), loop = false, audio = true, sink = FakePcmSink()).use { player ->
             assertTrue(
                 awaitTrue(deadlineMs = 15_000) { player.acquireFrame(); player.state is VideoPlayer.State.Ended },
                 "silent playback must end, state ${player.state} at ${player.positionNanos() / 1_000_000}ms",
@@ -205,7 +206,7 @@ class VideoPlayerTest {
     @Test
     fun `a file with no sound still loops when audio was asked for`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(silent("mute-loop.mp4"), loop = true, audio = true, sink = FakePcmSink()).use { player ->
+        VideoPlayer(MediaInput.File(silent("mute-loop.mp4")), loop = true, audio = true, sink = FakePcmSink()).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             var last = -1L
             assertTrue(
@@ -234,7 +235,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-frames:v", "1",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
-        VideoPlayer(still, loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(still), loop = true, audio = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "the pause must land")
@@ -255,7 +256,7 @@ class VideoPlayerTest {
     fun `seeking out of the end revives playback, and seeking past it does not`() {
         Fixtures.assumeDecodeEnvironment()
         val video = silent("revive.mp4", seconds = "1")
-        VideoPlayer(video, loop = false, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = false, audio = false).use { player ->
             assertTrue(
                 awaitTrue(deadlineMs = 15_000) { player.acquireFrame(); player.state is VideoPlayer.State.Ended },
                 "playback must end first",
@@ -331,7 +332,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "testsrc2=size=96x64:rate=25", "-t", "6",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-g", "12", "-an",
         )
-        VideoPlayer(video, loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true, audio = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val duration = assertNotNull(player.durationNanos, "the fixture must declare a duration")
             Thread.sleep(700)
@@ -370,7 +371,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
         val threads = java.lang.management.ManagementFactory.getThreadMXBean()
-        VideoPlayer(still, loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(still), loop = true, audio = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val decode = threads.allThreadIds.first { threads.getThreadInfo(it)?.getThreadName() == "skinema-decode" }
             val before = threads.getThreadCpuTime(decode)
@@ -412,7 +413,7 @@ class VideoPlayerTest {
                 "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
                 "-c:a", "aac",
             )
-            VideoPlayer(file, loop = false, audio = true, sink = FakePcmSink()).use { player ->
+            VideoPlayer(MediaInput.File(file), loop = false, audio = true, sink = FakePcmSink()).use { player ->
                 val deadline = System.nanoTime() + 30_000_000_000L
                 while (player.state !is VideoPlayer.State.Ended && System.nanoTime() < deadline) {
                     player.acquireFrame()
@@ -458,7 +459,7 @@ class VideoPlayerTest {
         // between two clock readings and calls it played, which makes every
         // question about when a lap ends unanswerable.
         val sink = PacedPcmSink(bufferFrames = 8_820)
-        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = true, audio = true, sink = sink).use { player ->
             try {
                 val wrapWall = mutableListOf<Long>()
                 val wrapGapMs = mutableListOf<Long>()
@@ -510,7 +511,7 @@ class VideoPlayerTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "frame 0 is due at media time 0")
 
             var leaked: Long = -1
@@ -545,7 +546,7 @@ class VideoPlayerTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink).use { player ->
             // Frame 0 publishing means the clock is anchored; only then may
             // the test move the device position.
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
@@ -588,7 +589,7 @@ class VideoPlayerTest {
 
     private fun seekByAccumulationScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("accum.mp4", "30"), loop = false, readAheadFrames = readAheadFrames).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("accum.mp4", "30")), loop = false, readAheadFrames = readAheadFrames).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             awaitTrue { player.state is VideoPlayer.State.Paused }
@@ -613,7 +614,7 @@ class VideoPlayerTest {
     @Test
     fun `backward seekBy bursts accumulate monotonically, not against the lagging clock`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("backaccum.mp4", "30"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("backaccum.mp4", "30")), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // Jump near the end, settle, then crank backward in a burst.
             player.seek(25_000_000_000L)
@@ -638,7 +639,7 @@ class VideoPlayerTest {
     @Test
     fun `a seek advertises the Seeking state and resolves out of it`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("seekstate.mp4", "10"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("seekstate.mp4", "10")), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.seek(8_000_000_000L)
             // The landing resolves quickly here; assert we leave Seeking and
@@ -660,7 +661,7 @@ class VideoPlayerTest {
 
     private fun seekCoalescingScenario(readAheadFrames: Int) {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("spam.mp4", "3"), loop = false, readAheadFrames = readAheadFrames).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("spam.mp4", "3")), loop = false, readAheadFrames = readAheadFrames).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             awaitTrue { player.state is VideoPlayer.State.Paused }
@@ -712,7 +713,7 @@ class VideoPlayerTest {
         // Half a second of buffer; the audio thread blocks on write like a
         // real line and the played position is the test's hands.
         val sink = BoundedPcmSink(capacityFrames = 22_050)
-        VideoPlayer(av, loop = true, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = true, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
             try {
                 // Drive the "DAC" past the video's end (2s), leaving the
                 // audio stream unfinished. The gate is the played position,
@@ -772,7 +773,7 @@ class VideoPlayerTest {
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1", "-t", "3",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
         )
-        VideoPlayer(slow, loop = true, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(slow), loop = true, audio = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // Past the last frame (pts 2s) but inside the file's 3s: the
             // decode thread is waiting the lap out.
@@ -815,7 +816,7 @@ class VideoPlayerTest {
         val frames = AtomicLong(0)
         val clock = AudioClock(48_000) { frames.get() }
         VideoPlayer(
-            shortVideo("chase.mp4", "30"),
+            MediaInput.File(shortVideo("chase.mp4", "30")),
             loop = false,
             explicitClock = clock,
             readAheadFrames = readAheadFrames,
@@ -863,7 +864,7 @@ class VideoPlayerTest {
             "-c:a", "aac",
         )
         val sink = BoundedPcmSink(capacityFrames = 8_820)
-        VideoPlayer(av, loop = false, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink, readAheadFrames = readAheadFrames).use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
                 // Nothing is consumed, so the buffer fills and the audio
@@ -918,7 +919,7 @@ class VideoPlayerTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(twoAudioTracks("pick.mkv"), loop = false, audio = true, sink = sink, audioTrack = 2).use { player ->
+        VideoPlayer(MediaInput.File(twoAudioTracks("pick.mkv")), loop = false, audio = true, sink = sink, audioTrack = 2).use { player ->
             assertTrue(awaitTrue { player.audioTracks.size == 2 }, "both tracks must surface")
             assertEquals(2, player.activeAudioTrack)
             assertEquals(48_000, sink.sampleRate, "the requested track drives the line")
@@ -930,7 +931,7 @@ class VideoPlayerTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(twoAudioTracks("switch.mkv"), loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(twoAudioTracks("switch.mkv")), loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             assertEquals(1, player.activeAudioTrack, "the default disposition wins the pick")
             assertEquals(44_100, sink.sampleRate)
@@ -971,7 +972,7 @@ class VideoPlayerTest {
             "-c:a", "flac", "-c:v", "png", "-disposition:v:0", "attached_pic",
         )
         val sink = FakePcmSink()
-        VideoPlayer(flac, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(flac), loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Ended }, "the frameless lifecycle must complete")
             assertEquals(null, player.acquireFrame(), "the cover is metadata, not a video stream")
             val art = player.coverArt
@@ -995,7 +996,7 @@ class VideoPlayerTest {
             override fun setVolume(volume: Float) = Unit
             override fun close() = Unit
         }
-        VideoPlayer(twoAudioTracks("deaf.mkv"), loop = false, audio = true, sink = deaf).use { player ->
+        VideoPlayer(MediaInput.File(twoAudioTracks("deaf.mkv")), loop = false, audio = true, sink = deaf).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "silent fallback must play")
             assertTrue(player.audioTracks.isEmpty(), "a dead pipeline must not advertise tracks")
             assertEquals(null, player.activeAudioTrack)
@@ -1023,7 +1024,7 @@ class VideoPlayerTest {
                 paced.write(data, offset, length)
             }
         }
-        VideoPlayer(twoAudioTracks("audiodeath.mkv"), loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(twoAudioTracks("audiodeath.mkv")), loop = false, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
                 gone.set(true)
@@ -1076,7 +1077,7 @@ class VideoPlayerTest {
         // writer parks, the watchdog declares the loss, and recovery keeps
         // failing for the rest of the test.
         val sink = BoundedPcmSink(capacityFrames = 4_410, reopenable = false)
-        VideoPlayer(av, loop = true, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = true, audio = true, sink = sink).use { player ->
             try {
                 assertTrue(awaitTrue { sink.writerParked }, "the writer must park on the frozen device")
                 var last = -1L
@@ -1098,7 +1099,7 @@ class VideoPlayerTest {
     @Test
     fun `rate clamps to the supported envelope`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("clamp.mp4", "1"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("clamp.mp4", "1")), loop = true).use { player ->
             player.setRate(10f)
             assertTrue(awaitTrue { player.rate == 4f }, "10x must clamp to 4x")
             player.setRate(0.1f)
@@ -1111,7 +1112,7 @@ class VideoPlayerTest {
         Fixtures.assumeDecodeEnvironment()
         val now = AtomicLong(1)
         val clock = PlaybackClock { now.get() }
-        VideoPlayer(shortVideo("silentrate.mp4", "30"), loop = false, explicitClock = clock).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("silentrate.mp4", "30")), loop = false, explicitClock = clock).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.setRate(2f)
             assertTrue(awaitTrue { player.rate == 2f }, "the rate command must land")
@@ -1142,7 +1143,7 @@ class VideoPlayerTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // The pipeline serializes its commands: the tempo applies
             // before the seek anchors, making the playhead deterministic.
@@ -1172,7 +1173,7 @@ class VideoPlayerTest {
     @Test
     fun `step forward advances exactly one frame and stays paused`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("stepf.mp4", "10"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("stepf.mp4", "10")), loop = false).use { player ->
             var shown = -1L
             assertTrue(awaitTrue { player.acquireFrame()?.let { shown = it.ptsNanos } != null }, "playback must start")
             player.pause()
@@ -1209,7 +1210,7 @@ class VideoPlayerTest {
     @Test
     fun `step forward pauses a playing player first`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("stepauto.mp4", "10"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("stepauto.mp4", "10")), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.stepForward()
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "a step must pause the player")
@@ -1219,7 +1220,7 @@ class VideoPlayerTest {
     @Test
     fun `step backward returns to the previous frame`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("stepb.mp4", "10"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("stepb.mp4", "10")), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.seek(2_000_000_000L)
             var shown = -1L
@@ -1260,7 +1261,7 @@ class VideoPlayerTest {
     @Test
     fun `step backward at the first frame holds it`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("stepzero.mp4", "2"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("stepzero.mp4", "2")), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             awaitTrue { player.state is VideoPlayer.State.Paused }
@@ -1289,7 +1290,7 @@ class VideoPlayerTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { player ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink).use { player ->
             var shown = -1L
             assertTrue(awaitTrue { player.acquireFrame()?.let { shown = it.ptsNanos } != null }, "playback must start")
             player.pause()
@@ -1323,7 +1324,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:s", "srt",
         )
-        VideoPlayer(video, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = false).use { player ->
             assertTrue(awaitTrue { player.subtitleTracks.size == 1 }, "the track must surface")
             assertEquals("subrip", player.subtitleTracks[0].codecName)
         }
@@ -1346,7 +1347,7 @@ class VideoPlayerTest {
     fun `subtitles select, render and deselect`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeSubtitleRendering()
-        VideoPlayer(subbedFixture("subflow"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(subbedFixture("subflow")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val id = player.subtitleTracks.single().id
             player.selectSubtitleTrack(id)
@@ -1387,7 +1388,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:s", "ass",
         )
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val id = player.subtitleTracks.single().id
             player.selectSubtitleTrack(id)
@@ -1430,7 +1431,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:s", "srt",
         )
-        VideoPlayer(video, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val id = player.subtitleTracks.single().id
             player.selectSubtitleTrack(id)
@@ -1463,7 +1464,7 @@ class VideoPlayerTest {
         // pipeline's own setCanvasSize was covered, the way through the
         // player was not, and text rasterized at the wrong size is exactly
         // the kind of defect that shows up only on a resized window.
-        VideoPlayer(subbedFixture("subcanvas"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(subbedFixture("subcanvas")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // Announced right after asking for the track, which is the order
             // a consumer writes and the one that used to lose it: the
@@ -1519,7 +1520,7 @@ class VideoPlayerTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
             "-c:s", "srt",
         )
-        VideoPlayer(video, loop = true).use { player ->
+        VideoPlayer(MediaInput.File(video), loop = true).use { player ->
             assertTrue(awaitTrue { player.subtitleTracks.size == 2 }, "both tracks must surface")
             val ids = player.subtitleTracks.map { it.id }
             player.selectSubtitleTrack(ids[0])
@@ -1561,7 +1562,7 @@ class VideoPlayerTest {
     fun `a subtitle selection queued before playback works`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeSubtitleRendering()
-        VideoPlayer(subbedFixture("subearly"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(subbedFixture("subearly")), loop = true).use { player ->
             // Enqueued while the player may still be Opening; it must
             // apply once the decode thread reaches its command loop.
             player.selectSubtitleTrack(1)
@@ -1572,7 +1573,7 @@ class VideoPlayerTest {
     @Test
     fun `an unknown subtitle id is a no-op`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(subbedFixture("subbogus"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(subbedFixture("subbogus")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.selectSubtitleTrack(99)
             Thread.sleep(200)
@@ -1587,7 +1588,7 @@ class VideoPlayerTest {
         Fixtures.assumeSubtitleRendering()
         val srt = dir.resolve("external.srt")
         Files.writeString(srt, "1\n00:00:00,500 --> 00:00:04,000\nFrom outside\n")
-        VideoPlayer(shortVideo("extsubs.mp4", "10"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("extsubs.mp4", "10")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             val added = player.addExternalSubtitles(srt)
             assertEquals(1, added.size, "the srt must probe as one track")
@@ -1616,7 +1617,7 @@ class VideoPlayerTest {
         Fixtures.assumeDecodeEnvironment()
         val junk = dir.resolve("junk.srt")
         Files.write(junk, ByteArray(512) { (it * 7).toByte() })
-        VideoPlayer(shortVideo("extjunk.mp4", "5"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("extjunk.mp4", "5")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             assertEquals(emptyList(), player.addExternalSubtitles(junk))
             assertEquals(emptyList(), player.addExternalSubtitles(dir.resolve("absent.srt")))
@@ -1630,7 +1631,7 @@ class VideoPlayerTest {
         Fixtures.assumeSubtitleRendering()
         val srt = dir.resolve("switchext.srt")
         Files.writeString(srt, "1\n00:00:00,500 --> 00:00:09,000\nOutside line\n")
-        VideoPlayer(subbedFixture("subswitch"), loop = true).use { player ->
+        VideoPlayer(MediaInput.File(subbedFixture("subswitch")), loop = true).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.selectSubtitleTrack(1)
             assertTrue(awaitTrue { player.activeSubtitleTrack == 1 }, "embedded first")
@@ -1650,7 +1651,7 @@ class VideoPlayerTest {
             dir.resolve("sideways.mp4"),
             "-display_rotation", "90", "-i", plain.toString(), "-c", "copy",
         )
-        VideoPlayer(rotated, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(rotated), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             assertEquals(270, player.rotationDegrees, "90ccw metadata displays as 270cw")
         }
@@ -1659,7 +1660,7 @@ class VideoPlayerTest {
     @Test
     fun `seek revives an Ended player at the requested frame`() {
         Fixtures.assumeDecodeEnvironment()
-        VideoPlayer(shortVideo("revive.mp4", "0.5"), loop = false).use { player ->
+        VideoPlayer(MediaInput.File(shortVideo("revive.mp4", "0.5")), loop = false).use { player ->
             // Asserted, not merely awaited: this test is about leaving Ended,
             // and with the result discarded a player that never got there still
             // satisfied everything below -- the seek lands, a frame publishes,
@@ -1680,7 +1681,7 @@ class VideoPlayerTest {
         // the state reporting Playing. Each turn is a seek, and for a source
         // whose demuxer cannot seek it is a reopen from disk.
         val source = ScriptedFrameSource(frameCount = 0)
-        VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }.use { player ->
+        VideoPlayer(MediaInput.File(Path.of("scripted")), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }.use { player ->
             assertTrue(
                 awaitTrue(3_000) { player.state is VideoPlayer.State.Ended },
                 "a lap with no frames must end, state was ${player.state}",
@@ -1700,7 +1701,7 @@ class VideoPlayerTest {
         // version of it did.
         val opening = CountDownLatch(1)
         val source = ScriptedFrameSource(frameCount = 50)
-        val player = VideoPlayer(Path.of("scripted"), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) {
+        val player = VideoPlayer(MediaInput.File(Path.of("scripted")), true, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) {
             opening.await(20, TimeUnit.SECONDS)
             source
         }
@@ -1766,7 +1767,7 @@ class VideoPlayerTest {
                 seen += volume
             }
         }
-        VideoPlayer(tone, loop = false, audio = true, sink = recording).use { player ->
+        VideoPlayer(MediaInput.File(tone), loop = false, audio = true, sink = recording).use { player ->
             for (v in listOf(0.5f, Float.NaN, 5f, -1f, Float.POSITIVE_INFINITY, 1f)) player.setVolume(v)
         }
         assertTrue(seen.isNotEmpty(), "the seam must have been reached at all")
@@ -1792,7 +1793,7 @@ class VideoPlayerTest {
             }
         }
         val source = ScriptedFrameSource(frameCount = 500)
-        val player = VideoPlayer(Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
+        val player = VideoPlayer(MediaInput.File(Path.of("scripted")), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
         try {
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Failed },

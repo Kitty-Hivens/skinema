@@ -129,12 +129,13 @@ launcher.
 ## Your first player
 
 ```kotlin
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.VideoScale
 import java.nio.file.Path
 
-val player = VideoPlayer(Path.of("background.webm"), loop = true)
+val player = VideoPlayer(MediaInput.File(Path.of("background.webm")), loop = true)
 
 // Compose Desktop:
 VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)

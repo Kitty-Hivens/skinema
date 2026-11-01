@@ -4,6 +4,8 @@ import dev.hivens.skinema.audio.AudioPipeline
 import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -80,7 +82,7 @@ class TeardownTest {
         // A tenth of a second of buffer and nothing consuming it: the pump
         // fills it and parks on the next write.
         val sink = BoundedPcmSink(capacityFrames = 4_410L)
-        val player = VideoPlayer(sounded("parked.mkv"), loop = false, audio = true, sink = sink)
+        val player = VideoPlayer(MediaInput.File(sounded("parked.mkv")), loop = false, audio = true, sink = sink)
         assertTrue(awaitTrue { sink.writerParked }, "the audio thread must be stuck in a write to measure this")
 
         val elapsed = millisOf { player.close() }
@@ -103,7 +105,7 @@ class TeardownTest {
     fun `closeAsync does not wait for the teardown and the player still settles Closed`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = BoundedPcmSink(capacityFrames = 4_410L)
-        val player = VideoPlayer(sounded("async.mkv"), loop = false, audio = true, sink = sink)
+        val player = VideoPlayer(MediaInput.File(sounded("async.mkv")), loop = false, audio = true, sink = sink)
         assertTrue(awaitTrue { sink.writerParked }, "the audio thread must be stuck in a write to measure this")
 
         val elapsed = millisOf { player.closeAsync() }
@@ -129,7 +131,7 @@ class TeardownTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = BoundedPcmSink(capacityFrames = 4_410L)
         val pipeline = AudioPipeline(
-            sounded("shutter.mkv"),
+            ResolvedInput.File(sounded("shutter.mkv")),
             sink,
             writeStallNanos = 30_000_000_000L,
         )
@@ -157,7 +159,7 @@ class TeardownTest {
     fun `a volume set after close does not reach the sink`() {
         Fixtures.assumeDecodeEnvironment()
         val sink = FakePcmSink()
-        val player = VideoPlayer(sounded("volume.mkv"), loop = false, audio = true, sink = sink)
+        val player = VideoPlayer(MediaInput.File(sounded("volume.mkv")), loop = false, audio = true, sink = sink)
         assertTrue(awaitTrue { sink.totalBytes > 0 }, "the sound must be running to measure this, state=${player.state}")
 
         player.close()
@@ -189,7 +191,7 @@ class TeardownTest {
         // wall for its own reasons -- which made the test pass whatever the
         // teardown did, and a mutation of the teardown survived it.
         sink.positionFrames.set(0)
-        val player = VideoPlayer(sounded("position.mkv"), loop = false, audio = true, sink = sink)
+        val player = VideoPlayer(MediaInput.File(sounded("position.mkv")), loop = false, audio = true, sink = sink)
         assertTrue(awaitTrue { sink.totalBytes > 0 }, "the sound must be running to measure this, state=${player.state}")
 
         player.close()

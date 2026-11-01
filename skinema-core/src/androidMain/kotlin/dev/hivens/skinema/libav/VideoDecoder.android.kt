@@ -56,9 +56,9 @@ actual class VideoDecoder private constructor(
     actual companion object {
         actual fun open(path: Path, hardware: HwAccel): VideoDecoder = openFrom(Input.File(path), hardware)
 
-        actual fun open(source: MediaSource, hardware: HwAccel): VideoDecoder = openFrom(Input.Source(source), hardware)
+        actual fun open(source: MediaSource, hardware: HwAccel): VideoDecoder = openFrom(AudioDecoder.inputOf(source), hardware)
 
-        private fun openFrom(input: Input, hardware: HwAccel): VideoDecoder {
+        internal fun openFrom(input: Input, hardware: HwAccel): VideoDecoder {
             val image = try {
                 ImageFrames.isImage(input.head(16))
             } catch (t: Throwable) {

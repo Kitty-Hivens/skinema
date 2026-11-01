@@ -6,8 +6,9 @@ images with a Compose Desktop surface on top, and frames back in to a
 muxed file. No JNI wrapper stacks, no embedded player engines. The bundled
 FFmpeg is built with `--disable-network`, so skinema performs no network
 I/O of its own -- it works on the file you hand it and nothing more.
-(`VideoDecoder` also opens a `MediaSource`, so bytes from anywhere can be
-decoded directly; the player itself takes a path.)
+(The player, the decoders and the transcoder also take a `MediaSource`, so
+bytes fetched anywhere play directly, a stream that only reads forward
+included; see [Streams](docs/guide/video-player.md#streams).)
 
 The same API runs on Android, on the platform's own engine: Media3 over the
 phone's decoders rather than FFmpeg, so shared code plays, decodes and writes
@@ -18,7 +19,7 @@ the desktop's software one. What differs, and why, is in
 [the Android guide](docs/guide/android.md).
 
 ```kotlin
-val player = VideoPlayer(Path.of("background.webm"), loop = true)
+val player = VideoPlayer(MediaInput.File(Path.of("background.webm")), loop = true)
 
 // Compose Desktop:
 VideoSurface(player, Modifier.fillMaxSize(), scale = VideoScale.Cover)

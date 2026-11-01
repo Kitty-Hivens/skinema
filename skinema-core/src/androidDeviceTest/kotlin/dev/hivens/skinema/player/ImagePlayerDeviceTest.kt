@@ -2,6 +2,7 @@ package dev.hivens.skinema.player
 
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.onEmulator
 import org.junit.Assume.assumeFalse
 import kotlin.math.abs
@@ -27,7 +28,7 @@ class ImagePlayerDeviceTest {
         unwatched: WhenUnwatched = WhenUnwatched.FollowSound,
         hardware: HwAccel = HwAccel.AUTO,
     ): VideoPlayer = VideoPlayer(
-        path = DeviceFixtures.path(name), loop = loop, audio = audio, startPaused = startPaused,
+        input = MediaInput.File(DeviceFixtures.path(name)), loop = loop, audio = audio, startPaused = startPaused,
         unwatched = unwatched, hardware = hardware,
     ).also { players += it }
 
@@ -299,25 +300,25 @@ class ImagePlayerDeviceTest {
     fun aSwitchMovesBetweenVideoAndImagesBothWays() {
         val p = player("red-h264.mp4", loop = true)
         assertEquals('r', colour(awaitFrame(p)))
-        p.setSource(DeviceFixtures.path("still.png"))
+        p.setSource(MediaInput.File(DeviceFixtures.path("still.png")))
         // The first frame of the new size is the image's, not the video's last one drawn again.
         assertEquals('b', colour(awaitFrame(p) { it.width == 64 }))
-        assertEquals("still.png", p.source.fileName.toString())
+        assertEquals("still.png", (p.source as MediaInput.File).path.fileName.toString())
         assertNull(p.durationNanos)
         awaitTrue(what = "Playing") { p.state == VideoPlayer.State.Playing }
-        p.setSource(DeviceFixtures.path("rgb.gif"))
-        awaitTrue(what = "the switch") { p.source.fileName.toString() == "rgb.gif" }
+        p.setSource(MediaInput.File(DeviceFixtures.path("rgb.gif")))
+        awaitTrue(what = "the switch") { (p.source as MediaInput.File).path.fileName.toString() == "rgb.gif" }
         awaitFrame(p) { colour(it) == 'g' }
         // Nothing the idle ExoPlayer reports about the file it stopped overwrites the image's lap.
         assertEquals(300_000_000L, p.durationNanos)
-        p.setSource(DeviceFixtures.path("green-vp9.webm"))
+        p.setSource(MediaInput.File(DeviceFixtures.path("green-vp9.webm")))
         assertEquals('g', colour(awaitFrame(p) { colour(it) == 'g' }))
         awaitTrue(what = "a duration from the video") { p.durationNanos != null }
 
         // A player that opened on an image starts ExoPlayer only when a video arrives.
         val fromImage = player("rgb.gif", loop = true)
         awaitFrame(fromImage)
-        fromImage.setSource(DeviceFixtures.path("red-h264.mp4"))
+        fromImage.setSource(MediaInput.File(DeviceFixtures.path("red-h264.mp4")))
         assertEquals('r', colour(awaitFrame(fromImage) { it.width == 320 }))
         awaitTrue(what = "Playing") { fromImage.state == VideoPlayer.State.Playing }
         assertNull(fromImage.sourceFailure)
@@ -331,7 +332,7 @@ class ImagePlayerDeviceTest {
             held = p.acquireFrameBitmap()
             held != null
         }
-        p.setSource(DeviceFixtures.path("still.png"))
+        p.setSource(MediaInput.File(DeviceFixtures.path("still.png")))
         awaitFrame(p) { it.width == 64 }
         held!!.use {
             val px = it.copyPixels()
@@ -344,9 +345,9 @@ class ImagePlayerDeviceTest {
     fun soundAloneRefusesAnImageAndRequireRefusesOneToo() {
         val sound = player("sine-aac.m4a", audio = true, loop = true)
         awaitTrue(what = "Playing") { sound.state == VideoPlayer.State.Playing }
-        sound.setSource(DeviceFixtures.path("still.png"))
+        sound.setSource(MediaInput.File(DeviceFixtures.path("still.png")))
         awaitTrue(what = "the refusal") { sound.sourceFailure != null }
-        assertEquals("sine-aac.m4a", sound.source.fileName.toString())
+        assertEquals("sine-aac.m4a", (sound.source as MediaInput.File).path.fileName.toString())
 
         val required = player("still.png", hardware = HwAccel.REQUIRE)
         awaitTrue(what = "Failed") { required.state is VideoPlayer.State.Failed }

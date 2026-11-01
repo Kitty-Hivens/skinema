@@ -26,6 +26,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.rememberPlayerState
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import java.nio.file.Path
 import kotlinx.coroutines.delay
@@ -50,8 +51,8 @@ fun main(args: Array<String>) {
         Window(onCloseRequest = ::exitApplication, title = "skinema harness") {
             // N live players plus one doomed source: the fallback cell
             // must come from state, not from a crash.
-            val players = remember { List(playerCount) { VideoPlayer(video, loop = true, readAheadFrames = readAhead) } }
-            val doomed = remember { VideoPlayer(video.resolveSibling("does-not-exist.mp4"), loop = true) }
+            val players = remember { List(playerCount) { VideoPlayer(MediaInput.File(video), loop = true, readAheadFrames = readAhead) } }
+            val doomed = remember { VideoPlayer(MediaInput.File(video.resolveSibling("does-not-exist.mp4")), loop = true) }
             DisposableEffect(Unit) {
                 onDispose {
                     players.forEach { it.close() }

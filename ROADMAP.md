@@ -1940,6 +1940,130 @@ README once the library is usable.
   point there, and the architecture page describes the two engines behind
   one API.
 
+- **M24: streams through the player (decided 2026-11-01).** `MediaSource`
+  (M15) reached the two decoders and nothing else: the player, its
+  `setSource` and the transcoder took a `Path`, so no stream could be played.
+  M15 stopped there because the desktop player runs separate demuxers (the
+  picture on the decode thread, the sound in its pipeline, subtitles in
+  theirs), and one forward-only byte stream cannot feed three. That decision
+  was left to a streaming consumer, and none has asked. It is taken now
+  anyway: what a consumer needs is not this library's to decide, so the
+  player plays streams, live ones included, before 0.9.0 ships.
+
+  **One input type at the edge.** `MediaInput` is `File(path)` or
+  `Stream(source)`, and the player's constructor, `source`, `setSource` and
+  `Transcoder.open` take it in place of a `Path`. That breaks every call
+  site, which a minor release allows and which one honest type is worth: an
+  overload pair would have left `source` unable to say what is playing.
+
+  **Two shapes of stream, two answers.** A stream that can seek is read the
+  way a file is: each side opens its own demuxer, through a cursor of its
+  own over the one source, and the cursors take turns. Track switches,
+  subtitles turned on mid-play and a step back then behave exactly as on a
+  file. A stream that reads forward only gets one shared demuxer whose
+  thread routes packets to the picture, the selected sound and the selected
+  subtitles. One demuxer for every stream was the other option and was
+  turned down: on a seekable stream it makes every track switch and
+  subtitle selection re-seek the picture. What a forward-only stream cannot
+  do, the player says through `seekable` (seeks and the step back do
+  nothing, a loop ends at the end of the stream) rather than pretending.
+
+  On Android the player already has one demuxer, Media3's, which reads
+  through a `DataSource`. The stream reaches it through an adapter, and a
+  forward-only one through a tape that keeps the head of the stream, so
+  Media3's format sniffing and the switch's probe can read it again. The
+  decoders there read a forward-only stream through Media3's
+  `MediaExtractorCompat`, which ships in `media3-inspector` (Apache-2.0,
+  40 KB, nothing reported anywhere), where the platform extractor needs
+  random access.
+
+  A stream is asked once, at the open, whether it can seek: a source at its
+  start that answers a seek to zero with zero can. The player owns what it
+  is handed. A switch releases the stream it leaves, which closes it once
+  the last side still winding down on it has let go, and a close closes it
+  at once, without the lock, because closing is how a read blocked inside a
+  stalled stream is broken out of.
+
+  The shared demuxer reads ahead the way ffplay does: about a second of
+  each stream it routes, past which it waits, unless a side is waiting on
+  an empty lane, since a full sound lane and a starving picture would
+  otherwise wait on each other for good. The lanes made ready at the open
+  count before a side takes them. The first version left them out and a
+  fast source was read to its end in the moment between the open and the
+  first claim, which the rejoin then showed as a jump to the stream's last
+  keyframe. While the picture is hidden and time runs on, its lane keeps
+  only what follows the latest keyframe, and the rejoin starts there. Under
+  a pause it is not trimmed, since the sound stops too and both pick up
+  where they stood. A track switch or a subtitle selection takes effect
+  from the next packets, and the clock steps to where they are.
+
+  Every behaviour was mutation-checked, and five first passed against the
+  defect. A step back on a live stream decoded forward looking for an
+  earlier frame, read the stream to its end and ended the player, while the
+  frame and the position the test looked at stayed put. It now checks the
+  state too. A settle that did nothing passed a test asserting a refusal
+  that came for another reason. The rule that a starving side keeps the
+  reading going matters only at the byte cap, which no fixture reached, so
+  that cap is a test parameter now. Three are kept as guards no test can
+  see. Turning the lap is gated, but a lap on a live stream reads nothing
+  and the existing rule for an empty lap ends it anyway, at the same
+  position. Parking the hidden picture's lane bounds memory, not behaviour.
+  And the rejoin's resync to the newest keyframe is defensive, since a
+  parked lane already starts at one.
+
+  Android has no shared demuxer, so a live stream there feeds one decoder:
+  the player through Media3, or the picture of a transcode. A transcode
+  asked for its sound too is refused by name, since two readers over one
+  tape part ways as soon as one runs past what it keeps.
+
+  A review of the branch by four readers, each on one part, found the
+  close broken where it mattered most. The stream was closed only on the
+  decode thread's way out, and that thread is exactly the one a stalled
+  stream holds: waiting on an empty lane, or inside the source's read. So a
+  close returned after its budget with every thread still parked and the
+  consumer's source open. The test that named it closed while the lanes
+  still held a second of read-ahead, so the threads never stood on the
+  stall. The close now breaks every read from the caller's own thread
+  first, waiting for nothing, and the test waits for the picture to stand.
+
+  Ownership had gaps: a source whose `seek(0)` threw, a switch replaced by
+  a later one before it was made, one still waiting at the close, and a
+  `setSource` after the close each left a stream nobody would close.
+  A switch released the stream it left, which waits for its last reader,
+  and a reader stuck inside it kept it open for good. Such streams are
+  kept now and closed at the teardown. The shared demuxer handed out lanes
+  after its close from parameters it had freed, refused a second lane on a
+  stream (a subtitle track turned off and on again inside the old reader's
+  wind-down killed the new one), and a stream that ended before the others
+  left its side starving for good, which turned the read-ahead bound off
+  for the rest of the input. That last is judged in stream time now, since
+  a fast source reads seconds of stream before any wall-clock wait could
+  run out.
+
+  On a live stream, every re-anchor of the sound flushed what the line held
+  and cropped from the lane's next packet, which is after it, so a resume, a
+  step and a rate change each dropped sound and stepped the clock on, and
+  device recovery played the whole outage back behind the picture. The
+  re-anchors that cannot be honest there are not made, recovery crops the
+  backlog to the clock, and a rate change lets the line play out. A picture
+  rejoining a lane with no keyframe queued is no longer flushed, and the
+  hard cap no longer drops a picture lane's only keyframe.
+
+  On Android, Media3 answers any seek on an unseekable stream by reloading
+  it from byte zero, which the tape serves for its first 8 MiB and then
+  refuses: a step forward, a resume from the end, a side-loaded subtitle
+  file and a hidden picture coming back all did that. None of them is made
+  on such a stream now, and its hidden picture keeps decoding instead of
+  giving up a track it could not get back. Ordinary Matroska and WebM did
+  not open at all read forward only, since Media3 seeks to the Cues a muxer
+  leaves at the end, and are read without them now.
+
+  Four fixes have no test that can tell them apart from the defect: the
+  live re-anchors, the recovery crop and the rate change change what is
+  heard by a buffer's worth, and the keyframe rules change what a codec
+  shows rather than anything the player reports. They are kept as reasoned
+  fixes and recorded as such.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

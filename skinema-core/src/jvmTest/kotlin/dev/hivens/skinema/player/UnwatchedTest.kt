@@ -5,6 +5,7 @@ import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -56,7 +57,7 @@ class UnwatchedTest {
         // depth, so what the fill side's own gate saves is bounded and once.
         readAheadFrames: Int = 1,
     ) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, unwatched, false, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), false, false, clock, null, readAheadFrames, null, unwatched, false, 1f, ChannelPreference.Source,
     ) { source }
 
     /** Media time forward by [millis], the way a device consuming would. */
@@ -323,7 +324,7 @@ class UnwatchedTest {
     fun `a lap still turns while nobody watches`() {
         val source = ScriptedFrameSource(frameCount = 20, declaredDurationNanos = 2_000_000_000L)
         VideoPlayer(
-            Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.KeepTime, false, 1f, ChannelPreference.Source,
+            MediaInput.File(Path.of("scripted")), true, false, clock, null, 1, null, WhenUnwatched.KeepTime, false, 1f, ChannelPreference.Source,
         ) { source }.use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.setPresenting(false)
@@ -538,7 +539,7 @@ class UnwatchedSoundTest {
     )
 
     private fun player(sink: FakePcmSink, source: ScriptedFrameSource, volume: Float = 1f) = VideoPlayer(
-        tone(), false, true, null, sink, 1, null, WhenUnwatched.FollowSound, false, volume, ChannelPreference.Source,
+        MediaInput.File(tone()), false, true, null, sink, 1, null, WhenUnwatched.FollowSound, false, volume, ChannelPreference.Source,
     ) { source }
 
     /**
@@ -613,7 +614,7 @@ class UnwatchedSoundTest {
         val sink = BoundedPcmSink(capacityFrames = 12_000)
         val source = ScriptedFrameSource(frameCount = 300)
         VideoPlayer(
-            tone(), false, true, null, sink, 1, null, WhenUnwatched.FollowSound, false, 1f, ChannelPreference.Source,
+            MediaInput.File(tone()), false, true, null, sink, 1, null, WhenUnwatched.FollowSound, false, 1f, ChannelPreference.Source,
         ) { source }.use { player ->
             try {
                 assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")

@@ -2,6 +2,8 @@ package dev.hivens.skinema.subtitles
 
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.player.VideoPlayer
@@ -120,7 +122,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture("canvas.mkv", writeSrt("canvas.srt"), "srt", 10)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             // Said out loud, so a pipeline that died for some other reason
             // reports itself rather than arriving as a dedup failure. That is
@@ -169,7 +171,7 @@ class SubtitlePipelineTest {
         // which is the shape of every selection made during playback.
         clock.start(0)
         frames.set(framesFor(6_000))
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             assertTrue(
                 awaitTrue { pipeline.repositions > 0 },
@@ -191,7 +193,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture("window.mkv", writeSrt("window.srt"), "srt", 10)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(2_000))
@@ -222,7 +224,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture(name, subs, codec, 10)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(2_000))
@@ -294,7 +296,7 @@ class SubtitlePipelineTest {
         )
         val path = fixture("farcue.mkv", srt, "srt", 45)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(2_000))
@@ -329,7 +331,7 @@ class SubtitlePipelineTest {
         // bare.
         val path = fixture("wrap.mkv", writeSrt("wrap.srt"), "srt", 45)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(40_000))
@@ -364,7 +366,7 @@ class SubtitlePipelineTest {
         // would chase the next cue to EOF and read the whole minute.
         val path = fixture("horizon.mkv", writeSrt("horizon.srt"), "srt", 60)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             assertTrue(
                 awaitTrue { pipeline.lastDemuxedPtsNanos > 20_000_000_000L },
@@ -387,7 +389,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture("standing.mkv", writeSrt("standing.srt"), "srt", 10)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(2_000))
@@ -428,7 +430,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeBitmapSubtitles()
         val path = pgsMkv("pgs-window")
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), null)
         try {
             val latest = Latest()
             frames.set(framesFor(1_000))
@@ -464,7 +466,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeBitmapSubtitles()
         val path = pgsMkv("pgs-seek")
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), null)
         try {
             val latest = Latest()
             // Cold-start straight into the middle of the window: the
@@ -511,7 +513,7 @@ class SubtitlePipelineTest {
             "-attach", font!!.toAbsolutePath().toString(), "-metadata:s:t:0", "mimetype=font/ttf",
         )
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             val latest = Latest()
             frames.set(framesFor(2_000))
@@ -535,7 +537,7 @@ class SubtitlePipelineTest {
             id = 0, streamIndex = 0, language = null, title = null,
             codecName = "h264", isText = false, isDefault = false, isForced = false,
         )
-        val pipeline = SubtitlePipeline(path, clock, bogus, null)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, bogus, null)
         try {
             assertTrue(awaitTrue { pipeline.isDead }, "the pipeline must fail closed")
             assertTrue(
@@ -562,7 +564,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture("stale-horizon.mkv", writeSrt("stale-horizon.srt"), "srt", 120)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             frames.set(framesFor(60_000))
             clock.seek(60_000_000_000L)
@@ -609,7 +611,7 @@ class SubtitlePipelineTest {
             "-c:s", "copy",
         )
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), null)
         try {
             var peak = 0L
             for (secs in 1..90) {
@@ -649,7 +651,7 @@ class SubtitlePipelineTest {
         Fixtures.assumeSubtitleRendering()
         val path = fixture("landing.mkv", writeSrt("landing.srt"), "srt", 120)
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), 64 to 48)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 64 to 48)
         try {
             // Running before the clock is moved, and that order is what makes
             // the count below mean anything: the pipeline reads the clock once
@@ -715,7 +717,7 @@ class SubtitlePipelineTest {
         clock.start(0)
         val window = 32 * 16 * 4
         // Four windows of budget, against a horizon that holds about fifteen.
-        val pipeline = SubtitlePipeline(path, clock, trackOf(path), null, maxScheduledBitmapBytes = 4L * window)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), null, maxScheduledBitmapBytes = 4L * window)
         try {
             var peak = 0L
             var sawPatches = false
@@ -756,7 +758,7 @@ class SubtitlePipelineTest {
             id = 0, streamIndex = 0, language = null, title = null,
             codecName = "h264", isText = false, isDefault = false, isForced = false,
         )
-        val pipeline = SubtitlePipeline(path, clock, bogus, null)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, bogus, null)
         try {
             assertTrue(awaitTrue { pipeline.isDead }, "the pipeline must fail closed")
             // Past the flag, so this is the steady state and not the race.
@@ -946,7 +948,7 @@ class SubtitleTrackSwitchTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "50",
             "-c:s", "srt",
         )
-        VideoPlayer(path, loop = false, audio = false).use { player ->
+        VideoPlayer(MediaInput.File(path), loop = false, audio = false).use { player ->
             assertTrue(awaitTrue { player.subtitleTracks.size == 2 }, "both tracks must surface")
             val ids = player.subtitleTracks.map { it.id }
             player.selectSubtitleTrack(ids[0])

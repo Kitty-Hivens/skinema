@@ -31,6 +31,7 @@ import dev.hivens.skinema.compose.VideoScale
 import dev.hivens.skinema.compose.VideoSurface
 import dev.hivens.skinema.compose.rememberPlayerState
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import kotlinx.coroutines.delay
 import java.io.File
@@ -75,7 +76,7 @@ private fun DemoScreen(dir: File) {
     var sound by remember { mutableStateOf(true) }
     var scale by remember { mutableStateOf(VideoScale.Fit) }
     val player = remember(index, sound) {
-        VideoPlayer(videos[index].toPath(), loop = true, audio = sound, hardware = HwAccel.AUTO)
+        VideoPlayer(MediaInput.File(videos[index].toPath()), loop = true, audio = sound, hardware = HwAccel.AUTO)
     }
     DisposableEffect(player) { onDispose { player.closeAsync() } }
     val state = rememberPlayerState(player)

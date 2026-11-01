@@ -5,6 +5,7 @@ import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -35,7 +36,7 @@ class SeekModesTest {
     }
 
     private fun player(source: ScriptedFrameSource, readAheadFrames: Int = 1) = VideoPlayer(
-        Path.of("scripted"), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+        MediaInput.File(Path.of("scripted")), false, false, clock, null, readAheadFrames, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
     ) { source }
 
     /**
@@ -249,7 +250,7 @@ class SeekModesTest {
     fun `a paused player seeked past the end of a looping file wraps with its picture`() {
         val source = ScriptedFrameSource(frameCount = 10)
         VideoPlayer(
-            Path.of("scripted"), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+            MediaInput.File(Path.of("scripted")), true, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { source }.use { p ->
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Playing }, "state=${p.state}")
             // Far enough in that the wrap has somewhere to come back FROM: at
@@ -318,7 +319,7 @@ class PhantomChaseTest {
         )
         val sink = BoundedPcmSink(capacityFrames = 11_025)
         val source = ScriptedFrameSource(frameCount = 300)
-        val player = VideoPlayer(tone, false, true, null, sink, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
+        val player = VideoPlayer(MediaInput.File(tone), false, true, null, sink, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }
         player.use { p ->
             try {
                 assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
@@ -402,7 +403,7 @@ class InexactSeekAudioTest {
         )
         val sink = FakePcmSink()
         sink.positionFrames.set(0)
-        VideoPlayer(av, loop = false, audio = true, sink = sink).use { p ->
+        VideoPlayer(MediaInput.File(av), loop = false, audio = true, sink = sink).use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
 
             p.seek(750_000_000L, exact = false)

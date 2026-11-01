@@ -3,6 +3,8 @@ package dev.hivens.skinema.encode
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -15,6 +17,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * The join between decode and encode: read a file, write another. Asserts
@@ -48,7 +51,7 @@ class TranscoderTest {
         Fixtures.assumeLibraryEncoder("libx264")
         val input = source("plain.mp4")
         val out = dir.resolve("plain-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
 
         VideoDecoder.open(out).use { d ->
             assertEquals(64 to 48, d.videoSize(), "the source's geometry carries")
@@ -82,7 +85,7 @@ class TranscoderTest {
             Triple(f.rgba[mid].toInt() and 0xFF, f.rgba[mid + 1].toInt() and 0xFF, f.rgba[mid + 2].toInt() and 0xFF)
         }
         val out = dir.resolve("green-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("crf" to "18")))
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("crf" to "18")))
             .use { it.run() }
 
         VideoDecoder.open(out).use { d ->
@@ -116,7 +119,7 @@ class TranscoderTest {
         )
         val out = dir.resolve("sound-out.mp4")
         Transcoder.open(
-            input,
+            MediaInput.File(input),
             out,
             TranscodeConfig(videoCodec = "libx264", audioCodec = "aac"),
         ).use { it.run() }
@@ -147,6 +150,52 @@ class TranscoderTest {
         }
     }
 
+    @Test
+    fun `a seekable stream transcodes with its sound and is closed after`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeLibraryEncoder("aac")
+        // Whichever video encoder this bundle carries, as the geometry guard
+        // below picks it: the subject is the stream, and the decode tier has
+        // no libx264. Sized past SVT-AV1's minimum.
+        val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
+        val input = Fixtures.generate(
+            dir.resolve("streamed.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "2",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "2",
+            "-map", "0:v", "-map", "1:a",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-c:a", "flac",
+        )
+        val bytes = Files.readAllBytes(input)
+        var closed = false
+        val source = object : MediaSource {
+            private var pos = 0
+            override fun read(dst: ByteArray, offset: Int, length: Int): Int {
+                if (pos >= bytes.size) return -1
+                val n = minOf(length, bytes.size - pos)
+                System.arraycopy(bytes, pos, dst, offset, n)
+                pos += n
+                return n
+            }
+            override fun seek(position: Long): Long {
+                if (position < 0 || position > bytes.size) return -1
+                pos = position.toInt()
+                return position
+            }
+            override fun size(): Long = bytes.size.toLong()
+            override fun close() {
+                closed = true
+            }
+        }
+        val out = dir.resolve("streamed-out.mp4")
+        Transcoder.open(MediaInput.Stream(source), out, TranscodeConfig(videoCodec = encoder!!, audioCodec = "aac")).use { it.run() }
+        assertTrue(closed, "the transcoder owns the stream and closes it")
+        VideoDecoder.open(out).use { d ->
+            assertEquals(20, generateSequence { d.nextFrame(convert = false) }.count(), "two seconds at ten frames a second")
+        }
+        assertNotNull(AudioDecoder.openOrNull(out), "the output carries the sound").close()
+    }
+
     /**
      * The writer times audio by a running sample count from the first sample
      * it is handed, so a track whose stream starts later than the picture
@@ -169,7 +218,7 @@ class TranscoderTest {
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-c:a", "flac",
         )
         val out = dir.resolve("late-out.mkv")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264", audioCodec = "flac")).use { it.run() }
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264", audioCodec = "flac")).use { it.run() }
 
         // Where the sound actually begins in the output, in sample frames.
         val audio = assertNotNull(AudioDecoder.openOrNull(out), "the output carries no audio")
@@ -230,7 +279,7 @@ class TranscoderTest {
         assertEquals(270, VideoDecoder.open(tagged).use { it.rotationDegrees() }, "the fixture must carry a rotation")
 
         val out = dir.resolve("upright-out.mp4")
-        Transcoder.open(tagged, out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
+        Transcoder.open(MediaInput.File(tagged), out, TranscodeConfig(videoCodec = "libx264")).use { it.run() }
 
         VideoDecoder.open(out).use { d ->
             assertEquals(96 to 128, d.videoSize(), "a quarter turn swaps the sides")
@@ -265,7 +314,7 @@ class TranscoderTest {
         Fixtures.assumeLibraryEncoder("libx264")
         val input = source("long.mp4", seconds = "5")
         val out = dir.resolve("long-out.mp4")
-        Transcoder.open(input, out, TranscodeConfig(videoCodec = "libx264")).use { t ->
+        Transcoder.open(MediaInput.File(input), out, TranscodeConfig(videoCodec = "libx264")).use { t ->
             // Cancelled before the run rather than from a thread racing it.
             // Watching framesWritten and cancelling at ten is a bet on the
             // machine being slower than the watcher, and a quick runner wins
@@ -355,7 +404,7 @@ class TranscoderTest {
         )
         val out = dir.resolve("one-shot.mp4")
         Transcoder.open(
-            src,
+            MediaInput.File(src),
             out,
             TranscodeConfig(videoCodec = "libx264", videoOptions = mapOf("preset" to "ultrafast")),
         ).use { t ->
@@ -406,7 +455,7 @@ class TranscoderTest {
         // as a required capability, so between the two every tier that can
         // write anything runs this.
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         // Comfortably past SVT-AV1's minimum dimensions, which 64x64 sits
         // exactly on; the writer opens at the FIRST frame's geometry.
         val one = Fixtures.generate(
@@ -426,7 +475,7 @@ class TranscoderTest {
         }
 
         val thrown = assertFailsWith<LibavException> {
-            Transcoder.open(mixed, dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
+            Transcoder.open(MediaInput.File(mixed), dir.resolve("switched.mp4"), TranscodeConfig(videoCodec = encoder!!))
                 .use { it.run() }
         }
         assertTrue(
@@ -455,9 +504,9 @@ class TranscoderTest {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeFormats()
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         val audioEncoder = listOf("aac", "libopus").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(audioEncoder != null, "this bundle carries no audio encoder")
+        assumeTrue(audioEncoder != null, "this bundle carries no audio encoder")
 
         val head = Fixtures.generate(
             dir.resolve("rate-head.ts"),
@@ -481,7 +530,7 @@ class TranscoderTest {
 
         val thrown = assertFailsWith<LibavException> {
             Transcoder.open(
-                mixed,
+                MediaInput.File(mixed),
                 dir.resolve("rate-switch.mp4"),
                 TranscodeConfig(videoCodec = encoder!!, audioCodec = audioEncoder!!),
             ).use { it.run() }

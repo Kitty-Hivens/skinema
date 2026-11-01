@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.NoVideoStreamException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -63,7 +64,7 @@ class FramelessPlaybackTest {
     fun `an audio-only file without a device still runs its lifecycle`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libmp3lame")
-        VideoPlayer(audioOnly("nodevice.mp3", "2"), loop = false, audio = true, sink = NoDevice()).use { player ->
+        VideoPlayer(MediaInput.File(audioOnly("nodevice.mp3", "2")), loop = false, audio = true, sink = NoDevice()).use { player ->
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Playing },
                 "a device that will not open must degrade, not fail: ${player.state}",
@@ -88,7 +89,7 @@ class FramelessPlaybackTest {
     fun `a looping audio-only file without a device comes round instead of spinning`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libmp3lame")
-        VideoPlayer(audioOnly("looping.mp3", "1"), loop = true, audio = true, sink = NoDevice()).use { player ->
+        VideoPlayer(MediaInput.File(audioOnly("looping.mp3", "1")), loop = true, audio = true, sink = NoDevice()).use { player ->
             assertTrue(awaitTrue(5_000) { player.state is VideoPlayer.State.Playing }, "must start")
             // Past the end of one lap and into the next: a level test on a
             // flag nothing clears fired ten times a second and pinned the
@@ -114,7 +115,7 @@ class FramelessPlaybackTest {
     fun `a looping audio-only file stops coming round when the flag goes off`() {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("libmp3lame")
-        VideoPlayer(audioOnly("toggle.mp3", "1"), loop = true, audio = true, sink = NoDevice()).use { player ->
+        VideoPlayer(MediaInput.File(audioOnly("toggle.mp3", "1")), loop = true, audio = true, sink = NoDevice()).use { player ->
             assertTrue(awaitTrue(5_000) { player.state is VideoPlayer.State.Playing }, "must start")
             assertTrue(
                 awaitTrue(4_000) { player.positionNanos() > 300_000_000L },
@@ -155,7 +156,7 @@ class FramelessPlaybackTest {
             "-c:v", "libx264", "-preset", "ultrafast",
         )
         VideoPlayer(
-            noSound, true, true, null, NoDevice(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
+            MediaInput.File(noSound), true, true, null, NoDevice(), 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
         ) { throw NoVideoStreamException("nothing this player can show") }.use { player ->
             assertTrue(
                 awaitTrue(5_000) { player.state is VideoPlayer.State.Ended },

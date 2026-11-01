@@ -4,8 +4,14 @@ import dev.hivens.skinema.Debug
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
-import dev.hivens.skinema.libav.FrameSources
+import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
+import dev.hivens.skinema.libav.openFrames
+import dev.hivens.skinema.libav.openSound
+import dev.hivens.skinema.libav.resolve
+import dev.hivens.skinema.libav.settle
 import java.nio.file.Path
 
 /**
@@ -69,6 +75,9 @@ class Transcoder private constructor(
     private val audioRate: Int?,
     private val config: TranscodeConfig,
     private val output: Path,
+    // Released once both decoders have closed: a stream is this
+    // transcoder's from the open on.
+    private val input: ResolvedInput,
 ) : AutoCloseable {
 
     private var writer: MediaWriter? = null
@@ -278,6 +287,7 @@ class Transcoder private constructor(
         runCatching { writer?.close() }.onFailure { Debug.trace("transcoder writer close", it) }
         runCatching { video.close() }.onFailure { Debug.trace("transcoder video close", it) }
         runCatching { audio?.close() }.onFailure { Debug.trace("transcoder audio close", it) }
+        input.release()
     }
 
     companion object {
@@ -296,24 +306,43 @@ class Transcoder private constructor(
          *
          * Nothing is written until [run]. Throws -- leaving nothing open --
          * when the input carries no video, or when either decoder refuses
-         * it.
+         * it. A [MediaInput.Stream] is this transcoder's from here on: it is
+         * closed by [close], or before the throw when the open fails.
          */
-        fun open(input: Path, output: Path, config: TranscodeConfig): Transcoder {
-            val video = FrameSources.open(input)
+        fun open(input: MediaInput, output: Path, config: TranscodeConfig): Transcoder {
+            val resolved = input.resolve()
+            val video = try {
+                resolved.openFrames(HwAccel.OFF)
+            } catch (t: Throwable) {
+                resolved.release()
+                throw t
+            }
+            // A refusal is kept as it came: a file with no sound answers null
+            // and is named below, and anything that threw has its own reason
+            // (a decoder this build lacks, a stream the platform will not feed
+            // twice), which a caller is better off reading.
             val audio = if (config.audioCodec != null) {
-                runCatching { AudioDecoder.openOrNull(input) }.getOrNull()
+                try {
+                    resolved.openSound(null)
+                } catch (t: Throwable) {
+                    runCatching { video.close() }
+                    resolved.release()
+                    throw t
+                }
             } else {
                 null
             }
+            resolved.settle()
             if (config.audioCodec != null && audio == null) {
                 runCatching { video.close() }
-                throw LibavException("'$input' has no audio stream to encode as '${config.audioCodec}'")
+                resolved.release()
+                throw LibavException("'${resolved.label}' has no audio stream to encode as '${config.audioCodec}'")
             }
             val rate = audio?.let { d ->
                 d.tracks.firstOrNull { it.streamIndex == d.streamIndex }?.sampleRate
                     ?: d.tracks.firstOrNull()?.sampleRate
             }
-            return Transcoder(video, audio, rate, config, output)
+            return Transcoder(video, audio, rate, config, output, resolved)
         }
 
         /**

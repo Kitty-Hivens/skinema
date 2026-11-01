@@ -7,6 +7,7 @@ import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.subtitles.SubtitleOverlay
 import java.nio.file.Path
@@ -34,7 +35,13 @@ import java.nio.file.Path
  * zero, where the desktop turns a 40 ms lap over and over.
  */
 expect class VideoPlayer(
-    path: Path,
+    /**
+     * What to play: a file, or a [dev.hivens.skinema.libav.MediaSource] whose
+     * bytes the player pulls. A stream is the player's from here on, and it
+     * closes it when it moves off it or closes. See [seekable] for what a
+     * stream that only reads forward cannot do.
+     */
+    input: MediaInput,
     /** Whether the end of the file turns the lap; settable later through [loop]. */
     loop: Boolean = true,
     /**
@@ -308,16 +315,26 @@ expect class VideoPlayer(
      */
     var loop: Boolean
 
-    /** The file playing now: the constructor's, until a [setSource] takes. */
-    var source: Path
+    /** What plays now: the constructor's input, until a [setSource] takes. */
+    var source: MediaInput
         private set
+
+    /**
+     * Whether the input can be moved around in. False only for a stream that
+     * reads forward alone (its [dev.hivens.skinema.libav.MediaSource.seek]
+     * answers -1): there [seek], [seekBy] and [stepBackward] do nothing, a
+     * [loop] ends at the end of the stream instead of turning, and the
+     * position starts at zero where the stream was joined. [stepForward]
+     * still works. A file and a seekable stream are true.
+     */
+    val seekable: Boolean
 
     /** Why the last [setSource] did not take, or null when it did. */
     var sourceFailure: Throwable?
         private set
 
     /**
-     * Plays [path] on this player instead, keeping its threads, its sound
+     * Plays [input] on this player instead, keeping its threads, its sound
      * output, and the volume, rate and looping set on it. The new file is
      * opened and decoded to a first picture before the switch; one that cannot
      * be is refused through [sourceFailure] and the file playing carries on.
@@ -329,7 +346,7 @@ expect class VideoPlayer(
      * is refused when no track of the player's shape is there or no decoder
      * takes it.
      */
-    fun setSource(path: Path)
+    fun setSource(input: MediaInput)
 
     /**
      * Switches the sound to another of [audioTracks], in place. A track that

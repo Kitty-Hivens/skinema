@@ -17,7 +17,7 @@ implementation("dev.hivens:skinema-compose:0.9.0")   // brings -core
 ```kotlin
 // The decoders are the phone's hardware only when asked: the default is the
 // desktop's, HwAccel.OFF, which on Android means the software decoders.
-val player = VideoPlayer(path, loop = true, hardware = HwAccel.AUTO)
+val player = VideoPlayer(MediaInput.File(path), loop = true, hardware = HwAccel.AUTO)
 ```
 
 The same coordinate as on the desktop: Gradle picks the Android variant from
@@ -46,9 +46,10 @@ player.
 
 ## What leaves the phone
 
-Nothing the library sends. The player is built on a file data source and the
-library's `MediaSource` adapter only, so no network data source is wired and
-the library needs no INTERNET permission. Two Media3 defaults are turned off
+Nothing the library sends. The player reads files through Media3's file data
+source and a consumer's `MediaSource` through an adapter of the library's own,
+and nothing else, so no network data source is wired and the library needs no
+INTERNET permission. Two Media3 defaults are turned off
 where the player is built, because both are on unless asked: platform
 diagnostics, which report every playback session to the system's media
 metrics service from Android 12 on, and the default bandwidth meter, which
@@ -127,8 +128,10 @@ report none on Android.
 `VideoDecoder` and `AudioDecoder` are the platform extractor and a MediaCodec
 decoder, converting to RGBA on the CPU with the same colour rules the
 desktop follows. HDR in PQ or HLG is tone-mapped to SDR from Android 13,
-where the platform hands out ten-bit frames. A `MediaSource` has to be
-seekable, since the platform extractor reads by offset. Closed-caption bytes
+where the platform hands out ten-bit frames. A `MediaSource` that can seek is
+read by offset like a file; one that reads forward only goes through Media3's
+extractor (`MediaExtractorCompat`, from `media3-inspector`), since the platform
+extractor reads by offset. Closed-caption bytes
 are not available. A 24-bit FLAC arrives as 16-bit: the platform's FLAC
 extractor narrows it before any decoder sees it, which the player does not
 share, since Media3 reads FLAC itself.
@@ -164,6 +167,35 @@ else is opened by Media3, the engine that will play it: the container is
 parsed, and the file is refused when it has no track of the player's shape
 (a picture for a picture player, sound for a sound one) or no decoder on the
 device takes that track under the `hardware` policy.
+
+## Streams
+
+A `MediaSource` plays as it does on the desktop (see
+[Streams](video-player.md#streams)): one that can seek is read like a file,
+through a cursor per reader, and one that reads forward only reports
+`seekable` false and refuses what it cannot do by doing nothing. Media3 is
+already a single demuxer, so a forward-only stream reaches it through a tape
+that keeps the stream's first 8 MiB: format sniffing, the check a `setSource`
+makes and a reopen near the start read those bytes again, and anything asked
+for behind that is refused, which fails the player. Such a stream says what it
+is through Media3's metadata (title, artist, album, genre, artwork), since
+nothing here reads it by offset, and has no chapters. A `setSource` asked of a
+player opened on one waits for the stream's track report, which is where its
+shape comes from, and waits ten seconds at most. A forward-only stream is
+played as a stream, never as an image.
+
+Media3 answers a seek on such a stream by reloading it from its start, which
+the stream cannot give, so on Android more of the player stands still on
+one than on the desktop: `stepForward` does nothing either, a `resume()`
+after the end leaves it ended, `addExternalSubtitles` adds nothing, and a
+hidden picture keeps decoding rather than giving up its track, since
+bringing a track back reloads the item. A Matroska or WebM stream is read
+without the Cues an ordinary muxer leaves at the end, which Media3 would
+otherwise seek to. A decoder over such a stream refuses `seekTo` by name.
+
+Android has no shared demuxer, so such a stream feeds one decoder: the player,
+or the picture of a transcode. A transcode that also asks for its sound is
+refused by name.
 
 ## Threads and timing
 

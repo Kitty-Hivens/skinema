@@ -2,6 +2,7 @@ package dev.hivens.skinema.compose
 
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.player.VideoPlayer
 import java.io.File
 import java.nio.file.Path
@@ -34,7 +35,7 @@ class VideoFrameHolderDeviceTest {
 
     @Test
     fun framesArriveAsHardwareBitmapsOfTheRightSizeAndColour() {
-        VideoPlayer(fixture("red-h264.mp4"), loop = true, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(fixture("red-h264.mp4")), loop = true, hardware = HwAccel.AUTO).use { player ->
             val holder = VideoFrameHolder()
             awaitTrue(what = "a frame") { holder.update(player) }
             val frame = assertNotNull(holder.frameForDraw())
@@ -58,7 +59,7 @@ class VideoFrameHolderDeviceTest {
      */
     @Test
     fun aHolderThatDrawsAsItGoesNeverStarvesThePlayer() {
-        VideoPlayer(fixture("red-h264.mp4"), loop = true, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(fixture("red-h264.mp4")), loop = true, hardware = HwAccel.AUTO).use { player ->
             val holder = VideoFrameHolder()
             awaitTrue(what = "the first frame") { holder.update(player) }
             var taken = 0
@@ -80,7 +81,7 @@ class VideoFrameHolderDeviceTest {
      */
     @Test
     fun framesSupersededBeforeAnyDrawAreGivenBack() {
-        VideoPlayer(fixture("red-h264.mp4"), loop = true, hardware = HwAccel.AUTO).use { player ->
+        VideoPlayer(MediaInput.File(fixture("red-h264.mp4")), loop = true, hardware = HwAccel.AUTO).use { player ->
             val holder = VideoFrameHolder()
             awaitTrue(what = "the first frame") { holder.update(player) }
             var taken = 0

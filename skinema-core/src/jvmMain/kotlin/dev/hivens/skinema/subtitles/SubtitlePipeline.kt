@@ -7,12 +7,17 @@ import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.TripleBuffer
 import dev.hivens.skinema.core.nanosToPts
 import dev.hivens.skinema.core.ptsToNanos
+import dev.hivens.skinema.libav.AvioSource
+import dev.hivens.skinema.libav.SharedDemux
+import dev.hivens.skinema.libav.demux
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.dictValue
 import dev.hivens.skinema.libav.formatStartTimeNanos
+import dev.hivens.skinema.libav.openInput
 import dev.hivens.skinema.libav.streamAt
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -20,7 +25,6 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
-import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,7 +56,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * notices.
  */
 internal class SubtitlePipeline(
-    private val path: Path,
+    private val input: ResolvedInput,
     private val clock: MediaClock,
     val track: SubtitleTrack,
     private val storageSize: Pair<Int, Int>?,
@@ -142,6 +146,13 @@ internal class SubtitlePipeline(
     // Thread-confined session state, opened by run().
     private lateinit var arena: Arena
     private var fmtCtx = MemorySegment.NULL
+
+    // The AVIO context a stream's bytes come through. Null for a file.
+    private var avioSource: AvioSource? = null
+
+    // Where this track's packets come from on a forward-only stream, whose one
+    // demuxer every side shares. Null when this pipeline has a demuxer of its own.
+    private var lane: SharedDemux.Lane? = null
     private var codecCtx = MemorySegment.NULL
     private var assLibrary = MemorySegment.NULL
     private var assRenderer = MemorySegment.NULL
@@ -379,25 +390,35 @@ internal class SubtitlePipeline(
             openCaptionDecoder()
             return
         }
-        val ctxOut = arena.allocate(ADDRESS)
-        Libav.checkAv(
-            Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
-            "avformat_open_input($path)",
-        )
-        fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
-        Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info(subs)")
-        startTimeNanos = formatStartTimeNanos(fmtCtx)
-
-        val streamCount = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)
-        if (track.streamIndex >= streamCount) throw LibavException("stream ${track.streamIndex} is out of range")
-        val stream = streamAt(fmtCtx, track.streamIndex)
-        val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
-            .reinterpret(LibavAbi.CodecParameters.SIZEOF)
-        if (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_TYPE) != LibavAbi.AVMEDIA_TYPE_SUBTITLE) {
-            throw LibavException("stream ${track.streamIndex} is not a subtitle stream")
+        val codecpar = when (val from = input) {
+            is ResolvedInput.File -> {
+                val ctxOut = arena.allocate(ADDRESS)
+                Libav.checkAv(
+                    Libav.avformatOpenInput(ctxOut, arena.allocateFrom(from.path.toString())),
+                    "avformat_open_input(${from.path})",
+                )
+                fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+                ownStream()
+            }
+            is ResolvedInput.Seekable -> {
+                val opened = openInput(arena, from.shared.cursor(), closeArenaOnFailure = false)
+                fmtCtx = opened.fmtCtx
+                avioSource = opened.avioSource
+                ownStream()
+            }
+            is ResolvedInput.Live -> {
+                val demux = from.demux()
+                val taken = demux.lane(track.streamIndex)
+                lane = taken
+                if (taken.stream.mediaType != LibavAbi.AVMEDIA_TYPE_SUBTITLE) {
+                    throw LibavException("stream ${track.streamIndex} is not a subtitle stream")
+                }
+                startTimeNanos = demux.startTimeNanos
+                timeBaseNum = taken.stream.timeBaseNum
+                timeBaseDen = taken.stream.timeBaseDen
+                taken.codecpar
+            }
         }
-        timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
-        timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
 
         val decoder = Libav.avcodecFindDecoder(codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID))
         if (decoder == MemorySegment.NULL) throw LibavException("no decoder for subtitle track ${track.id}")
@@ -416,6 +437,23 @@ internal class SubtitlePipeline(
             canvasWidth = if (planeWidth > 0) planeWidth else storageSize?.first ?: DEFAULT_CANVAS_WIDTH
             canvasHeight = if (planeHeight > 0) planeHeight else storageSize?.second ?: DEFAULT_CANVAS_HEIGHT
         }
+    }
+
+    /** Finds this track in a demuxer of this pipeline's own and returns its codec parameters. */
+    private fun ownStream(): MemorySegment {
+        Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info(subs)")
+        startTimeNanos = formatStartTimeNanos(fmtCtx)
+        val streamCount = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)
+        if (track.streamIndex >= streamCount) throw LibavException("stream ${track.streamIndex} is out of range")
+        val stream = streamAt(fmtCtx, track.streamIndex)
+        val codecpar = stream.get(ADDRESS, LibavAbi.Stream.CODECPAR)
+            .reinterpret(LibavAbi.CodecParameters.SIZEOF)
+        if (codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_TYPE) != LibavAbi.AVMEDIA_TYPE_SUBTITLE) {
+            throw LibavException("stream ${track.streamIndex} is not a subtitle stream")
+        }
+        timeBaseNum = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE)
+        timeBaseDen = stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
+        return codecpar
     }
 
     /**
@@ -481,6 +519,10 @@ internal class SubtitlePipeline(
     }
 
     private fun addAttachedFonts() {
+        // A forward-only stream's demuxer belongs to its own thread, and its
+        // attachments are not walked from this one: such a track renders with
+        // the system's fonts.
+        if (fmtCtx == MemorySegment.NULL) return
         val mimeKey = arena.allocateFrom("mimetype")
         val nameKey = arena.allocateFrom("filename")
         val count = fmtCtx.get(JAVA_INT, LibavAbi.FormatContext.NB_STREAMS)
@@ -587,6 +629,26 @@ internal class SubtitlePipeline(
             return
         }
         if (eofReached) return
+        val shared = lane
+        if (shared != null) {
+            // A forward-only stream arrives at its own pace and is read as it
+            // comes: no horizon to keep, since nothing ahead of it exists yet.
+            demuxNowNanos(nowNanos)
+            while (true) {
+                if (scheduledBitmapBytes > maxScheduledBitmapBytes) return
+                when (shared.take(packet, timeoutNanos = 0)) {
+                    0 -> {}
+                    LibavAbi.AVERROR_EOF -> {
+                        eofReached = true
+                        return
+                    }
+                    else -> return
+                }
+                decodePacket(packet, subtitle, got)
+                Libav.avPacketUnref(packet)
+                if (commands.peek() != null) return
+            }
+        }
         val gate = demuxNowNanos(nowNanos)
         while (lastDemuxedPtsNanos < gate + HORIZON_NANOS) {
             // The horizon bounds the read-ahead in time, and time is not what
@@ -697,7 +759,7 @@ internal class SubtitlePipeline(
         return target
     }
 
-    private fun timeBaseOf(streamIndex: Int): Pair<Int, Int> = timeBases.getOrPut(streamIndex) {
+    private fun timeBaseOf(streamIndex: Int): Pair<Int, Int> = if (lane != null) timeBaseNum to timeBaseDen else timeBases.getOrPut(streamIndex) {
         val stream = streamAt(fmtCtx, streamIndex)
         stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE) to stream.get(JAVA_INT, LibavAbi.Stream.TIME_BASE + 4)
     }
@@ -916,7 +978,9 @@ internal class SubtitlePipeline(
             return
         }
         val preroll = (targetNanos - PREROLL_NANOS).coerceAtLeast(0)
-        val moved = runCatching {
+        // A forward-only stream's demuxer is not this pipeline's to move:
+        // it carries on from where the stream is, like a demuxer that refused.
+        val moved = lane == null && runCatching {
             Libav.checkAv(
                 Libav.avSeekFrame(
                     fmtCtx, track.streamIndex,
@@ -994,6 +1058,9 @@ internal class SubtitlePipeline(
                 ptrPtr.set(ADDRESS, 0, fmtCtx)
                 Libav.avformatCloseInput(ptrPtr)
             }
+            // After the format context, which reads through it to the last.
+            avioSource?.free(ptrPtr)
+            lane?.release()
         }
     }
 

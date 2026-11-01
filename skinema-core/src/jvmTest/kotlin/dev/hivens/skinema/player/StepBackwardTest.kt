@@ -3,6 +3,7 @@ package dev.hivens.skinema.player
 import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.MediaInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
@@ -58,7 +59,7 @@ class StepBackwardTest {
             "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10", "-t", "20",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-g", "10",
         )
-        VideoPlayer(dense, loop = false).use { player ->
+        VideoPlayer(MediaInput.File(dense), loop = false).use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             player.pause()
             assertTrue(awaitTrue { player.state is VideoPlayer.State.Paused }, "the pause must land")
@@ -105,7 +106,7 @@ class StepBackwardTest {
         val frames = AtomicLong(0)
         val clock = AudioClock(48_000) { frames.get() }
         val source = ScriptedFrameSource(frameCount = 100, keyframeEvery = 10)
-        VideoPlayer(Path.of("scripted"), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }.use { player ->
+        VideoPlayer(MediaInput.File(Path.of("scripted")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source) { source }.use { player ->
             assertTrue(awaitTrue { player.acquireFrame() != null }, "playback must start")
             // Media time 2000 ms at the 48 kHz test rate: frame 20, which is
             // a keyframe, so the first press also pays the discovery pass.

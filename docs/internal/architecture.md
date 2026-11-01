@@ -90,6 +90,29 @@ pacer thread, so a stalled decode cannot stall the screen while
 read-ahead inventory lasts. This split is the core of the runtime; see
 [threading-and-clocks.md](threading-and-clocks.md).
 
+### Where the bytes come from
+
+Each side above opens its own demuxer: the decode thread, the audio thread
+and the subtitle thread each call `avformat_open_input` on the file, and each
+reads and seeks at its own pace. A `MediaInput` decides how that holds for
+bytes a consumer hands over (`ResolvedInput`, resolved once per open):
+
+- a file: as above.
+- a `MediaSource` that can seek: the same three demuxers, each through a
+  cursor of its own over the one source (`SharedSource`), taking turns under
+  a lock so calls into the source never overlap.
+- a `MediaSource` that reads forward only: one demuxer on a thread of its own
+  (`SharedDemux`), opened by whichever side asks first, routing each packet to
+  the lane of the side that plays its stream. The decoders read a lane
+  through the same entry points they read a demuxer through, and a reposition
+  on a lane flushes and, for the picture, starts again from the newest
+  keyframe. Read-ahead stops at about a second of each stream unless a side is
+  starving.
+
+On Android Media3 is already one demuxer, so a forward-only stream reaches it
+through a tape that keeps the stream's start (`ForwardTape`), and the decoders
+read one through `MediaExtractorCompat`. The decisions are in ROADMAP M24.
+
 ## Where each concern lives
 
 | Concern                          | Page                                               |
