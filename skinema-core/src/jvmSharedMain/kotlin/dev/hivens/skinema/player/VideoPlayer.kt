@@ -323,6 +323,11 @@ expect class VideoPlayer(
      * be is refused through [sourceFailure] and the file playing carries on.
      * The position starts at zero, subtitles go off, and the metadata is the
      * new file's once the switch lands.
+     *
+     * On Android a file that is not an image is checked without decoding a
+     * picture: Media3, which will play it, parses the container and the file
+     * is refused when no track of the player's shape is there or no decoder
+     * takes it.
      */
     fun setSource(path: Path)
 
@@ -381,7 +386,9 @@ expect class VideoPlayer(
 
     /**
      * Tears the player down without waiting for it, for a caller that cannot
-     * block. [state] settles [State.Closed] when the teardown finishes.
+     * block. [state] settles [State.Closed] when the teardown finishes, or
+     * stays [State.Failed] for a player that had failed: the failure is the
+     * more useful thing to have been told.
      */
     fun closeAsync()
 

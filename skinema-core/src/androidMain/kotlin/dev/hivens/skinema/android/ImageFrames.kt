@@ -21,6 +21,11 @@ import java.util.zip.CRC32
  * One frame of an image file: where it lands on the canvas, how long it
  * stays, what happens to its area afterwards, and its pixels as a standalone
  * single-frame file the platform decoder reads.
+ *
+ * The file is built when it is decoded, from ranges of the original bytes,
+ * not when the container is read: what every frame's file shares (a palette,
+ * a colour profile) would otherwise be copied once per frame, and a small
+ * file of many frames with a large shared chunk asked for gigabytes.
  */
 internal class ImagePart(
     val x: Int,
@@ -31,9 +36,12 @@ internal class ImagePart(
     val dispose: Dispose,
     /** Alpha-blended over what is there, or written in its place. */
     val blend: Boolean,
-    val encoded: ByteArray,
+    private val encode: () -> ByteArray,
 ) {
     enum class Dispose { NONE, BACKGROUND, PREVIOUS }
+
+    /** This frame as a file of its own. */
+    fun encoded(): ByteArray = encode()
 }
 
 /**
@@ -91,7 +99,7 @@ internal class ImageFrames(
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw LibavException("the platform reads no image in this file")
             checkCanvas(bounds.outWidth, bounds.outHeight)
-            val part = ImagePart(0, 0, bounds.outWidth, bounds.outHeight, 0L, ImagePart.Dispose.NONE, false, bytes)
+            val part = ImagePart(0, 0, bounds.outWidth, bounds.outHeight, 0L, ImagePart.Dispose.NONE, false) { bytes }
             return ImageFrames(bounds.outWidth, bounds.outHeight, listOf(part), animated = false)
         }
 
@@ -161,20 +169,15 @@ internal class ImageFrames(
                             val w = r.u16le()
                             val h = r.u16le()
                             val local = r.u8()
-                            val localTable = if (local and 0x80 != 0) r.bytes(3 * (1 shl ((local and 7) + 1))) else ByteArray(0)
-                            val start = r.pos
+                            // The frame's own colour table and data, as ranges of
+                            // the file: copied when the frame is decoded.
+                            val localStart = r.pos
+                            if (local and 0x80 != 0) r.skip(3 * (1 shl ((local and 7) + 1)))
+                            val dataStart = r.pos
                             r.skip(1) // LZW minimum code size
                             r.skipSubBlocks()
-                            val data = b.copyOfRange(start, r.pos)
-                            val out = ByteArrayOutputStream()
-                            out.write("GIF89a".toByteArray(Charsets.US_ASCII))
-                            out.write(le16(w)); out.write(le16(h)); out.write(packed); out.write(background); out.write(aspect)
-                            out.write(globalTable)
-                            gce?.let(out::write)
-                            out.write(0x2C); out.write(le16(0)); out.write(le16(0)); out.write(le16(w)); out.write(le16(h)); out.write(local)
-                            out.write(localTable)
-                            out.write(data)
-                            out.write(0x3B)
+                            val dataEnd = r.pos
+                            val frameGce = gce
                             parts += ImagePart(
                                 x, y, w, h, frameNanos(delay * 10_000_000L),
                                 when (disposal) {
@@ -182,8 +185,19 @@ internal class ImageFrames(
                                     3 -> ImagePart.Dispose.PREVIOUS
                                     else -> ImagePart.Dispose.NONE
                                 },
-                                blend = true, out.toByteArray(),
-                            )
+                                blend = true,
+                            ) {
+                                val out = ByteArrayOutputStream()
+                                out.write("GIF89a".toByteArray(Charsets.US_ASCII))
+                                out.write(le16(w)); out.write(le16(h)); out.write(packed); out.write(background); out.write(aspect)
+                                out.write(globalTable)
+                                frameGce?.let(out::write)
+                                out.write(0x2C); out.write(le16(0)); out.write(le16(0)); out.write(le16(w)); out.write(le16(h)); out.write(local)
+                                out.write(b, localStart, dataStart - localStart)
+                                out.write(b, dataStart, dataEnd - dataStart)
+                                out.write(0x3B)
+                                out.toByteArray()
+                            }
                             gce = null
                             delay = 0
                             disposal = 0
@@ -203,7 +217,10 @@ internal class ImageFrames(
 
         // -- APNG --------------------------------------------------------------------
 
-        private class PngChunk(val type: String, val data: ByteArray)
+        /** A chunk's type and where its data sits in the file, read from there only when needed. */
+        private class PngChunk(val type: String, val start: Int, val length: Int) {
+            fun bytes(b: ByteArray): ByteArray = b.copyOfRange(start, start + length)
+        }
 
         private fun apng(b: ByteArray): ImageFrames? {
             val chunks = ArrayList<PngChunk>()
@@ -212,12 +229,12 @@ internal class ImageFrames(
                 val length = ByteBuffer.wrap(b, p, 4).order(ByteOrder.BIG_ENDIAN).int
                 val type = String(b, p + 4, 4, Charsets.US_ASCII)
                 if (length < 0 || p + 12L + length > b.size) break
-                chunks += PngChunk(type, b.copyOfRange(p + 8, p + 8 + length))
+                chunks += PngChunk(type, p + 8, length)
                 p += 12 + length
                 if (type == "IEND") break
             }
             if (chunks.none { it.type == "acTL" }) return null
-            val ihdr = chunks.firstOrNull { it.type == "IHDR" }?.data?.takeIf { it.size >= 13 } ?: return null
+            val ihdr = chunks.firstOrNull { it.type == "IHDR" }?.takeIf { it.length >= 13 }?.bytes(b) ?: return null
             val (width, height) = canvasOf(ByteBuffer.wrap(ihdr, 0, 4).int, ByteBuffer.wrap(ihdr, 4, 4).int) ?: return null
             // What every frame's file needs from the original header: the
             // palette, its transparency and the colour description.
@@ -225,12 +242,13 @@ internal class ImageFrames(
                 .filter { it.type in setOf("PLTE", "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT") }
             val parts = ArrayList<ImagePart>()
             var control: ByteArray? = null
-            var data = ByteArrayOutputStream()
+            // The frame's pixel data, as (offset, length) ranges of the file.
+            var data = ArrayList<IntArray>()
             fun flush() {
                 val c = control ?: return
                 // A control with no pixels after it (a file cut between the two)
                 // is no frame.
-                if (data.size() == 0) {
+                if (data.isEmpty()) {
                     control = null
                     return
                 }
@@ -246,12 +264,7 @@ internal class ImageFrames(
                 val blend = bb.get().toInt()
                 val header = ihdr.copyOf()
                 ByteBuffer.wrap(header).putInt(w).putInt(h)
-                val file = ByteArrayOutputStream()
-                file.write(PNG_SIGNATURE)
-                pngChunk(file, "IHDR", header)
-                for (s in shared) pngChunk(file, s.type, s.data)
-                pngChunk(file, "IDAT", data.toByteArray())
-                pngChunk(file, "IEND", ByteArray(0))
+                val pixels = data
                 parts += ImagePart(
                     x, y, w, h, frameNanos(num * 1_000_000_000L / den),
                     when (dispose) {
@@ -259,22 +272,30 @@ internal class ImageFrames(
                         2 -> if (parts.isEmpty()) ImagePart.Dispose.BACKGROUND else ImagePart.Dispose.PREVIOUS
                         else -> ImagePart.Dispose.NONE
                     },
-                    blend = blend == 1 && parts.isNotEmpty(), file.toByteArray(),
-                )
+                    blend = blend == 1 && parts.isNotEmpty(),
+                ) {
+                    val file = ByteArrayOutputStream()
+                    file.write(PNG_SIGNATURE)
+                    pngChunk(file, "IHDR", header, listOf(intArrayOf(0, header.size)))
+                    for (s in shared) pngChunk(file, s.type, b, listOf(intArrayOf(s.start, s.length)))
+                    pngChunk(file, "IDAT", b, pixels)
+                    pngChunk(file, "IEND", ByteArray(0), emptyList())
+                    file.toByteArray()
+                }
                 control = null
-                data = ByteArrayOutputStream()
+                data = ArrayList()
             }
             for (chunk in chunks) {
                 when (chunk.type) {
                     "fcTL" -> {
                         flush()
                         // Shorter than its fields is no frame: its data is skipped with it.
-                        control = chunk.data.takeIf { it.size >= FCTL_SIZE }
+                        control = chunk.takeIf { it.length >= FCTL_SIZE }?.bytes(b)
                     }
                     // A default image that precedes every fcTL is not a frame of
                     // the animation, and is skipped with control still null.
-                    "IDAT" -> if (control != null) data.write(chunk.data)
-                    "fdAT" -> if (control != null && chunk.data.size > 4) data.write(chunk.data, 4, chunk.data.size - 4)
+                    "IDAT" -> if (control != null) data += intArrayOf(chunk.start, chunk.length)
+                    "fdAT" -> if (control != null && chunk.length > 4) data += intArrayOf(chunk.start + 4, chunk.length - 4)
                 }
             }
             flush()
@@ -282,12 +303,16 @@ internal class ImageFrames(
             return ImageFrames(width, height, parts, animated = true)
         }
 
-        private fun pngChunk(out: ByteArrayOutputStream, type: String, data: ByteArray) {
-            out.write(ByteBuffer.allocate(4).putInt(data.size).array())
+        /** A chunk of [type] whose data is the [ranges] of [source], in order, written with its length and CRC. */
+        private fun pngChunk(out: ByteArrayOutputStream, type: String, source: ByteArray, ranges: List<IntArray>) {
+            out.write(ByteBuffer.allocate(4).putInt(ranges.sumOf { it[1] }).array())
             val typeBytes = type.toByteArray(Charsets.US_ASCII)
             out.write(typeBytes)
-            out.write(data)
-            val crc = CRC32().apply { update(typeBytes); update(data) }
+            val crc = CRC32().apply { update(typeBytes) }
+            for ((start, length) in ranges.map { it[0] to it[1] }) {
+                out.write(source, start, length)
+                crc.update(source, start, length)
+            }
             out.write(ByteBuffer.allocate(4).putInt(crc.value.toInt()).array())
         }
 
@@ -318,12 +343,13 @@ internal class ImageFrames(
                         val h = u24(b, body + 9) + 1
                         val duration = u24(b, body + 12)
                         val flags = b[body + 15].toInt()
-                        val frameData = b.copyOfRange(body + 16, body + size)
+                        val dataStart = body + 16
+                        val dataLength = size - 16
                         parts += ImagePart(
                             x, y, w, h, frameNanos(duration * 1_000_000L),
                             if (flags and 0x01 != 0) ImagePart.Dispose.BACKGROUND else ImagePart.Dispose.NONE,
-                            blend = flags and 0x02 == 0, webpFrameFile(frameData, w, h),
-                        )
+                            blend = flags and 0x02 == 0,
+                        ) { webpFrameFile(b, dataStart, dataLength, w, h) }
                     }
                 }
                 p = (body.toLong() + size + (size and 1)).coerceAtMost(b.size.toLong()).toInt()
@@ -338,8 +364,8 @@ internal class ImageFrames(
          * file of its one chunk; a lossy one with alpha needs the extended
          * header that says so, with the frame's size as the canvas.
          */
-        private fun webpFrameFile(frameData: ByteArray, w: Int, h: Int): ByteArray {
-            val hasAlpha = frameData.size >= 4 && String(frameData, 0, 4, Charsets.US_ASCII) == "ALPH"
+        private fun webpFrameFile(b: ByteArray, start: Int, length: Int, w: Int, h: Int): ByteArray {
+            val hasAlpha = length >= 4 && String(b, start, 4, Charsets.US_ASCII) == "ALPH"
             val body = ByteArrayOutputStream()
             if (hasAlpha) {
                 body.write("VP8X".toByteArray(Charsets.US_ASCII))
@@ -347,7 +373,7 @@ internal class ImageFrames(
                 body.write(byteArrayOf(0x10, 0, 0, 0))
                 body.write(le24(w - 1)); body.write(le24(h - 1))
             }
-            body.write(frameData)
+            body.write(b, start, length)
             val payload = body.toByteArray()
             val out = ByteArrayOutputStream()
             out.write("RIFF".toByteArray(Charsets.US_ASCII))
@@ -366,8 +392,11 @@ internal class ImageFrames(
          */
         private fun frameNanos(nanos: Long): Long = if (nanos <= 10_000_000L) 100_000_000L else nanos
 
-        /** The largest canvas read, about 8K by 4K: past that a size field is not to be believed. */
-        private const val MAX_PIXELS = 1L shl 25
+        /**
+         * The largest canvas read, 2^27 pixels: a 108 MP photo fits, and a
+         * header claiming more than that is refused rather than believed.
+         */
+        private const val MAX_PIXELS = 1L shl 27
 
         /** An fcTL's fields: sequence, size, offset, delay and the two ops. */
         private const val FCTL_SIZE = 26
@@ -426,7 +455,13 @@ internal class ImageFrames(
  */
 internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
 
-    private val canvasBitmapField = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+    // The one allocation the size of the picture. One the device has no memory
+    // for is refused like any other image this cannot open.
+    private val canvasBitmapField = try {
+        Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+    } catch (_: OutOfMemoryError) {
+        throw LibavException("no memory for a ${image.width}x${image.height} canvas")
+    }
     private val canvas = Canvas(canvasBitmapField)
     private val replace = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC) }
     private val over = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -441,8 +476,10 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
     private var next = 0
     private var previous: Bitmap? = null
     private var lastDrawn = -1
-    // Only a decoder converting frames needs these; the player draws the canvas.
-    private val pixels by lazy { IntArray(image.width * image.height) }
+    // Only a decoder converting frames needs these; the player draws the
+    // canvas. A row at a time, so converting costs one row of ints rather
+    // than a second copy of the picture.
+    private val row by lazy { IntArray(image.width) }
     private val rgba by lazy { ByteArray(image.width * image.height * 4) }
 
     private fun compose(index: Int) {
@@ -456,7 +493,8 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
         }
         val part = image.parts[index]
         previous = if (part.dispose == ImagePart.Dispose.PREVIOUS) canvasBitmapField.copy(Bitmap.Config.ARGB_8888, false) else null
-        val frame = BitmapFactory.decodeByteArray(part.encoded, 0, part.encoded.size)
+        val encoded = part.encoded()
+        val frame = BitmapFactory.decodeByteArray(encoded, 0, encoded.size)
             ?: throw LibavException("the platform could not decode frame $index of the image")
         canvas.drawBitmap(frame, part.x.toFloat(), part.y.toFloat(), if (part.blend) over else replace)
         frame.recycle()
@@ -466,14 +504,17 @@ internal class ImageFrameSource(private val image: ImageFrames) : FrameSource {
     private fun current(target: ByteArray?): VideoDecoder.RgbaFrame {
         // getPixels hands colours back unpremultiplied, which is the straight
         // alpha the RGBA contract promises.
-        canvasBitmapField.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
-        val out = target?.takeIf { it.size == rgba.size } ?: rgba
-        for (i in pixels.indices) {
-            val c = pixels[i]
-            out[i * 4] = Color.red(c).toByte()
-            out[i * 4 + 1] = Color.green(c).toByte()
-            out[i * 4 + 2] = Color.blue(c).toByte()
-            out[i * 4 + 3] = Color.alpha(c).toByte()
+        val out = target?.takeIf { it.size == image.width * image.height * 4 } ?: rgba
+        var d = 0
+        for (y in 0 until image.height) {
+            canvasBitmapField.getPixels(row, 0, image.width, 0, y, image.width, 1)
+            for (c in row) {
+                out[d] = Color.red(c).toByte()
+                out[d + 1] = Color.green(c).toByte()
+                out[d + 2] = Color.blue(c).toByte()
+                out[d + 3] = Color.alpha(c).toByte()
+                d += 4
+            }
         }
         return VideoDecoder.RgbaFrame(image.width, image.height, pts[lastDrawn], out)
     }

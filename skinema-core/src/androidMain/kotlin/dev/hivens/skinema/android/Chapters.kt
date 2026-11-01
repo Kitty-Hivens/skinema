@@ -133,16 +133,20 @@ internal object Chapters {
         // Where each sample sits: each stsc entry covers the chunks up to the
         // next entry's first, every one holding its samples per chunk. Walked
         // so the work is bounded by the chunks and samples that exist, never
-        // by what a size field claims.
+        // by what a size field claims: an entry starts no earlier than the
+        // one before it ended, so no chunk is walked twice, whatever order a
+        // file puts its entries in.
         val sampleOffsets = LongArray(count)
         val entries = stsc.u32(4).coerceIn(0, MAX_SAMPLES)
         fun firstChunk(e: Int) = (stsc.u32(8 + e * 12).toLong() and 0xFFFFFFFFL) - 1
         var sample = 0
+        var walked = 0L
         for (e in 0 until entries) {
             if (sample >= count) break
             val perChunk = stsc.u32(8 + e * 12 + 4).toLong() and 0xFFFFFFFFL
             val until = if (e + 1 < entries) firstChunk(e + 1).coerceAtMost(offsets.size.toLong()) else offsets.size.toLong()
-            var chunk = firstChunk(e).coerceAtLeast(0)
+            var chunk = maxOf(firstChunk(e), walked)
+            walked = maxOf(walked, until)
             while (chunk < until && sample < count) {
                 var at = offsets[chunk.toInt()]
                 var placed = 0L
@@ -159,11 +163,22 @@ internal object Chapters {
         val out = ArrayList<Chapter>()
         var start = 0L
         var index = 0
+        // Titles are read until their total reaches a bound, and the chapters
+        // after that keep their times with no title: a file of a hundred
+        // thousand chapters each titled with the same 64 KiB would otherwise
+        // hold gigabytes of strings.
+        var titleBytes = 0L
         for (e in 0 until stts.u32(4).coerceIn(0, MAX_SAMPLES)) {
             val runs = stts.u32(8 + e * 8)
             val delta = stts.u32(12 + e * 8).toLong() and 0xFFFFFFFFL
             repeat(runs.coerceAtMost(count - index)) {
-                val title = sampleTitle(bytes.read(sampleOffsets[index], sizes[index].coerceIn(0, MAX_TITLE)))
+                val size = sizes[index].coerceIn(0, MAX_TITLE)
+                val title = if (titleBytes + size <= MAX_TITLES_TOTAL) {
+                    titleBytes += size
+                    sampleTitle(bytes.read(sampleOffsets[index], size))
+                } else {
+                    null
+                }
                 out += Chapter(start.scaled(timescale), (start + delta).scaled(timescale), title)
                 start += delta
                 index++
@@ -379,6 +394,7 @@ internal object Chapters {
     private const val MAX_BOX = 16 * 1024 * 1024
     private const val MAX_SAMPLES = 100_000
     private const val MAX_TITLE = 64 * 1024
+    private const val MAX_TITLES_TOTAL = 1024L * 1024
 
     private const val SEGMENT = 0x18538067L
     private const val SEEK_HEAD = 0x114D9B74L

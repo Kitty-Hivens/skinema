@@ -14,6 +14,12 @@ this page lists where the answers differ.
 implementation("dev.hivens:skinema-compose:0.9.0")   // brings -core
 ```
 
+```kotlin
+// The decoders are the phone's hardware only when asked: the default is the
+// desktop's, HwAccel.OFF, which on Android means the software decoders.
+val player = VideoPlayer(path, loop = true, hardware = HwAccel.AUTO)
+```
+
 The same coordinate as on the desktop: Gradle picks the Android variant from
 the module metadata, in an Android module or in a multiplatform module's
 Android source set. There is no natives jar to add, since nothing native is
@@ -40,16 +46,23 @@ player.
 
 ## What leaves the phone
 
-Nothing. The player is built on a file data source and the library's
-`MediaSource` adapter only, so no network data source is wired and the
-library needs no INTERNET permission. Two Media3 defaults are turned off where
-the player is built, because both are on unless asked: platform diagnostics,
-which report every playback session to the system's media metrics service
-from Android 12 on, and the default bandwidth meter, which reads the
-network's country and watches its type. Media3's manifests ask for
-ACCESS_NETWORK_STATE and WAKE_LOCK for features this library never turns on,
-and the library's manifest removes both from what Media3 brings. An app that
-declares either itself keeps it.
+Nothing the library sends. The player is built on a file data source and the
+library's `MediaSource` adapter only, so no network data source is wired and
+the library needs no INTERNET permission. Two Media3 defaults are turned off
+where the player is built, because both are on unless asked: platform
+diagnostics, which report every playback session to the system's media
+metrics service from Android 12 on, and the default bandwidth meter, which
+reads the network's country and watches its type. The platform's own codec
+framework keeps the metrics it records for every app, which no app can turn
+off.
+
+Media3's manifests ask for ACCESS_NETWORK_STATE and WAKE_LOCK, for features
+this library never turns on. Both are normal permissions, granted at install
+without a prompt. They are left in the merged manifest, because a library
+cannot remove them from Media3 alone: a removal there takes them from every
+other library in the app as well, one that checks the network included. An
+app that wants them gone adds `tools:node="remove"` for each to its own
+manifest, knowing it applies to everything in the app.
 
 ## Frames
 
@@ -69,18 +82,20 @@ orientation as it renders. The frames arrive already turned.
 
 ## Constructor parameters
 
-| Parameter         | On Android                                                                                                                                                              |
-|-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `explicitClock`   | Refused: the player fails by name, since ExoPlayer takes no external clock                                                                                              |
-| `readAheadFrames` | No effect: ExoPlayer buffers by its own policy                                                                                                                          |
-| `hardware`        | `AUTO` is the one to want. `OFF` decodes in software, the expensive answer on a phone. `REQUIRE` fails when no hardware decoder takes the video, and for any image file |
-| `sink`            | Supported, through an adapter that drives your `PcmSink` from a thread of its own                                                                                       |
-| everything else   | As on the desktop                                                                                                                                                       |
+| Parameter         | On Android                                                                                                                                                                                     |
+|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `explicitClock`   | Refused: the player fails by name, since ExoPlayer takes no external clock                                                                                                                     |
+| `readAheadFrames` | No effect: ExoPlayer buffers by its own policy                                                                                                                                                 |
+| `hardware`        | Pass `AUTO`. The default is `OFF`, the desktop's, which decodes in software, the expensive answer on a phone. `REQUIRE` fails when no hardware decoder takes the video, and for any image file |
+| `sink`            | Supported, through an adapter that drives your `PcmSink` from a thread of its own                                                                                                              |
+| everything else   | As on the desktop                                                                                                                                                                              |
 
 ## Images
 
-A still (JPEG, PNG, WebP, GIF, BMP, HEIF, AVIF) or an animated GIF, APNG or
-WebP plays through the same player. ExoPlayer plays none of them as video, so
+A still (JPEG, PNG, WebP, GIF, BMP, HEIF, and AVIF from Android 12) or an
+animated GIF, APNG or WebP plays through the same player. A picture larger
+than 2^27 pixels (a 108 MP photo fits) is refused by name, and so is one the
+device has no memory for. ExoPlayer plays none of them as video, so
 the player paces their frames itself and draws each into the same images, and
 `setSource` moves between images and video either way. A still reads `Ended`
 unless it loops, and its clock stands at zero, where the desktop turns a
@@ -140,12 +155,29 @@ codec the mp4 muxer turns down on that release is refused when the first
 packet reaches it, and leaves no file. Encoder options and the VAAPI device
 are ignored.
 
-## Threads
+## Switching files
 
-Each player has a thread of its own for its commands and ExoPlayer, one for
-the GPU frame path, and one for background work such as finding the frame
-before the one shown. A `sink` adds a writer thread. Every call is safe from
-any thread, as on the desktop.
+`setSource` checks the new file before the switch, as on the desktop, but not
+by decoding a first picture. An image is decoded to its first frame. Anything
+else is opened by Media3, the engine that will play it: the container is
+parsed, and the file is refused when it has no track of the player's shape
+(a picture for a picture player, sound for a sound one) or no decoder on the
+device takes that track under the `hardware` policy.
+
+## Threads and timing
+
+Each player has a thread of its own for its commands, ExoPlayer's internal
+playback thread, one for the GPU frame path, and one for background work
+such as finding the frame before the one shown. A switch opens a short-lived
+thread for the check above, and a `sink` adds a writer thread and a watchdog
+that closes the sink under a write that has not returned for three seconds,
+which fails the player by name. Every call is safe from any thread, as on the
+desktop.
+
+`close()` waits up to three seconds rather than one. Outside Compose, a
+mailbox that was being read is taken for an unwatched player once a frame has
+waited in it unread for two seconds, where the desktop counts sixty unread
+frames over two seconds.
 
 ## Not there yet
 

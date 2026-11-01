@@ -208,11 +208,15 @@ actual class AudioDecoder private constructor(
         private const val ENCODING_PCM_24BIT_PACKED = 21
         private const val ENCODING_PCM_32BIT = 22
 
-        /** What the extractor says of the source's depth: bits per sample, or a raw track's own encoding. */
+        /**
+         * Whether a decoder would narrow this source: a compressed track that
+         * says it is deeper than 16 bits. A raw PCM track is never asked: the
+         * platform's raw decoder passes the bytes through as they are and would
+         * only relabel them.
+         */
         private fun deeperThan16(format: MediaFormat): Boolean {
-            val bits = format.intOrNull(KEY_BITS_PER_SAMPLE)
-            if (bits != null) return bits > 16
-            return format.intOrNull(MediaFormat.KEY_PCM_ENCODING) in setOf(AudioFormat.ENCODING_PCM_FLOAT, ENCODING_PCM_24BIT_PACKED, ENCODING_PCM_32BIT)
+            if (format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_AUDIO_RAW) return false
+            return (format.intOrNull(KEY_BITS_PER_SAMPLE) ?: 16) > 16
         }
 
         // The extractor's own key for a lossless track's depth; MediaFormat names no constant for it.

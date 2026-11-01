@@ -46,6 +46,17 @@ abstract class AndroidFixtures : DefaultTask() {
             "green-vp9.webm", "-f", "lavfi", "-i", "color=c=0x00FF00:s=320x240:r=15:d=1",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-g", "5",
         )
+        // FLV, which Media3 reads and the platform extractor does not: a
+        // switch has to judge a file by the engine that will play it.
+        ffmpeg("red.flv", *red, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "flv")
+        // 5.1 Vorbis with sound in the centre channel alone. The platform
+        // decoder hands it out in Vorbis order, where the centre is second;
+        // played in the order Media3 asks for, it is third.
+        ffmpeg(
+            "centre-5.1.ogg", "-f", "lavfi",
+            "-i", "aevalsrc=0|0|0.5*sin(440*2*PI*t)|0|0|0:c=5.1:s=48000:d=1",
+            "-c:a", "libvorbis",
+        )
         // AV1, which this decade's phones mostly decode in software alone: the
         // hardware policy's REQUIRE case.
         ffmpeg(

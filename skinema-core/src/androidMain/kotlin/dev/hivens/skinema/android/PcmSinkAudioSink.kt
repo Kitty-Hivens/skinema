@@ -24,6 +24,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.math.abs
 
 /**
@@ -71,11 +72,27 @@ internal class PcmSinkAudioSink(
      * device frame, and [jumpFrames] of media time skipped before it, which is
      * how a gap in the timestamps reaches the clock at the frame it belongs to.
      */
-    private class Chunk(val bytes: ByteArray, val frames: Long, val speed: Float, val jumpFrames: Long)
+    private class Chunk(val bytes: ByteArray, val frames: Long, val speed: Float, val jumpFrames: Long, val generation: Long)
 
     private val controls = LinkedBlockingQueue<Control>()
     private val chunks = LinkedBlockingQueue<Chunk>()
     private val writer = Thread(::runWriter, "skinema-pcm-sink").apply {
+        isDaemon = true
+        start()
+    }
+
+    // When the write now inside the sink began, zero when none is. A sink is
+    // allowed to block in its write until the device takes the bytes, and not
+    // forever: one that stops taking them holds every stop and flush queued
+    // behind it. The PcmSink contract makes closing the sink, from another
+    // thread, the way out of such a write, and the watchdog is that thread.
+    @Volatile
+    private var writeStartedAt = 0L
+
+    @Volatile
+    private var released = false
+
+    private val watchdog = Thread(::runWatchdog, "skinema-pcm-sink-watchdog").apply {
         isDaemon = true
         start()
     }
@@ -96,6 +113,18 @@ internal class PcmSinkAudioSink(
     private var inputShape = InputShape.PLAIN
     private var output: PcmFormat? = null
     private var sonic: SonicAudioProcessor? = null
+
+    // The order Media3 asks the channels to leave in: output channel i is
+    // input channel mapping[i]. Set for the platform Vorbis and Opus
+    // decoders, which hand multichannel sound out in Vorbis order. Null when
+    // the order stands.
+    private var channelMapping: IntArray? = null
+
+    // A format that arrived while sound of the previous one was still queued:
+    // applied once that has played, so no chunk reaches a line of the wrong
+    // shape, as the platform sink drains to its old configuration first.
+    private var pendingFormat: Format? = null
+    private var pendingMapping: IntArray? = null
 
     private enum class InputShape { PLAIN, PACKED_24, SWAP_16, SWAP_24, SWAP_32, DOUBLE, DOUBLE_SWAPPED }
 
@@ -127,8 +156,14 @@ internal class PcmSinkAudioSink(
 
     private var queuedBytes = 0L
 
-    @Volatile
+    // Bytes the writer has handed the sink in this generation. Counted under
+    // the same lock a flush resets it under, and only for chunks of the
+    // generation that is current, so a write that finishes after a flush is
+    // not counted into the next one.
     private var drainedBytes = 0L
+    private val accountLock = Any()
+
+    private fun drained(): Long = synchronized(accountLock) { drainedBytes }
 
     // Device frames -> media frames: where each stretch of written sound
     // starts on the device, where it starts in the media, and at what speed
@@ -158,9 +193,28 @@ internal class PcmSinkAudioSink(
         }
     }
 
-    override fun configure(config: AudioSink.AudioSinkConfig) = configureFor(config.format)
+    override fun configure(config: AudioSink.AudioSinkConfig) {
+        val mapping = config.outputChannelMapping?.takeIf { !it.isEmpty }?.toArray()
+        if (output != null && queuedBytes > drained()) {
+            // The old shape's tail still plays first, Sonic's included.
+            drainSonicTail()
+            pendingFormat = config.format
+            pendingMapping = mapping
+            return
+        }
+        configureFor(config.format, mapping)
+    }
 
-    private fun configureFor(format: Format) {
+    private fun drainSonicTail() {
+        val old = sonic ?: return
+        old.queueEndOfStream()
+        output?.let { out -> enqueue(fromS16(drain(old), out)) }
+        sonic = null
+    }
+
+    private fun configureFor(format: Format, mapping: IntArray?) {
+        pendingFormat = null
+        pendingMapping = null
         val (shape, encoding, bits) = when (format.pcmEncoding) {
             C.ENCODING_PCM_8BIT -> Triple(InputShape.PLAIN, PcmEncoding.U8, 8)
             C.ENCODING_PCM_FLOAT -> Triple(InputShape.PLAIN, PcmEncoding.F32LE, 32)
@@ -174,10 +228,13 @@ internal class PcmSinkAudioSink(
             C.ENCODING_PCM_DOUBLE_BIG_ENDIAN -> Triple(InputShape.DOUBLE_SWAPPED, PcmEncoding.F32LE, 32)
             else -> Triple(InputShape.PLAIN, PcmEncoding.S16LE, 16)
         }
-        val source = PcmFormat(format.sampleRate, format.channelCount, layoutFor(format.channelCount), encoding, bits)
-        if (source == input && shape == inputShape && output != null) return
+        val channels = mapping?.size ?: format.channelCount
+        val source = PcmFormat(format.sampleRate, channels, layoutFor(channels), encoding, bits)
+        if (source == input && shape == inputShape && output != null && mapping.contentEquals(channelMapping)) return
         input = source
         inputShape = shape
+        inputChannels = format.channelCount
+        channelMapping = mapping
         val chosen = negotiate(source)
         output = chosen
         onFormat(chosen)
@@ -195,7 +252,14 @@ internal class PcmSinkAudioSink(
         for (rung in formatLadder(source, channelPreference)) {
             val answer = CompletableFuture<Throwable?>()
             controls.put(Control.Open(rung, answer))
-            val refused = answer.get(5, TimeUnit.SECONDS)
+            // A sink that does not answer an open is a configuration failure,
+            // which ExoPlayer reports as one; a TimeoutException escaping here
+            // would end the process from its playback thread.
+            val refused = try {
+                answer.get(5, TimeUnit.SECONDS)
+            } catch (e: TimeoutException) {
+                throw AudioSink.ConfigurationException(IllegalStateException("the sink did not answer an open within 5 s", e), Format.Builder().build())
+            }
             if (refused == null) return rung
             last = refused
         }
@@ -217,9 +281,13 @@ internal class PcmSinkAudioSink(
 
     override fun handleBuffer(buffer: ByteBuffer, presentationTimeUs: Long, encodedAccessUnitCount: Int): Boolean {
         failure?.let { throw AudioSink.WriteException(0, Format.Builder().build(), false) }
+        pendingFormat?.let { next ->
+            if (queuedBytes > drained()) return false
+            configureFor(next, pendingMapping)
+        }
         val source = input ?: return false
         val out = output ?: return false
-        if (queuedBytes - drainedBytes > maxQueuedBytes(out)) return false
+        if (queuedBytes - drained() > maxQueuedBytes(out)) return false
         if (startMediaUs == C.TIME_UNSET) {
             startMediaUs = presentationTimeUs
         } else {
@@ -242,7 +310,7 @@ internal class PcmSinkAudioSink(
         }
         val raw = ByteArray(buffer.remaining())
         buffer.get(raw)
-        val normalised = normalise(raw)
+        val normalised = remap(normalise(raw), source)
         val inFrames = normalised.size / source.bytesPerFrame
         queuedMediaFrames += inFrames
         enqueue(stretch(normalised, source, out))
@@ -250,6 +318,27 @@ internal class PcmSinkAudioSink(
     }
 
     private fun framesToUs(frames: Long, rate: Int): Long = frames * 1_000_000L / rate
+
+    // How many channels ExoPlayer hands over, before [channelMapping] picks.
+    private var inputChannels = 0
+
+    /** Each frame's channels in the order [channelMapping] names, in the normalised shape. */
+    private fun remap(bytes: ByteArray, source: PcmFormat): ByteArray {
+        val mapping = channelMapping ?: return bytes
+        val sample = source.encoding.bytesPerSample
+        val inFrame = inputChannels * sample
+        val frames = bytes.size / inFrame
+        val out = ByteArray(frames * mapping.size * sample)
+        var d = 0
+        for (f in 0 until frames) {
+            val base = f * inFrame
+            for (channel in mapping) {
+                System.arraycopy(bytes, base + channel * sample, out, d, sample)
+                d += sample
+            }
+        }
+        return out
+    }
 
     /** ExoPlayer's bytes in the little-endian shape [input] names. */
     private fun normalise(raw: ByteArray): ByteArray = when (inputShape) {
@@ -331,7 +420,7 @@ internal class PcmSinkAudioSink(
         queuedBytes += bytes.size
         val jump = pendingJumpFrames
         pendingJumpFrames = 0L
-        chunks.put(Chunk(bytes, (bytes.size / out.bytesPerFrame).toLong(), playbackParameters.speed, jump))
+        chunks.put(Chunk(bytes, (bytes.size / out.bytesPerFrame).toLong(), playbackParameters.speed, jump, generation))
     }
 
     private fun maxQueuedBytes(out: PcmFormat): Long = out.sampleRate.toLong() * out.bytesPerFrame * QUEUE_MILLIS / 1000
@@ -387,13 +476,16 @@ internal class PcmSinkAudioSink(
     override fun isEnded(): Boolean = endOfStream && !hasPendingData()
 
     override fun hasPendingData(): Boolean {
-        if (queuedBytes > drainedBytes) return true
+        if (queuedBytes > drained()) return true
         val played = runCatching { sink.framePosition() }.getOrDefault(0L) - baseDeviceFrames
         return played < writtenFrames
     }
 
     override fun flush() {
-        generation++
+        synchronized(accountLock) {
+            generation++
+            drainedBytes = 0L
+        }
         chunks.clear()
         controls.put(Control.Flush(generation))
         sonic?.flush(AudioProcessor.StreamMetadata.DEFAULT)
@@ -406,7 +498,7 @@ internal class PcmSinkAudioSink(
         pendingJumpFrames = 0L
         needsSync = false
         queuedBytes = 0L
-        drainedBytes = 0L
+        synchronized(accountLock) { drainedBytes = 0L }
         endOfStream = false
     }
 
@@ -435,13 +527,35 @@ internal class PcmSinkAudioSink(
         flush()
         input = null
         output = null
+        pendingFormat = null
+        pendingMapping = null
     }
 
     override fun release() {
+        released = true
         chunks.clear()
         controls.put(Control.Close)
         runCatching { sink.close() }
         writer.join(1_000)
+        watchdog.interrupt()
+    }
+
+    /** Closes the sink under a write that has not returned for [WRITE_STALL_NANOS], which fails playback by name. */
+    private fun runWatchdog() {
+        while (!released) {
+            try {
+                Thread.sleep(WATCHDOG_TICK_MILLIS)
+            } catch (_: InterruptedException) {
+                return
+            }
+            val since = writeStartedAt
+            if (since == 0L || System.nanoTime() - since < WRITE_STALL_NANOS) continue
+            val stalled = IllegalStateException("the sink took no sound for ${WRITE_STALL_NANOS / 1_000_000_000} s")
+            if (failure == null) failure = stalled
+            runCatching { sink.close() }
+            listener?.onAudioSinkError(stalled)
+            writeStartedAt = 0L
+        }
     }
 
     // -- The writer thread ----------------------------------------------------------
@@ -463,10 +577,18 @@ internal class PcmSinkAudioSink(
                 }
                 if (!playing || !opened) continue
                 val chunk = chunks.poll() ?: continue
+                if (failure != null) continue
                 note(chunk)
-                sink.write(chunk.bytes, 0, chunk.bytes.size)
+                writeStartedAt = System.nanoTime()
+                try {
+                    sink.write(chunk.bytes, 0, chunk.bytes.size)
+                } finally {
+                    writeStartedAt = 0L
+                }
                 writtenFrames += chunk.frames
-                drainedBytes += chunk.bytes.size
+                synchronized(accountLock) {
+                    if (chunk.generation == generation) drainedBytes += chunk.bytes.size
+                }
             } catch (_: InterruptedException) {
                 return
             } catch (e: Exception) {
@@ -544,6 +666,10 @@ internal class PcmSinkAudioSink(
     private companion object {
         /** How much sound waits between ExoPlayer and the sink. */
         const val QUEUE_MILLIS = 100L
+
+        /** How long one write may block before the sink is taken for stuck: the queue many times over. */
+        const val WRITE_STALL_NANOS = 3_000_000_000L
+        const val WATCHDOG_TICK_MILLIS = 250L
 
         /** How far a buffer's time may stray from where the sound so far ends before the clock takes it as a jump: the platform sink's figure. */
         const val DISCONTINUITY_US = 200_000L

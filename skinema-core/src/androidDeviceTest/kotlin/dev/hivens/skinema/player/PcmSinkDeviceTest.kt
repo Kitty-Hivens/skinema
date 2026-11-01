@@ -10,10 +10,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioSink
 import dev.hivens.skinema.android.PcmSinkAudioSink
 import dev.hivens.skinema.audio.ChannelPreference
+import dev.hivens.skinema.audio.PcmEncoding
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.libav.DeviceFixtures
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,7 +29,17 @@ import kotlin.test.fail
  */
 class PcmSinkDeviceTest {
 
-    private class PacedSink(private val accepts: (PcmFormat) -> Boolean = { true }) : PcmSink {
+    private class PacedSink(
+        // After this many writes every write blocks until the sink is closed:
+        // a device that stopped taking sound and never said so.
+        private val stuckAfter: Int = Int.MAX_VALUE,
+        private val accepts: (PcmFormat) -> Boolean = { true },
+    ) : PcmSink {
+        // How loud each channel was, summed over everything written.
+        val channelEnergy = DoubleArray(8)
+        @Volatile var closed = false
+        private var writes = 0
+
         @Volatile var format: PcmFormat? = null
         @Volatile var lastVolume = -1f
         @Volatile var bytes = 0L
@@ -63,6 +75,11 @@ class PcmSinkDeviceTest {
 
         override fun write(data: ByteArray, offset: Int, length: Int) {
             val f = format ?: return
+            if (++writes > stuckAfter) {
+                while (!closed) Thread.sleep(5)
+                throw IllegalStateException("closed under a write")
+            }
+            measure(data, offset, length, f)
             val frames = length / f.bytesPerFrame
             while (written - played() > f.sampleRate / 10) Thread.sleep(2)
             synchronized(lock) { written += frames }
@@ -98,7 +115,24 @@ class PcmSinkDeviceTest {
             lastVolume = volume
         }
 
-        override fun close() {}
+        override fun close() {
+            closed = true
+        }
+
+        private fun measure(data: ByteArray, offset: Int, length: Int, f: PcmFormat) {
+            val b = ByteBuffer.wrap(data, offset, length).order(ByteOrder.LITTLE_ENDIAN)
+            var channel = 0
+            while (b.remaining() >= f.encoding.bytesPerSample) {
+                val v = when (f.encoding) {
+                    PcmEncoding.S16LE -> b.short / 32768.0
+                    PcmEncoding.S32LE -> b.int / 2147483648.0
+                    PcmEncoding.F32LE -> b.float.toDouble()
+                    else -> { b.get(); 0.0 }
+                }
+                if (channel < channelEnergy.size) channelEnergy[channel] += v * v
+                channel = (channel + 1) % f.channels
+            }
+        }
     }
 
     private val players = mutableListOf<VideoPlayer>()
@@ -174,6 +208,29 @@ class PcmSinkDeviceTest {
         Thread.sleep(400)
         val slower = p.positionNanos() - slowFrom
         assertTrue(slower in 50_000_000L..600_000_000L, "400 ms around a change to 0.5x moved the clock $slower")
+    }
+
+    @Test
+    fun aSinkThatStopsTakingSoundFailsThePlayerByName() {
+        val sink = PacedSink(stuckAfter = 20)
+        val p = VideoPlayer(DeviceFixtures.path("long-with-sound.mp4"), loop = true, audio = true, sink = sink).also { players += it }
+        // Stuck in a write, the stop and the flush behind it never reach the
+        // sink; the watchdog closes it under the write and the player fails.
+        awaitTrue(10_000, "Failed") { p.state is VideoPlayer.State.Failed }
+        assertTrue(sink.closed, "the sink was closed under its write")
+    }
+
+    @Test
+    fun multichannelVorbisReachesTheSinkInTheOrderTheLayoutNames() {
+        val sink = PacedSink()
+        val p = VideoPlayer(DeviceFixtures.path("centre-5.1.ogg"), loop = false, audio = true, sink = sink).also { players += it }
+        awaitTrue(what = "Ended") { p.state == VideoPlayer.State.Ended }
+        assertEquals(6, sink.format?.channels, "the sink took the six channels")
+        // The sound is in the centre alone, which "5.1" puts third. The
+        // platform decoder hands it out second, in Vorbis order.
+        val e = sink.channelEnergy
+        val others = e.indices.filter { it != 2 && it < 6 }.maxOf { e[it] }
+        assertTrue(e[2] > 10 * others, "the centre channel carries the sound: ${e.take(6)}")
     }
 
     // -- The adapter alone, fed the way ExoPlayer feeds it ----------------------

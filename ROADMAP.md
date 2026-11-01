@@ -1484,9 +1484,12 @@ README once the library is usable.
   network type. Both are turned off where the player is built, the meter
   replaced by one that measures nothing (Media3 refuses its own no-op there).
   Its manifests also ask for ACCESS_NETWORK_STATE and WAKE_LOCK for features
-  this library never turns on, and the library's manifest removes both from
-  what Media3 brings, so an app does not ask for them on its account. It
-  also brings Guava and androidx, which the README has to say.
+  this library never turns on. They stay: removing them from a library's
+  manifest removes them from every library merged after it, and an app whose
+  WorkManager checks the network would then fail at run time. Both are normal
+  permissions, granted without a prompt, and an app that wants them gone
+  removes them in its own manifest. It also brings Guava and androidx, which
+  the README says.
 
   The work runs in phases, each recorded below when it lands: the build
   restructure with no change in behaviour, the shared API, the Android
@@ -1853,6 +1856,44 @@ README once the library is usable.
   by a mutation on the device: a tolerance tight enough to see it on the
   phone also sees the frame already on its way when the pause lands, which
   sets the position to itself and is correct.
+
+  A second review of the fixes and the documents found the first round's
+  work incomplete in places, and two of its own changes wrong. The manifest
+  removal above was one: it reached past Media3. The check for an
+  unsupported video track asked Media3's strict question, which also fails a
+  stream merely past what its decoder declares, a file ExoPlayer plays. The
+  step queue lost presses three ways: a frame already on its way when a
+  press paused a playing player counted as the step's landing, a settle timer
+  left by one step ended the next, and a seek that ran off the end never
+  passed READY and stalled the queue for good. Steps now carry a token, land
+  only on a frame published after their own seek, and settle on ENDED too.
+
+  The hostile-input fixes did not go far enough. Titles of a chapter track
+  had no total bound (a hundred thousand chapters sharing one 64 KiB title is
+  6.5 billion characters), the stsc walk was bounded per entry but not
+  across entries that do not increase, and every animated frame's file was
+  built when the container was read, so a profile or palette every frame
+  shares was copied once per frame. Titles stop at a megabyte, the walk
+  never revisits a chunk, and frame files are built from ranges of the
+  original bytes when they are decoded. The canvas cap moved to 2^27 pixels,
+  enough for a 108 MP photo, and a canvas the device has no memory for is
+  refused by name.
+
+  The sink adapter had no way out of a write that never returns, which the
+  `PcmSink` contract leaves to the player, and a reconfigure behind one
+  threw a TimeoutException out of ExoPlayer's playback thread. A watchdog now
+  closes the sink under a write blocked for three seconds, which fails the
+  player by name. It also ignored the channel order Media3 asks for, so 5.1
+  Vorbis and Opus from the platform decoders reached the sink in Vorbis
+  order, counted a write that finished after a flush into the next
+  generation, and let a format change play the old shape's tail into the new
+  line.
+
+  A switch checked the new file with the platform extractor, which reads a
+  different set of containers than Media3, so it refused FLV the player
+  plays and could pass a file the player then failed on. It now opens the
+  file in a throwaway ExoPlayer with every track type off and asks whether a
+  decoder takes the track the player's shape needs.
 
   The documents close the phase. The README names Android in its opening,
   gives the Android dependency and the `-jvm` coordinates a non-Gradle build

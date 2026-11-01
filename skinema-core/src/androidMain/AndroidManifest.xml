@@ -1,21 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-
-    <!--
-        Media3 declares both for features this library never turns on: network
-        state for its bandwidth meter and streaming, wake locks for a wake mode
-        nobody sets. Removed from what Media3 brings, so an app does not ask
-        for them on this library's account. An app that declares them itself
-        keeps them.
-    -->
-    <uses-permission
-        android:name="android.permission.ACCESS_NETWORK_STATE"
-        tools:node="remove" />
-    <uses-permission
-        android:name="android.permission.WAKE_LOCK"
-        tools:node="remove" />
-
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <!-- Records the application context for the player. Answers no queries. -->
         <provider

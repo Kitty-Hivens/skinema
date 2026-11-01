@@ -215,6 +215,19 @@ class MediaWriterDeviceTest {
     }
 
     @Test
+    fun anOutputTheMuxerCannotOpenIsRefusedAndLeftAsItWas() {
+        // A file that is there and may not be written: the open fails before
+        // anything is truncated, and the file stays.
+        val file = dir.resolve("read-only.mp4").apply {
+            writeText("someone's file")
+            setReadOnly()
+        }
+        assertFailsWith<LibavException> { MediaWriter.open(file.toPath(), VideoEncodeConfig("h264", 320, 240, 30)).close() }
+        assertEquals("someone's file", file.readText())
+        file.setWritable(true)
+    }
+
+    @Test
     fun aCodecTheMuxerRefusesMidWriteIsRefusedByNameAndLeavesNothing() {
         // MP4 takes VP8 on some releases and not on others, so either outcome
         // is the platform's; what is this library's is how a refusal reads.

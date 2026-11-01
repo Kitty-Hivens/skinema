@@ -4,6 +4,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.VideoDecoder
+import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -132,5 +133,30 @@ class ImageFrameSourceDeviceTest {
             writeBytes(gif + le16(2) + le16(2) + byteArrayOf(0, 0, 0, 0x21, 0xF9.toByte(), 2, 0, 0, 0, 0x3B))
         }
         assertFailsWith<LibavException> { VideoDecoder.open(short.toPath()) }
+    }
+
+    @Test
+    fun aLargeSharedChunkIsNotCopiedIntoEveryFrame() {
+        // An APNG of two thousand tiny frames and a megabyte colour profile
+        // every frame's file needs: copied per frame when the container is
+        // read, that is two gigabytes for a one-megabyte file.
+        fun chunk(type: String, data: ByteArray) =
+            ByteBuffer.allocate(12 + data.size).putInt(data.size).put(type.toByteArray(Charsets.US_ASCII)).put(data).putInt(0).array()
+        val frames = 2_000
+        val ihdr = ByteBuffer.allocate(13).putInt(1).putInt(1).put(8).put(6).put(0).put(0).put(0).array()
+        var file = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) +
+            chunk("IHDR", ihdr) + chunk("acTL", ByteBuffer.allocate(8).putInt(frames).putInt(0).array()) +
+            chunk("iCCP", ByteArray(1_000_000))
+        val out = java.io.ByteArrayOutputStream().apply { write(file) }
+        for (i in 0 until frames) {
+            val fctl = ByteBuffer.allocate(26).putInt(i * 2).putInt(1).putInt(1).putInt(0).putInt(0).putShort(1).putShort(10).put(0).put(0).array()
+            out.write(chunk("fcTL", fctl))
+            out.write(chunk("fdAT", ByteBuffer.allocate(8).putInt(i * 2 + 1).putInt(0).array()))
+        }
+        out.write(chunk("IEND", ByteArray(0)))
+        file = out.toByteArray()
+        val image = ImageFrames.read(file)
+        assertEquals(frames, image.parts.size)
+        assertTrue(image.animated)
     }
 }

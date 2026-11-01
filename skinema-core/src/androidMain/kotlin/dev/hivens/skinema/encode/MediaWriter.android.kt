@@ -9,6 +9,7 @@ import dev.hivens.skinema.Debug
 import dev.hivens.skinema.android.RgbaToYuv
 import dev.hivens.skinema.android.YuvMatrix
 import dev.hivens.skinema.libav.LibavException
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -409,8 +410,15 @@ actual class MediaWriter private constructor(
                     Encoder(createEncoder(format, config.codecName).also(codecs::add))
                 }
                 val format = muxerFormat(extension)
+                // Marked once the file is open, not before: an open that fails
+                // (a read-only file, a directory in the way) has truncated
+                // nothing, and what is there stays.
+                sink = try {
+                    if (extension == "flac") FlacSink(path) else MuxerSink(MediaMuxer(path.toString(), format), codecs.size, path, extension)
+                } catch (e: IOException) {
+                    throw LibavException("cannot open $path for writing: ${e.message}").apply { initCause(e) }
+                }
                 created = true
-                sink = if (extension == "flac") FlacSink(path) else MuxerSink(MediaMuxer(path.toString(), format), codecs.size, path, extension)
                 return MediaWriter(sink, videoEncoder, audioEncoder, video, audio, pcmOnly = false)
             } catch (t: Throwable) {
                 for (codec in codecs) runCatching { codec.release() }

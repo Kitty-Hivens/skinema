@@ -77,8 +77,8 @@ One file, from disk to pixel, on the desktop:
                   late frames were already dropped
 ```
 
-With sound, a third thread runs the audio: it decodes, resamples to
-stereo S16LE, and writes to the device. The device's consumed-sample
+With sound, a third thread runs the audio: it decodes, and writes to the
+device in the shape the file has, walking down to one the device takes. The device's consumed-sample
 count *is* the clock the pacer waits against -- audio masters, video
 follows. A fourth watches that thread: a write that never returns is a
 device that died silently, and the watchdog hands the clock to wall time

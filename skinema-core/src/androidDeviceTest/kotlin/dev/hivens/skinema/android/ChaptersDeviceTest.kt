@@ -143,6 +143,93 @@ class ChaptersDeviceTest {
         assertEquals(listOf(Triple(0L, 1_000_000_000L, null)), result)
     }
 
+    /** A chapter-track MP4 built from [stbl]'s tables, for the hostile layouts below. */
+    private fun chapterTrackFile(name: String, vararg tables: ByteArray, mdat: ByteArray = ByteArray(0)): java.io.File {
+        fun u32(v: Int) = ByteBuffer.allocate(4).putInt(v).array()
+        fun box(type: String, vararg body: ByteArray): ByteArray {
+            val payload = body.fold(ByteArray(0)) { acc, b -> acc + b }
+            return u32(8 + payload.size) + type.toByteArray(Charsets.ISO_8859_1) + payload
+        }
+        fun full(type: String, vararg body: ByteArray) = box(type, ByteArray(4), *body)
+        val trak = box(
+            "trak",
+            full("tkhd", ByteArray(8), u32(1), ByteArray(68)),
+            box("tref", box("chap", u32(1))),
+            box("mdia", full("mdhd", ByteArray(8), u32(1000), u32(1000), ByteArray(4)), box("minf", box("stbl", *tables))),
+        )
+        val moov = box("moov", full("mvhd", ByteArray(8), u32(1000), u32(1000), ByteArray(80)), trak)
+        val file = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve(name)
+        file.writeBytes(box("ftyp", "isomisom".toByteArray()) + moov + mdat)
+        return file
+    }
+
+    private fun readWithin(file: java.io.File, millis: Long): List<Triple<Long, Long, String?>> {
+        var result: List<Triple<Long, Long, String?>>? = null
+        val reader = Thread { result = Chapters.read(Input.File(file.toPath())).plain() }.apply {
+            isDaemon = true
+            start()
+            join(millis)
+        }
+        assertTrue(!reader.isAlive, "still reading after ${millis / 1000} s")
+        return result ?: fail("no answer")
+    }
+
+    @Test
+    fun stscEntriesOutOfOrderWalkEachChunkOnce() {
+        // A hundred thousand chunks and a hundred thousand stsc entries whose
+        // first chunks alternate between the first and past the last: walked
+        // from each entry's own first chunk, every entry walked the table, 5e9
+        // steps. One sample, so the answer is one untitled chapter.
+        val n = 100_000
+        fun u32(v: Int) = ByteBuffer.allocate(4).putInt(v).array()
+        val stsc = ByteBuffer.allocate(8 + n * 12).putInt(0).putInt(n).apply {
+            for (e in 0 until n) putInt(if (e % 2 == 0) 1 else n + 1).putInt(0).putInt(1)
+        }.array()
+        fun full(type: String, body: ByteArray) = u32(12 + body.size) + type.toByteArray(Charsets.ISO_8859_1) + ByteArray(4) + body
+        val file = chapterTrackFile(
+            "hostile-stsc-order.mp4",
+            full("stts", u32(1) + u32(1) + u32(1000)),
+            full("stsz", u32(0) + u32(1) + u32(10)),
+            u32(8 + stsc.size) + "stsc".toByteArray() + stsc,
+            full("stco", u32(n) + ByteArray(4 * n)),
+        )
+        assertEquals(emptyList(), readWithin(file, 5_000).filter { it.third != null })
+    }
+
+    @Test
+    fun aHundredThousandChaptersSharingOneLongTitleStayBounded() {
+        // Every chapter's sample is the same 64 KiB title: kept whole, that is
+        // six and a half billion characters. Titles stop at a total bound, and
+        // the chapters past it keep their times.
+        val n = 100_000
+        fun u32(v: Int) = ByteBuffer.allocate(4).putInt(v).array()
+        fun full(type: String, body: ByteArray) = u32(12 + body.size) + type.toByteArray(Charsets.ISO_8859_1) + ByteArray(4) + body
+        val title = ByteArray(65_536) { 'a'.code.toByte() }.also { it[0] = 0xFF.toByte(); it[1] = 0xFE.toByte() }
+        val stcoBody = ByteBuffer.allocate(4 + 4 * n).putInt(n)
+        val probe = chapterTrackFile(
+            "hostile-titles.mp4",
+            full("stts", u32(1) + u32(n) + u32(10)),
+            full("stsz", u32(65_536) + u32(n)),
+            full("stsc", u32(1) + u32(1) + u32(1) + u32(1)),
+            full("stco", stcoBody.array()),
+        )
+        // The title sits after the moov, in an mdat box of its own.
+        val titleAt = probe.length() + 8
+        val stco = ByteBuffer.allocate(4 + 4 * n).putInt(n).apply { repeat(n) { putInt(titleAt.toInt()) } }.array()
+        val file = chapterTrackFile(
+            "hostile-titles.mp4",
+            full("stts", u32(1) + u32(n) + u32(10)),
+            full("stsz", u32(65_536) + u32(n)),
+            full("stsc", u32(1) + u32(1) + u32(1) + u32(1)),
+            full("stco", stco),
+            mdat = u32(8 + title.size) + "mdat".toByteArray() + title,
+        )
+        val chapters = readWithin(file, 10_000)
+        assertEquals(n, chapters.size)
+        assertTrue(chapters.first().third != null, "the first chapters are titled")
+        assertEquals(null, chapters.last().third, "the last are not, past the bound")
+    }
+
     @Test
     fun aFileWithoutChaptersOrNotAContainerHasNone() {
         for (name in listOf("red-h264.mp4", "green-vp9.webm", "subs.mkv", "sine-aac.m4a", "still.png", "tone-flac24.flac")) {

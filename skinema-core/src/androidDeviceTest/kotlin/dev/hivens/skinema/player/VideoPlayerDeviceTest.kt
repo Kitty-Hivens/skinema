@@ -375,6 +375,77 @@ class VideoPlayerDeviceTest {
         p.stepForward()
         val again = lastFrameWithin(p, 2_000) ?: fail("frames after back and forth")
         assertEquals(two, again, "back and forth lands where it was")
+        // A pause on a player standing on a frame leaves the position on it.
+        p.pause()
+        Thread.sleep(200)
+        assertTrue(abs(p.positionNanos() - again) < 2_000_000, "the position after a pause is the frame shown: ${p.positionNanos() - again}")
+    }
+
+    @Test
+    fun aStepBackPressedWhilePlayingLandsOneFrameBehindTheLastShown() {
+        assumeFalse("the emulator's decoder does not run two instances reliably", onEmulator())
+        val p = player("long-with-sound.mp4")
+        awaitFrame(p)
+        Thread.sleep(1_000)
+        // Every frame published from here on, the one still on its way when
+        // the press pauses the player among them.
+        var highest = 0L
+        var last = 0L
+        val until = System.nanoTime() + 300_000_000L
+        while (System.nanoTime() < until) {
+            p.acquireFrame()?.let { highest = maxOf(highest, it.ptsNanos); last = it.ptsNanos }
+            Thread.sleep(5)
+        }
+        p.stepBackward()
+        val end = System.nanoTime() + 2_500_000_000L
+        while (System.nanoTime() < end) {
+            p.acquireFrame()?.let { highest = maxOf(highest, it.ptsNanos); last = it.ptsNanos }
+            Thread.sleep(5)
+        }
+        assertEquals(VideoPlayer.State.Paused, p.state)
+        assertTrue(abs(highest - last - 33_333_333) < 2_000_000, "one frame behind the last shown: landed ${(highest - last) / 1_000} us behind")
+    }
+
+    @Test
+    fun aStepAskedForWhileASeekLandsStepsFromWhereTheSeekLanded() {
+        assumeFalse("the emulator's decoder does not run two instances reliably", onEmulator())
+        val p = player("long-with-sound.mp4", startPaused = true)
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        awaitFrame(p)
+        p.seek(2_000_000_000L)
+        p.stepBackward()
+        val landed = lastFrameWithin(p, 3_000) ?: fail("frames after the seek and the step")
+        assertTrue(abs(landed - (2_000_000_000L - 33_333_333)) < 2_000_000, "one frame before the seek's frame: $landed")
+    }
+
+    @Test
+    fun aStepForwardOffTheLastFrameEndsAndTheNextStepStillGoes() {
+        val p = player("red-h264.mp4", startPaused = true)
+        awaitTrue(what = "Paused") { p.state == VideoPlayer.State.Paused }
+        p.seek(970_000_000L)
+        val lastFrame = awaitFrame(p) { it.ptsNanos > 900_000_000L }
+        awaitTrue(what = "Paused on the last frame") { p.state == VideoPlayer.State.Paused }
+        // Nothing after the last frame: the seek runs off the end without a
+        // READY, and the queue must not wait on it.
+        p.stepForward()
+        awaitTrue(3_000, "the step off the end to settle") { p.state != VideoPlayer.State.Seeking && p.state != VideoPlayer.State.Opening }
+        p.seek(500_000_000L)
+        val back = awaitFrame(p) { it.ptsNanos < lastFrame.ptsNanos }
+        p.stepForward()
+        val next = awaitFrame(p) { it.ptsNanos > back.ptsNanos }
+        assertTrue(abs(next.ptsNanos - back.ptsNanos - 33_333_333) < 2_000_000, "a later step still goes: ${next.ptsNanos - back.ptsNanos}")
+    }
+
+    @Test
+    fun aSwitchToAContainerOnlyMedia3ReadsIsTaken() {
+        val p = player("red-h264.mp4", loop = true)
+        awaitFrame(p)
+        // FLV plays through Media3, and the platform extractor does not open
+        // it: a switch checked with the platform's refused it.
+        p.setSource(DeviceFixtures.path("red.flv"))
+        awaitTrue(what = "the switch or its refusal") { p.source.fileName.toString() == "red.flv" || p.sourceFailure != null }
+        assertNull(p.sourceFailure, "a file the player plays was taken")
+        assertTrue(centre(awaitFrame(p))[0] > 200, "the FLV's own red")
     }
 
     /** The pts of the last frame published within [millis], or null when none was. */

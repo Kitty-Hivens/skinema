@@ -55,7 +55,6 @@ import dev.hivens.skinema.audio.PcmEncoding
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.audio.PcmSink
 import dev.hivens.skinema.core.MediaClock
-import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.HwAccel
@@ -71,6 +70,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import android.media.AudioFormat as PlatformAudioFormat
 
 /**
@@ -385,7 +387,7 @@ actual class VideoPlayer actual constructor(
         lastPublishedPts = pts
         publishedSinceRead = true
         noteChange()
-        if (stepping) handler.post { onStepFrame() }
+        if (stepping) post { onStepFrame() }
     }
 
     actual fun acquireFrame(): FrameSlot? {
@@ -574,8 +576,12 @@ actual class VideoPlayer actual constructor(
      * then (which is a vsync ahead) and jumped back when the report came.
      */
     private fun stopNow(p: ExoPlayer) {
+        val wasPlaying = p.playWhenReady
         p.pause()
-        sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
+        // Only a running clock is stopped here. One already standing reads
+        // the frame on screen, and ExoPlayer's position after a seek is the
+        // seek's target, which can sit just past the frame before it.
+        if (wasPlaying) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
     }
 
     actual fun resume() = post {
@@ -650,37 +656,56 @@ actual class VideoPlayer actual constructor(
     private var stepBusy = false
     private var stepFrom = 0L
 
+    // Whether the busy step's own seek has gone out. A frame published before
+    // it is one released before the step, still on its way when the player
+    // paused, and lands nothing.
+    private var stepSeeking = false
+
+    // Which step a timer or a discovery's answer belongs to. Anything carrying
+    // an older one is about a step that has gone, and does nothing.
+    private var stepToken = 0L
+
+    // Until when a step waits for frames already on their way to land, after
+    // a press that paused a playing player: the frame on screen is not known
+    // before then.
+    private var stepAfter = 0L
+
     // Read on the frame thread, which tells the player thread a frame landed
     // only while something waits for one.
     @Volatile
     private var stepping = false
-    private val stepSettled = Runnable { stepLanded() }
 
     private fun queueStep(forward: Boolean) {
         val p = player ?: return
         userPaused = true
+        val wasPlaying = p.isPlaying
         stopNow(p)
         queuedSteps.addLast(forward)
         stepping = true
+        if (wasPlaying && !stepBusy) {
+            stepAfter = System.nanoTime() + STEP_SETTLE_PLAYING_MILLIS * NANOS_PER_MILLI
+            stepLater(STEP_SETTLE_PLAYING_MILLIS)
+        }
         runSteps()
     }
 
-    /** Takes the next queued step, unless one is landing or a seek is. */
+    /** Takes the next queued step, unless one is landing, a seek is, or frames from playing are still arriving. */
     private fun runSteps() {
-        if (stepBusy || seekPending) return
+        if (stepBusy || seekPending || System.nanoTime() < stepAfter) return
         val forward = queuedSteps.removeFirstOrNull()
         if (forward == null) {
             stepping = false
             return
         }
         stepBusy = true
+        stepSeeking = false
+        val token = ++stepToken
         val shown = lastPublishedPts
         stepFrom = shown
         if (forward) {
             // The first frame at or after a millisecond past the one on screen
             // is the next one: frames are never closer than that.
-            seekTo((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI, exact = true)
-            handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
+            issueStepSeek((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI)
             return
         }
         val file = source
@@ -695,22 +720,49 @@ actual class VideoPlayer actual constructor(
         // toward it, as on the desktop: run the platform decoder over the
         // stretch before it, off the player thread, and land an exact seek on
         // the answer.
-        decodeWork.execute {
-            val previous = runCatching { find(file, shown) }
-                .onFailure { Debug.trace("step backward discovery", it) }
-                .getOrNull()
-            post {
-                if (!stepBusy) return@post
-                seekTo(previous ?: (shown - frameNanos * 3 / 2).coerceAtLeast(0), exact = true)
-                handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
+        try {
+            decodeWork.execute {
+                val previous = runCatching { find(file, shown) }
+                    .onFailure { Debug.trace("step backward discovery", it) }
+                    .getOrNull()
+                post {
+                    if (token != stepToken || !stepBusy) return@post
+                    issueStepSeek(previous ?: (shown - frameNanos * 3 / 2).coerceAtLeast(0))
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            // The player is closing and its worker has stopped.
+            dropSteps()
         }
     }
 
-    /** A step's frame is up, or none is coming (the end of the file): the next step may go. */
+    /**
+     * The busy step's seek. It lands when its frame is up (onStepFrame), when
+     * the seek settles with none coming (the end of the file, see the state
+     * listener), or at the latest after [STEP_GIVE_UP_MILLIS].
+     */
+    private fun issueStepSeek(target: Long) {
+        seekTo(target, exact = true)
+        stepSeeking = true
+        stepLater(STEP_GIVE_UP_MILLIS)
+    }
+
+    /** Looks at the queue again after [millis], on the player thread, for the step current now. */
+    private fun stepLater(millis: Long) {
+        val token = stepToken
+        handler.postDelayed({
+            post {
+                if (token != stepToken) return@post
+                if (stepBusy) stepLanded() else runSteps()
+            }
+        }, millis)
+    }
+
+    /** A step's frame is up, or none is coming: the next step may go. */
     private fun stepLanded() {
-        handler.removeCallbacks(stepSettled)
         stepBusy = false
+        stepSeeking = false
+        stepToken++
         runSteps()
     }
 
@@ -718,17 +770,98 @@ actual class VideoPlayer actual constructor(
     private fun onStepFrame() {
         if (seekPending) return
         if (stepBusy) {
-            if (lastPublishedPts != stepFrom) stepLanded()
+            if (stepSeeking && lastPublishedPts != stepFrom) stepLanded()
         } else {
             runSteps()
         }
     }
 
+    /** A seek that settled while steps wait: READY, or ENDED for one that ran off the end. */
+    private fun onStepSeekSettled(ended: Boolean) {
+        if (!stepping) return
+        // A landing at the end puts up no frame, and neither does one on the
+        // frame already shown, so the step is not held for one past a short
+        // wait.
+        if (ended && stepBusy && stepSeeking) stepLanded() else stepLater(STEP_SETTLE_MILLIS)
+    }
+
     private fun dropSteps() {
-        handler.removeCallbacks(stepSettled)
         queuedSteps.clear()
         stepBusy = false
+        stepSeeking = false
+        stepToken++
+        stepAfter = 0L
         stepping = false
+    }
+
+    /**
+     * Opens [path] in a throwaway ExoPlayer with every track type off, so the
+     * container is parsed and no codec opens, and answers why it will not
+     * play in a player of this shape: no such track, no decoder for it, or
+     * the error Media3 gave. Null when it will. Off the player thread.
+     */
+    private fun probe(path: Path, picture: Boolean): Throwable? {
+        val probeThread = HandlerThread("skinema-probe").apply { start() }
+        val probeHandler = Handler(probeThread.looper)
+        val done = CountDownLatch(1)
+        var answer: Throwable? = null
+        var probePlayer: ExoPlayer? = null
+        probeHandler.post {
+            try {
+                val context = AppContext.get()
+                val p = ExoPlayer.Builder(context, DefaultRenderersFactory(context).setMediaCodecSelector(codecSelector(hardware)))
+                    .setLooper(probeThread.looper)
+                    .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+                    .setBandwidthMeter(NoBandwidthMeter)
+                    .setUsePlatformDiagnostics(false)
+                    .build()
+                probePlayer = p
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
+                p.addListener(object : Player.Listener {
+                    override fun onTracksChanged(tracks: Tracks) {
+                        if (tracks.groups.isEmpty() || done.count == 0L) return
+                        val type = if (picture) C.TRACK_TYPE_VIDEO else C.TRACK_TYPE_AUDIO
+                        val groups = tracks.groups.filter { it.type == type }
+                        answer = when {
+                            groups.isEmpty() -> LibavException(if (picture) "$path gives no picture" else "$path carries no sound")
+                            groups.none { it.isSupported(true) } -> {
+                                val mime = groups.first().getTrackFormat(0).sampleMimeType
+                                LibavException(
+                                    if (picture && hardware == HwAccel.REQUIRE) "no hardware decoder takes $mime (HwAccel.REQUIRE)" else "no decoder on this device takes $mime",
+                                )
+                            }
+                            else -> null
+                        }
+                        done.countDown()
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        answer = error
+                        done.countDown()
+                    }
+                })
+                p.setMediaItem(MediaItem.fromUri(Uri.fromFile(path.toFile())))
+                p.prepare()
+            } catch (t: Throwable) {
+                answer = t
+                done.countDown()
+            }
+        }
+        try {
+            if (!done.await(PROBE_MILLIS, TimeUnit.MILLISECONDS)) {
+                answer = LibavException("$path did not open within ${PROBE_MILLIS / 1000} s")
+            }
+        } finally {
+            probeHandler.post {
+                runCatching { probePlayer?.release() }
+                probeThread.quitSafely()
+            }
+        }
+        return answer
     }
 
     /** How a step back finds the frame before the one shown; a test replaces it to make the discovery fail. */
@@ -774,14 +907,20 @@ actual class VideoPlayer actual constructor(
         // would otherwise find a picture player not yet knowing it has one.
         val picture = hasVideo
         decodeWork.execute {
-            // Opened and decoded to a first frame before the player touches
-            // it, so a file that will not play is refused and the one playing
-            // carries on, as on the desktop.
+            // Checked before the player touches it, so a file that will not
+            // play is refused and the one playing carries on, as on the
+            // desktop. An image is decoded to its first frame by the source
+            // that will play it. Anything else is opened by Media3, the engine
+            // that will play it, which parses the container and says whether
+            // a decoder takes the track this player's shape needs: the
+            // platform extractor reads a different set of containers, so a
+            // check through it refused files the player plays and passed
+            // files it does not.
             val refusal = runCatching {
-                if (picture) {
+                if (picture && isImageFile(path)) {
                     VideoDecoder.open(path, hardware).use { it.nextFrame(convert = false) ?: error("$path gives no picture") }
                 } else {
-                    (AudioDecoder.openOrNull(path) ?: error("$path carries no sound")).close()
+                    probe(path, picture)?.let { throw it }
                 }
             }.exceptionOrNull()
             if (refusal != null) {
@@ -1326,9 +1465,7 @@ actual class VideoPlayer actual constructor(
                 if (seekPending) {
                     seekPending = false
                     intendedNanos = p.currentPosition * NANOS_PER_MILLI
-                    // A step waiting behind this seek goes once its frame is
-                    // up; this covers a landing that puts up no new frame.
-                    if (stepping) handler.postDelayed(stepSettled, STEP_SETTLE_MILLIS)
+                    onStepSeekSettled(ended = false)
                 }
                 // Paused on a picture, the position is the frame on screen,
                 // which the frame callback has set or is about to; the seek's
@@ -1336,7 +1473,14 @@ actual class VideoPlayer actual constructor(
                 val pictureHolds = hasVideo && !videoTrackDisabled && !p.isPlaying && everReadyBefore
                 if (!pictureHolds) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), p.isPlaying)
             }
-            if (playbackState == Player.STATE_ENDED) sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
+            if (playbackState == Player.STATE_ENDED) {
+                // A seek past the last frame ends here without passing READY.
+                if (seekPending) {
+                    seekPending = false
+                    onStepSeekSettled(ended = true)
+                }
+                sampleClock(p.currentPosition * NANOS_PER_MILLI, System.nanoTime(), false)
+            }
             recomputeState()
         }
 
@@ -1394,7 +1538,10 @@ actual class VideoPlayer actual constructor(
             }
             // ExoPlayer plays on without a picture when no decoder takes it,
             // which the hardware policy and the open contract both forbid.
-            if (hasVideo && video.isNotEmpty() && video.none { it.isSupported }) {
+            // Supported allowing a stream past what the decoder declares (a
+            // level above its stated maximum), which ExoPlayer selects and
+            // plays anyway; only a track no decoder takes at all is refused.
+            if (hasVideo && video.isNotEmpty() && video.none { it.isSupported(true) }) {
                 val type = video.first().getTrackFormat(0).sampleMimeType
                 val why = if (hardware == HwAccel.REQUIRE) "no hardware decoder takes $type (HwAccel.REQUIRE)" else "no decoder on this device takes $type"
                 fail(LibavException(why))
@@ -1534,8 +1681,17 @@ actual class VideoPlayer actual constructor(
         /** A frame's length when the track declares no rate: 30 fps, the common case. */
         const val FALLBACK_FRAME_NANOS = 33_333_333L
 
-        /** How long a step waits for its frame before the next step goes anyway. */
+        /** How long after its seek settles a step waits for a frame before the next step goes anyway. */
         const val STEP_SETTLE_MILLIS = 400L
+
+        /** How long a file a switch is asked for may take to open before it is refused. */
+        const val PROBE_MILLIS = 10_000L
+
+        /** The longest a step's seek is waited for at all. */
+        const val STEP_GIVE_UP_MILLIS = 3_000L
+
+        /** How long a press that paused a playing player waits for frames already on their way. */
+        const val STEP_SETTLE_PLAYING_MILLIS = 120L
         const val NANOS_PER_MICRO = 1_000L
         const val TICK_MILLIS = 100L
         const val UNREAD_NANOS = 2_000_000_000L

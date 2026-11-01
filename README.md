@@ -10,9 +10,12 @@ I/O of its own -- it works on the file you hand it and nothing more.
 decoded directly; the player itself takes a path.)
 
 The same API runs on Android, on the platform's own engine: Media3 over the
-phone's hardware decoders rather than FFmpeg, so shared code plays, decodes
-and writes through one set of calls on both. What differs there, and why, is
-in [the Android guide](docs/guide/android.md).
+phone's decoders rather than FFmpeg, so shared code plays, decodes and writes
+through one set of calls on both. Media3 brings Guava and a few androidx
+libraries with it, and no native code ships for Android. Pass
+`hardware = HwAccel.AUTO` there for the hardware decoders, since the default is
+the desktop's software one. What differs, and why, is in
+[the Android guide](docs/guide/android.md).
 
 ```kotlin
 val player = VideoPlayer(Path.of("background.webm"), loop = true)

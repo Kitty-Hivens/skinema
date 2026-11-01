@@ -416,7 +416,9 @@ jobs:
       # are. Not Ubuntu's build: it is 6.1, which cannot decode an animated
       # WebP, and the composition reference for that format is ffmpeg's own
       # decode of one. A static build on the project's FFmpeg line instead,
-      # which carries x264, libvpx, libwebp and libaom.
+      # which carries x264, libvpx, libwebp and libaom. The asset is the
+      # newest build of that line, so it moves within 9.0 and its name has to
+      # follow the pin when FFmpeg moves to the next line.
       - name: Install ffmpeg CLI (fixtures)
         run: |
           curl -fsSL --retry 3 -o ffmpeg.tar.xz \
@@ -451,15 +453,24 @@ jobs:
           python3 - <<'EOF'
           import glob, os, re, sys
           ran = skipped = 0
-          for f in glob.glob('*/build/outputs/androidTest-results/connected/**/TEST-*.xml', recursive=True):
-              head = open(f).read(2000)
-              m = re.search(r'tests="(\d+)"[^>]*skipped="(\d+)"', head)
-              if m:
-                  ran += int(m[1]); skipped += int(m[2])
+          missing = []
+          # Each module's results, so one that ran nothing fails here rather
+          # than hiding behind the other's count.
+          for module in ('skinema-core', 'skinema-compose'):
+              files = glob.glob(f'{module}/build/outputs/androidTest-results/connected/**/TEST-*.xml', recursive=True)
+              if not files:
+                  missing.append(module)
+              for f in files:
+                  head = open(f).read(2000)
+                  m = re.search(r'tests="(\d+)"[^>]*skipped="(\d+)"', head)
+                  if m:
+                      ran += int(m[1]); skipped += int(m[2])
           ceiling = int(os.environ['MAX_SKIPPED'])
           print(f"{ran} device tests, {skipped} skipped, ceiling {ceiling}")
-          if ran == 0 or skipped > ceiling:
-              sys.exit("no device tests ran" if ran == 0 else "more device tests skipped than the ceiling allows")
+          if missing:
+              sys.exit("no device test results from " + ", ".join(missing))
+          if skipped > ceiling:
+              sys.exit("more device tests skipped than the ceiling allows")
           EOF
 
       - name: Keep the device reports

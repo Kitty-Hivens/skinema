@@ -54,7 +54,7 @@ extension picks the container, not the number of streams.
 
 ```kotlin
 VideoEncodeConfig(
-    codecName: String,                        // an FFmpeg encoder name
+    codecName: String,                        // an FFmpeg encoder name, or a family name (h264, av1, ...)
     width: Int,
     height: Int,
     fps: Int,                                 // rate-control hint, not a hard cadence
