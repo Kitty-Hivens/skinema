@@ -100,11 +100,14 @@ class VideoDecoderDeviceTest {
     }
 
     @Test
-    fun aSourceThatCannotSeekIsRefusedByName() {
-        val e = assertFailsWith<LibavException> {
-            VideoDecoder.open(DeviceFixtures.forwardOnlySource("red-h264.mp4"), HwAccel.AUTO).use { decodeAll(it) }
-        }
-        assertTrue("cannot seek" in e.message.orEmpty(), "the refusal names the seek: ${e.message}")
+    fun aSourceThatCannotSeekDecodesTheSameFramesAsTheFile() {
+        // Read through Media3's extractor over a tape that keeps the stream's
+        // start, where the platform extractor would ask for offsets the source
+        // cannot reach. This mp4 keeps its index at the end, which the tape
+        // still holds at this size.
+        val fromFile = VideoDecoder.open(DeviceFixtures.path("red-h264.mp4"), HwAccel.AUTO).use { decodeAll(it) }
+        val fromStream = VideoDecoder.open(DeviceFixtures.forwardOnlySource("red-h264.mp4"), HwAccel.AUTO).use { decodeAll(it) }
+        assertEquals(fromFile, fromStream)
     }
 
     @Test
