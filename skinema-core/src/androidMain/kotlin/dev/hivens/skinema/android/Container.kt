@@ -32,7 +32,7 @@ internal sealed interface Input : AutoCloseable {
     val label: String
         get() = when (this) {
             is File -> path.toString()
-            is Source, is Stream -> "custom source"
+            is Source, is Stream -> "the stream"
         }
 
     override fun close() {

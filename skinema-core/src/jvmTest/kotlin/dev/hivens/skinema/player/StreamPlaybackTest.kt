@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.PacedPcmSink
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.MediaSource
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
@@ -205,6 +206,57 @@ class StreamPlaybackTest {
             assertTrue(awaitTrue { source.closed }, "the stream must be closed once nothing reads it")
             assertEquals(0, source.overlaps.get(), "calls into the stream overlapped")
         }
+    }
+
+    @Test
+    fun `a close with a read blocked inside a seekable stream returns, and closes it`() {
+        Fixtures.assumeDecodeEnvironment()
+        val bytes = Files.readAllBytes(fullFixture("stalls", seconds = 8))
+        val stall = bytes.size / 3
+        // Answers seeks anywhere, and blocks in any read past a third of the
+        // file until it is closed: a network source gone silent.
+        val source = object : MediaSource {
+            private var pos = 0
+
+            @Volatile
+            var closed = false
+
+            override fun read(dst: ByteArray, offset: Int, length: Int): Int {
+                if (pos >= stall) {
+                    while (!closed) Thread.sleep(5)
+                    throw IOException("closed under a read")
+                }
+                val n = minOf(length, stall - pos)
+                System.arraycopy(bytes, pos, dst, offset, n)
+                pos += n
+                return n
+            }
+
+            override fun seek(position: Long): Long {
+                if (position < 0 || position > bytes.size) return -1
+                pos = position.toInt()
+                return position
+            }
+
+            override fun size(): Long = bytes.size.toLong()
+
+            override fun close() {
+                closed = true
+            }
+        }
+        val p = VideoPlayer(MediaInput.Stream(source), loop = false, audio = true, sink = PacedPcmSink(4_800))
+        assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+        var lastFrameAt = System.nanoTime()
+        val stallDeadline = System.nanoTime() + 20_000_000_000L
+        while (System.nanoTime() - lastFrameAt < 1_500_000_000L && System.nanoTime() < stallDeadline) {
+            if (p.acquireFrame() != null) lastFrameAt = System.nanoTime()
+            Thread.sleep(10)
+        }
+        val started = System.nanoTime()
+        p.close()
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue(source.closed, "the stream must be closed")
+        assertTrue(tookMs < 4_000, "the close must not wait on the blocked read: ${tookMs}ms")
     }
 
     @Test

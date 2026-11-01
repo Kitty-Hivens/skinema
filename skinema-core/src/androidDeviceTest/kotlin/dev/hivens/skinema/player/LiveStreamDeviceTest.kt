@@ -1,8 +1,11 @@
 package dev.hivens.skinema.player
 
+import dev.hivens.skinema.encode.TranscodeConfig
+import dev.hivens.skinema.encode.Transcoder
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.DeviceFixtures
 import dev.hivens.skinema.libav.HwAccel
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.VideoDecoder
@@ -10,6 +13,7 @@ import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -118,6 +122,60 @@ class LiveStreamDeviceTest {
         awaitTrue(what = "a frame") { p.acquireFrame() != null }
         p.close()
         awaitTrue(what = "the stream closed") { source.closed }
+    }
+
+    @Test
+    fun anOrdinaryWebmReadForwardOnlyPlays() {
+        // Written as a muxer writes a file, its Cues at the end, which Media3
+        // would seek to and a forward-only stream cannot give.
+        val p = VideoPlayer(MediaInput.Stream(live("green-vp9.webm")), loop = false, hardware = HwAccel.AUTO).also { players += it }
+        awaitTrue(what = "green") { p.acquireFrame()?.let { val c = centre(it); c[1] > 200 && c[0] < 40 } == true }
+        assertEquals(null, p.sourceFailure)
+    }
+
+    @Test
+    fun aStepForwardAndAResumeFromTheEndDoNotRestartALiveStream() {
+        val p = VideoPlayer(MediaInput.Stream(live("live-with-sound.mkv")), loop = false, hardware = HwAccel.AUTO).also { players += it }
+        awaitTrue(what = "Ended") { p.state == VideoPlayer.State.Ended }
+        val at = p.positionNanos()
+        p.stepForward()
+        p.resume()
+        Thread.sleep(600)
+        assertEquals(VideoPlayer.State.Ended, p.state, "an ended live stream stays ended")
+        assertTrue(p.positionNanos() >= at - 50_000_000L, "and its clock was not sent back to the start: ${p.positionNanos()} against $at")
+    }
+
+    @Test
+    fun aHiddenLivePictureComesBackWithoutRestartingTheStream() {
+        val p = VideoPlayer(
+            MediaInput.Stream(live("live-with-sound.mkv")), loop = false, audio = true,
+            unwatched = WhenUnwatched.KeepTime, hardware = HwAccel.AUTO,
+        ).also { players += it }
+        awaitTrue(what = "a frame") { p.acquireFrame() != null }
+        p.reportVisible(false)
+        Thread.sleep(800)
+        val hiddenAt = p.positionNanos()
+        p.reportVisible(true)
+        var back = -1L
+        awaitTrue(what = "a frame after the return") { p.acquireFrame()?.let { back = it.ptsNanos; true } == true }
+        assertTrue(back >= hiddenAt - 500_000_000L, "the picture came back where the stream is, not at its start: $back against $hiddenAt")
+        assertFalse(p.state is VideoPlayer.State.Failed, "the stream was not reloaded from its start: ${p.state}")
+    }
+
+    @Test
+    fun aTranscodeOfALiveStreamWithSoundIsRefusedByName() {
+        val out = Files.createTempFile("skinema-live", ".mp4")
+        try {
+            val e = assertFailsWith<LibavException> {
+                Transcoder.open(
+                    MediaInput.Stream(live("live-with-sound.mkv")), out,
+                    TranscodeConfig(videoCodec = "h264", audioCodec = "aac"),
+                ).close()
+            }
+            assertTrue("one decoder" in e.message.orEmpty(), "the refusal says why: ${e.message}")
+        } finally {
+            Files.deleteIfExists(out)
+        }
     }
 
     @Test

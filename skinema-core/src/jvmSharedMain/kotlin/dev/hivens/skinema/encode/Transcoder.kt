@@ -306,7 +306,8 @@ class Transcoder private constructor(
          *
          * Nothing is written until [run]. Throws -- leaving nothing open --
          * when the input carries no video, or when either decoder refuses
-         * it.
+         * it. A [MediaInput.Stream] is this transcoder's from here on: it is
+         * closed by [close], or before the throw when the open fails.
          */
         fun open(input: MediaInput, output: Path, config: TranscodeConfig): Transcoder {
             val resolved = input.resolve()
@@ -316,8 +317,18 @@ class Transcoder private constructor(
                 resolved.release()
                 throw t
             }
+            // A refusal is kept as it came: a file with no sound answers null
+            // and is named below, and anything that threw has its own reason
+            // (a decoder this build lacks, a stream the platform will not feed
+            // twice), which a caller is better off reading.
             val audio = if (config.audioCodec != null) {
-                runCatching { resolved.openSound(null) }.getOrNull()
+                try {
+                    resolved.openSound(null)
+                } catch (t: Throwable) {
+                    runCatching { video.close() }
+                    resolved.release()
+                    throw t
+                }
             } else {
                 null
             }

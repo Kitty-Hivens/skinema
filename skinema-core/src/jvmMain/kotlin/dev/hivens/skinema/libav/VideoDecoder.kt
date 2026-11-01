@@ -61,7 +61,7 @@ actual class VideoDecoder private constructor(
     // null when the bytes come from a MediaSource, which seeks on its own.
     private val reopenPath: String?,
     // Where packets come from when a shared demuxer reads a forward-only
-    // stream for every side; null when this decoder has a demuxer of its own.
+    // stream for every side. Null when this decoder has a demuxer of its own.
     private val lane: SharedDemux.Lane? = null,
 ) : FrameSource {
 
@@ -114,7 +114,7 @@ actual class VideoDecoder private constructor(
         }
     }
 
-    /** Parks or unparks the lane a forward-only stream feeds this decoder from; nothing for a demuxer of its own. */
+    /** Parks or unparks the lane a forward-only stream feeds this decoder from. Nothing for a demuxer of its own. */
     internal fun parkLane(parked: Boolean) {
         lane?.parked = parked
     }
@@ -419,9 +419,11 @@ actual class VideoDecoder private constructor(
         if (shared != null) {
             // A forward-only stream cannot go back. What a reposition can still
             // mean is starting over from the newest keyframe already read, which
-            // is where a picture rejoining a clock that ran on wants to be.
-            shared.skipToLatestKeyframe()
-            Libav.avcodecFlushBuffers(codecCtx)
+            // is where a picture rejoining a clock that ran on wants to be. With
+            // no keyframe queued the packets there continue what the decoder
+            // already holds, and flushing it would leave them nothing to refer
+            // to, so it carries on instead.
+            if (shared.skipToLatestKeyframe()) Libav.avcodecFlushBuffers(codecCtx)
             draining = false
             return
         }
@@ -1131,7 +1133,7 @@ actual class VideoDecoder private constructor(
         actual fun open(source: MediaSource, hardware: HwAccel): VideoDecoder {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
-            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "custom source")
+            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "the stream")
         }
 
         /**
@@ -1152,7 +1154,7 @@ actual class VideoDecoder private constructor(
         internal fun openWithoutDevice(source: MediaSource, hardware: HwAccel, deviceDecoder: String): VideoDecoder {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
-            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "custom source", deviceDecoder = deviceDecoder)
+            return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "the stream", deviceDecoder = deviceDecoder)
         }
 
         /**

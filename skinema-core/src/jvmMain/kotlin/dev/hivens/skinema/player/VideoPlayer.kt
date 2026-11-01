@@ -20,6 +20,7 @@ import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.NoVideoStreamException
 import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
+import dev.hivens.skinema.libav.discard
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.libav.openFrames
 import dev.hivens.skinema.libav.probeSubtitleFile
@@ -28,6 +29,7 @@ import dev.hivens.skinema.libav.settle
 import dev.hivens.skinema.subtitles.SubtitleOverlay
 import dev.hivens.skinema.subtitles.SubtitlePipeline
 import java.nio.file.Path
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -66,7 +68,7 @@ actual class VideoPlayer internal constructor(
     private val startPaused: Boolean,
     volume: Float,
     audioChannels: ChannelPreference,
-    // The test seam: a Path is the only public way in, so deterministic
+    // The test seam: a MediaInput is the only public way in, so deterministic
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
     // second defaulted overload would make every call ambiguous.
@@ -479,7 +481,7 @@ actual class VideoPlayer internal constructor(
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
     // Why the constructor's input could not be resolved (a stream that threw
-    // when asked whether it can seek); the decode thread fails with it.
+    // when asked whether it can seek). The decode thread fails with it.
     private var openFailure: Throwable? = null
 
     /**
@@ -909,7 +911,7 @@ actual class VideoPlayer internal constructor(
         private set
 
     /**
-     * Plays [path] on this player instead, keeping everything the player is
+     * Plays [input] on this player instead, keeping everything the player is
      * made of: its threads, its mailbox, the audio line, and the volume, rate,
      * looping and subtitle canvas already set on it.
      *
@@ -938,7 +940,15 @@ actual class VideoPlayer internal constructor(
      * runs on the wall clock, which is what a silent file means anywhere else
      * in this player.
      */
-    actual fun setSource(input: MediaInput) = submit(Command.SetSource(input))
+    actual fun setSource(input: MediaInput) {
+        // A player that is gone takes no more files, and a stream handed to it
+        // is still its to close: nothing else will.
+        if (closing || !thread.isAlive) {
+            input.discard()
+            return
+        }
+        submit(Command.SetSource(input))
+    }
 
     /**
      * Switches the sound to another of [audioTracks], in place: the
@@ -1110,6 +1120,12 @@ actual class VideoPlayer internal constructor(
         closing = true
         if (closeDeadlineNanos == 0L) closeDeadlineNanos = System.nanoTime() + CLOSE_BUDGET_NANOS
         commands.put(Command.Close)
+        // From the caller's thread, and first: a side blocked inside a stalled
+        // stream (the decode thread on its lane, a cursor inside the source's
+        // read) never reaches its own teardown otherwise, and the Close above
+        // would sit unread behind it. Breaking the reads waits for nothing.
+        resolved.interrupt()
+        released.forEach { it.interrupt() }
         // Told from here rather than left to the decode thread, so their exits
         // overlap with its own -- and so a decode thread still inside an open
         // does not hold the announcement for the length of one.
@@ -1136,9 +1152,22 @@ actual class VideoPlayer internal constructor(
         subtitlePipeline?.announceClose()
         // Closed outright rather than released: a side blocked inside the
         // stream's read is broken out of it, not waited for.
-        resolved.close()
+        closeInputs()
         runCatching { audioPipeline?.awaitExit(deadlineNanos) }
         runCatching { subtitlePipeline?.awaitExit(deadlineNanos) }
+    }
+
+    /**
+     * Every input this player still answers for: the one playing, the ones it
+     * moved off whose last reader may still be winding down (a release waits
+     * for that, a teardown does not), and a switch still waiting to be made.
+     */
+    private fun closeInputs() {
+        resolved.close()
+        released.forEach { it.close() }
+        released.clear()
+        pendingSourceSwitch?.discard()
+        pendingSourceSwitch = null
     }
 
     private fun joinWithin(thread: Thread?, deadlineNanos: Long) {
@@ -1295,7 +1324,7 @@ actual class VideoPlayer internal constructor(
             // told together they overlap and the cost is the slowest side.
             audioPipeline?.announceClose()
             subtitlePipeline?.announceClose()
-            resolved.close()
+            closeInputs()
             joinWithin(pacer, deadline)
             runCatching { current.close() }
             runCatching { audioPipeline?.awaitExit(deadline) }
@@ -1442,11 +1471,16 @@ actual class VideoPlayer internal constructor(
         subtitlePipeline = null
         externalSubtitleIds.set(0)
         synchronized(subtitleTracksLock) { subtitleTracks = emptyList() }
-        source = wanted
         // Released, not closed: a side may still be winding down on it, and
-        // the stream closes once the last one has let go.
-        resolved.release()
+        // the stream closes once the last one has let go. Kept until then, so
+        // a teardown can close one whose last reader is stuck.
+        val leaving = resolved
         resolved = opened
+        // After the input it names, so a caller that sees the new source also
+        // sees what goes with it ([seekable] above all).
+        source = wanted
+        released += leaving
+        leaving.release()
         sourceFailure = null
     }
 
@@ -1884,6 +1918,9 @@ actual class VideoPlayer internal constructor(
             // is also reached from inside a seek landing and from the wait at
             // the end of a lap, and both hold a decoder mid-flight: the top of
             // the loop is the one place where nothing is in the air.
+            // A newer switch replaces one not made yet, and the stream the
+            // older one carried is closed: nothing is ever going to open it.
+            pendingSourceSwitch?.takeIf { it !== cmd.input }?.discard()
             pendingSourceSwitch = cmd.input
             true
         }
@@ -1985,7 +2022,11 @@ actual class VideoPlayer internal constructor(
 
     // The file a setSource asked for, from the moment the command is read to
     // the moment the loop leaves to perform it. Owned by the decode thread.
+    @Volatile
     private var pendingSourceSwitch: MediaInput? = null
+
+    // Inputs a switch moved off. Read from the caller of closeAsync too.
+    private val released = CopyOnWriteArrayList<ResolvedInput>()
 
     // Started last, after every field the thread it starts can reach. Kotlin
     // runs initializers in declaration order, so a thread started higher up
@@ -2295,7 +2336,9 @@ actual class VideoPlayer internal constructor(
         // clock) for a beat after a pause lands; resuming re-anchors sound to
         // the frame actually on screen, sample-precise. Frameless players have
         // no frame to anchor to and just resume.
-        if (audioPipeline != null && decoder != null) {
+        // Not on a forward-only stream: its sound cannot go back to the frame,
+        // and a re-anchor there drops what the line held and steps the clock on.
+        if (audioPipeline != null && decoder != null && seekable) {
             val at = clock.mediaNanos()
             audioPipeline.seek(at)
             audioPipeline.videoLanded(at)
@@ -2564,7 +2607,10 @@ actual class VideoPlayer internal constructor(
         intendedPositionNanos = pts
         if (ownsClock) {
             clock.seek(pts)
-        } else {
+        } else if (seekable) {
+            // A forward-only stream's sound is left where it stands: it cannot
+            // be moved back to the frame, and a re-anchor would only drop what
+            // the line held.
             audioPipeline?.seek(pts)
             audioPipeline?.videoLanded(pts)
         }
@@ -2906,7 +2952,7 @@ actual class VideoPlayer internal constructor(
     }
 
     private companion object {
-        /** Stands in for an input that could not be resolved; nothing ever reads it. */
+        /** Stands in for an input that could not be resolved. Nothing ever reads it. */
         object DeadSource : MediaSource {
             override fun read(dst: ByteArray, offset: Int, length: Int): Int = -1
         }

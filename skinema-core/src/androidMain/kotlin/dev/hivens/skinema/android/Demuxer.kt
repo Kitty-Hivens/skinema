@@ -8,7 +8,9 @@ import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.inspector.MediaExtractorCompat
+import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaSource
 import java.nio.ByteBuffer
 
@@ -42,12 +44,15 @@ internal class PlatformDemuxer(private val extractor: MediaExtractor) : Demuxer 
 }
 
 /**
- * Media3's extractor over [readers], one per open. A forward-only stream
- * cannot go back, so a seek here is refused by the stream itself and fails
- * the read that follows.
+ * Media3's extractor over [readers], one per open, for a stream that reads
+ * forward only. Its Matroska reader does not seek to the Cues an ordinary
+ * muxer leaves at the end, which such a stream could not reach.
  */
 internal class StreamDemuxer(readers: () -> MediaSource) : Demuxer {
-    private val extractor = MediaExtractorCompat(DefaultExtractorsFactory(), PlayerDataSourceFactory { { readers() } })
+    private val extractor = MediaExtractorCompat(
+        DefaultExtractorsFactory().setMatroskaExtractorFlags(MatroskaExtractor.FLAG_DISABLE_SEEK_FOR_CUES),
+        PlayerDataSourceFactory { { readers() } },
+    )
 
     init {
         extractor.setDataSource(Uri.parse("${PlayerDataSourceFactory.STREAM_SCHEME}://decoder"), 0)
@@ -59,6 +64,11 @@ internal class StreamDemuxer(readers: () -> MediaSource) : Demuxer {
     override fun readSampleData(buffer: ByteBuffer, offset: Int): Int = extractor.readSampleData(buffer, offset)
     override val sampleTime: Long get() = extractor.sampleTime
     override fun advance(): Boolean = extractor.advance()
-    override fun seekToPrevious(micros: Long) = extractor.seekTo(micros, MediaExtractorCompat.SEEK_TO_PREVIOUS_SYNC)
+    /**
+     * Refused by name. Media3's extractor answers a seek on a stream it cannot
+     * seek by starting again from byte zero, which a decoder would hand out as
+     * frames from the start where the time asked for was somewhere else.
+     */
+    override fun seekToPrevious(micros: Long): Unit = throw LibavException("a stream that reads forward only cannot seek")
     override fun release() = extractor.release()
 }

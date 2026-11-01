@@ -181,8 +181,17 @@ for behind that is refused, which fails the player. Such a stream says what it
 is through Media3's metadata (title, artist, album, genre, artwork), since
 nothing here reads it by offset, and has no chapters. A `setSource` asked of a
 player opened on one waits for the stream's track report, which is where its
-shape comes from. A forward-only stream is played as a stream, never as an
-image.
+shape comes from, and waits ten seconds at most. A forward-only stream is
+played as a stream, never as an image.
+
+Media3 answers a seek on such a stream by reloading it from its start, which
+the stream cannot give, so on Android more of the player stands still on
+one than on the desktop: `stepForward` does nothing either, a `resume()`
+after the end leaves it ended, `addExternalSubtitles` adds nothing, and a
+hidden picture keeps decoding rather than giving up its track, since
+bringing a track back reloads the item. A Matroska or WebM stream is read
+without the Cues an ordinary muxer leaves at the end, which Media3 would
+otherwise seek to. A decoder over such a stream refuses `seekTo` by name.
 
 Android has no shared demuxer, so such a stream feeds one decoder: the player,
 or the picture of a transcode. A transcode that also asks for its sound is

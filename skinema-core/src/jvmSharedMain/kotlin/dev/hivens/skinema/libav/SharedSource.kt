@@ -54,8 +54,10 @@ internal class SharedSource(private val source: MediaSource) : AutoCloseable {
     }
 
     override fun close() {
-        if (closed) return
-        closed = true
+        synchronized(counts) {
+            if (closed) return
+            closed = true
+        }
         runCatching { source.close() }
     }
 

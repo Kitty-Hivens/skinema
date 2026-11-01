@@ -7,7 +7,7 @@ internal actual fun ResolvedInput.openFrames(hardware: HwAccel): FrameSource = w
     is ResolvedInput.Live -> VideoDecoder.openLane(demux(), hardware)
 }
 
-/** The sound of this input, or null when it has none; same contract as [AudioDecoder.openOrNull]. */
+/** The sound of this input, or null when it has none. Same contract as [AudioDecoder.openOrNull]. */
 internal actual fun ResolvedInput.openSound(streamIndex: Int?): AudioDecoder? = when (this) {
     is ResolvedInput.File -> AudioDecoder.openOrNull(path, streamIndex)
     is ResolvedInput.Seekable -> AudioDecoder.openOrNull(shared.cursor(), streamIndex)

@@ -17,6 +17,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * The join between decode and encode: read a file, write another. Asserts
@@ -157,7 +158,7 @@ class TranscoderTest {
         // below picks it: the subject is the stream, and the decode tier has
         // no libx264. Sized past SVT-AV1's minimum.
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         val input = Fixtures.generate(
             dir.resolve("streamed.mkv"),
             "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "2",
@@ -454,7 +455,7 @@ class TranscoderTest {
         // as a required capability, so between the two every tier that can
         // write anything runs this.
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         // Comfortably past SVT-AV1's minimum dimensions, which 64x64 sits
         // exactly on; the writer opens at the FIRST frame's geometry.
         val one = Fixtures.generate(
@@ -503,9 +504,9 @@ class TranscoderTest {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeFormats()
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         val audioEncoder = listOf("aac", "libopus").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(audioEncoder != null, "this bundle carries no audio encoder")
+        assumeTrue(audioEncoder != null, "this bundle carries no audio encoder")
 
         val head = Fixtures.generate(
             dir.resolve("rate-head.ts"),

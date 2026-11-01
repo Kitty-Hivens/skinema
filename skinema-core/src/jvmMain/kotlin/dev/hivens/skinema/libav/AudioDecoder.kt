@@ -45,7 +45,7 @@ actual class AudioDecoder private constructor(
     // format context); null for a file-Path decoder.
     private val avioSource: AvioSource? = null,
     // Where packets come from when a shared demuxer reads a forward-only
-    // stream for every side; null when this decoder has a demuxer of its own.
+    // stream for every side. Null when this decoder has a demuxer of its own.
     private val lane: SharedDemux.Lane? = null,
 ) : AutoCloseable {
 
@@ -406,7 +406,7 @@ actual class AudioDecoder private constructor(
         actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? {
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
-            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "custom source")
+            return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "the stream")
         }
 
         /**

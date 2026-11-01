@@ -1992,7 +1992,7 @@ README once the library is usable.
   fast source was read to its end in the moment between the open and the
   first claim, which the rejoin then showed as a jump to the stream's last
   keyframe. While the picture is hidden and time runs on, its lane keeps
-  only what follows the latest keyframe, and the rejoin starts there; under
+  only what follows the latest keyframe, and the rejoin starts there. Under
   a pause it is not trimmed, since the sound stops too and both pick up
   where they stood. A track switch or a subtitle selection takes effect
   from the next packets, and the clock steps to where they are.
@@ -2000,7 +2000,7 @@ README once the library is usable.
   Every behaviour was mutation-checked, and five first passed against the
   defect. A step back on a live stream decoded forward looking for an
   earlier frame, read the stream to its end and ended the player, while the
-  frame and the position the test looked at stayed put; it now checks the
+  frame and the position the test looked at stayed put. It now checks the
   state too. A settle that did nothing passed a test asserting a refusal
   that came for another reason. The rule that a starving side keeps the
   reading going matters only at the byte cap, which no fixture reached, so
@@ -2015,6 +2015,54 @@ README once the library is usable.
   the player through Media3, or the picture of a transcode. A transcode
   asked for its sound too is refused by name, since two readers over one
   tape part ways as soon as one runs past what it keeps.
+
+  A review of the branch by four readers, each on one part, found the
+  close broken where it mattered most. The stream was closed only on the
+  decode thread's way out, and that thread is exactly the one a stalled
+  stream holds: waiting on an empty lane, or inside the source's read. So a
+  close returned after its budget with every thread still parked and the
+  consumer's source open. The test that named it closed while the lanes
+  still held a second of read-ahead, so the threads never stood on the
+  stall. The close now breaks every read from the caller's own thread
+  first, waiting for nothing, and the test waits for the picture to stand.
+
+  Ownership had gaps: a source whose `seek(0)` threw, a switch replaced by
+  a later one before it was made, one still waiting at the close, and a
+  `setSource` after the close each left a stream nobody would close.
+  A switch released the stream it left, which waits for its last reader,
+  and a reader stuck inside it kept it open for good. Such streams are
+  kept now and closed at the teardown. The shared demuxer handed out lanes
+  after its close from parameters it had freed, refused a second lane on a
+  stream (a subtitle track turned off and on again inside the old reader's
+  wind-down killed the new one), and a stream that ended before the others
+  left its side starving for good, which turned the read-ahead bound off
+  for the rest of the input. That last is judged in stream time now, since
+  a fast source reads seconds of stream before any wall-clock wait could
+  run out.
+
+  On a live stream, every re-anchor of the sound flushed what the line held
+  and cropped from the lane's next packet, which is after it, so a resume, a
+  step and a rate change each dropped sound and stepped the clock on, and
+  device recovery played the whole outage back behind the picture. The
+  re-anchors that cannot be honest there are not made, recovery crops the
+  backlog to the clock, and a rate change lets the line play out. A picture
+  rejoining a lane with no keyframe queued is no longer flushed, and the
+  hard cap no longer drops a picture lane's only keyframe.
+
+  On Android, Media3 answers any seek on an unseekable stream by reloading
+  it from byte zero, which the tape serves for its first 8 MiB and then
+  refuses: a step forward, a resume from the end, a side-loaded subtitle
+  file and a hidden picture coming back all did that. None of them is made
+  on such a stream now, and its hidden picture keeps decoding instead of
+  giving up a track it could not get back. Ordinary Matroska and WebM did
+  not open at all read forward only, since Media3 seeks to the Cues a muxer
+  leaves at the end, and are read without them now.
+
+  Four fixes have no test that can tell them apart from the defect: the
+  live re-anchors, the recovery crop and the rate change change what is
+  heard by a buffer's worth, and the keyframe rules change what a codec
+  shows rather than anything the player reports. They are kept as reasoned
+  fixes and recorded as such.
 
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled

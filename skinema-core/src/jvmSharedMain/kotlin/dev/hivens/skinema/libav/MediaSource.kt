@@ -3,8 +3,8 @@ package dev.hivens.skinema.libav
 /**
  * A byte source skinema reads from instead of a file: the seam for
  * streams. A streaming companion fetches bytes (HLS/DASH segments, a
- * download, memory) and hands them over here; skinema never does the I/O
- * itself, so the `--disable-network` guarantee holds (the bundled FFmpeg
+ * download, memory) and hands them over here. The I/O is never done here,
+ * so the `--disable-network` guarantee holds (the bundled FFmpeg
  * cannot reach the network, it only pulls bytes through these callbacks).
  *
  * Hand one to a decoder directly, or to the player and the transcoder as

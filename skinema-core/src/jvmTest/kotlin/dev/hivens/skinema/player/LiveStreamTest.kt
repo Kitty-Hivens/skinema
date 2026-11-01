@@ -19,6 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * The player over a [MediaSource] that reads forward only, the shape of a
@@ -233,13 +234,82 @@ class LiveStreamTest {
         val source = live(path, blockAfter = (Files.size(path) / 3).toInt())
         val p = VideoPlayer(MediaInput.Stream(source), loop = false, audio = true, sink = PacedPcmSink(4_800))
         assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
-        // Let the demuxer run into the stall.
-        Thread.sleep(800)
+        // Until what the lanes held has played out and the picture stands: the
+        // sides are then waiting on empty lanes behind the blocked read, and
+        // nothing but the close itself can get them out.
+        var lastFrameAt = System.nanoTime()
+        val stallDeadline = System.nanoTime() + 20_000_000_000L
+        while (System.nanoTime() - lastFrameAt < 1_500_000_000L && System.nanoTime() < stallDeadline) {
+            if (p.acquireFrame() != null) lastFrameAt = System.nanoTime()
+            Thread.sleep(10)
+        }
+        assertTrue(System.nanoTime() < stallDeadline, "the picture must stand once the stream stalls")
         val started = System.nanoTime()
         p.close()
         val tookMs = (System.nanoTime() - started) / 1_000_000
         assertTrue(source.closed, "the stream must be closed")
         assertTrue(tookMs < 4_000, "the close must not wait on the blocked read: ${tookMs}ms")
+        assertTrue(awaitTrue(3_000) { p.state is VideoPlayer.State.Closed }, "the teardown must finish: ${p.state}")
+    }
+
+    @Test
+    fun `a subtitle track turned off and on again on a live stream comes back`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeSubtitleRendering()
+        val source = live(fixture("toggles", seconds = 20))
+        VideoPlayer(MediaInput.Stream(source), loop = false).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
+            val id = p.subtitleTracks.single().id
+            // Faster than the leaving reader lets go of its lane.
+            p.selectSubtitleTrack(id)
+            p.selectSubtitleTrack(null)
+            p.selectSubtitleTrack(id)
+            assertTrue(awaitTrue { p.activeSubtitleTrack == id }, "the selection must land")
+            Thread.sleep(500)
+            assertEquals(id, p.activeSubtitleTrack, "the track must still be live, not dead on a lane already taken")
+        }
+    }
+
+    @Test
+    fun `a switch replaced before it is made closes the stream it carried`() {
+        Fixtures.assumeDecodeEnvironment()
+        val first = live(fixture("first", seconds = 6))
+        val second = live(fixture("second", seconds = 6))
+        VideoPlayer(MediaInput.File(fixture("base")), loop = true).use { p ->
+            assertTrue(awaitTrue { p.acquireFrame() != null }, "the file must play")
+            val toSecond = MediaInput.Stream(second)
+            p.setSource(MediaInput.Stream(first))
+            p.setSource(toSecond)
+            assertTrue(awaitTrue { p.source == toSecond }, "the later switch must be the one that stands")
+            assertTrue(awaitTrue { first.closed }, "the stream nobody is going to play must be closed")
+        }
+    }
+
+    @Test
+    fun `a stream handed to a closed player is closed`() {
+        Fixtures.assumeDecodeEnvironment()
+        val p = VideoPlayer(MediaInput.File(fixture("closed")), loop = true)
+        assertTrue(awaitTrue { p.acquireFrame() != null }, "the file must play")
+        p.close()
+        val late = live(fixture("late"))
+        p.setSource(MediaInput.Stream(late))
+        assertTrue(late.closed, "the player owns what it was handed, closed or not")
+    }
+
+    @Test
+    fun `a stream that throws when asked whether it can seek is closed and fails the player`() {
+        var closed = false
+        val broken = object : MediaSource {
+            override fun read(dst: ByteArray, offset: Int, length: Int): Int = -1
+            override fun seek(position: Long): Long = throw IOException("no answer")
+            override fun close() {
+                closed = true
+            }
+        }
+        VideoPlayer(MediaInput.Stream(broken), loop = false).use { p ->
+            assertTrue(awaitTrue { p.state is VideoPlayer.State.Failed }, "the player must fail: ${p.state}")
+        }
+        assertTrue(closed, "the stream must be closed")
     }
 
     @Test
@@ -273,7 +343,7 @@ class LiveStreamTest {
         // Whichever video encoder this bundle carries: the decode tier has no
         // libx264. Sized past SVT-AV1's minimum.
         val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
-        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
+        assumeTrue(encoder != null, "this bundle carries no video encoder")
         val input = Fixtures.generate(
             dir.resolve("transcoded.mkv"),
             "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10",

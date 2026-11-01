@@ -230,7 +230,7 @@ actual class AudioDecoder private constructor(
 
         actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? = openFrom(inputOf(source), streamIndex)
 
-        /** A source that can seek is read by offset like a file; one that reads forward only goes through a tape and Media3's extractor. */
+        /** A source that can seek is read by offset like a file. One that reads forward only goes through a tape and Media3's extractor. */
         internal fun inputOf(source: MediaSource): Input =
             if (SharedSource.canSeek(source)) Input.Source(source) else Input.Stream(ForwardTape(source))
 

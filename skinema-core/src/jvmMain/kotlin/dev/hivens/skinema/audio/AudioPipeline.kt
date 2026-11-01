@@ -931,9 +931,15 @@ internal class AudioPipeline(
         return runCatching {
             // Resync to where video advanced on the wall clock: the outage
             // audio is dropped, sound rejoins in step rather than lagging.
-            val resumeAt = theClock.mediaNanos()
-            decoder?.seekTo(resumeAt)
-            pendingPcm = null
+            var resumeAt = theClock.mediaNanos()
+            // A forward-only stream cannot seek, and its lane kept filling
+            // through the outage: what it holds up to the clock is decoded and
+            // dropped instead, or the sound would play the outage back behind
+            // the picture for good.
+            val skipped = if (input is ResolvedInput.Live) decoder?.let { cropAt(it, resumeAt) } else null
+            if (input !is ResolvedInput.Live) decoder?.seekTo(resumeAt)
+            pendingPcm = skipped?.remainder
+            skipped?.let { resumeAt = it.anchorNanos }
             // The same shutter [guardedWrite] keeps, one step earlier. Opening
             // is not a write, but it reaches into the same object: a consumer's
             // sink is a device, a socket or a server connection that [close]
@@ -1329,6 +1335,10 @@ internal class AudioPipeline(
     private fun applyTempo(newTempo: Double) {
         if (newTempo == tempo) return
         val theClock = checkNotNull(clock)
+        if (input is ResolvedInput.Live) {
+            applyTempoOnward(theClock, newTempo)
+            return
+        }
         val wasAwaiting = awaitingLanding
         freezeSink()
         // Between the freeze and the flush, for the reason [switchTrack]
@@ -1373,6 +1383,29 @@ internal class AudioPipeline(
         if (DEBUG_SEEK) {
             System.err.println("[audio-tempo] tempo=$newTempo anchored=${pos / 1_000_000}ms")
         }
+    }
+
+    /**
+     * A rate change on a forward-only stream. The line is not flushed, since
+     * what it holds cannot be read again and the crop after a flush would step
+     * the clock past it: the stretcher is swapped for what comes next, and the
+     * sound the line already holds plays out at the old rate.
+     */
+    private fun applyTempoOnward(theClock: AudioClock, newTempo: Double) {
+        val next = if (newTempo == 1.0) {
+            null
+        } else {
+            val shape = activeFormat ?: return
+            try {
+                TempoFilter(shape, newTempo)
+            } catch (_: Throwable) {
+                return
+            }
+        }
+        tempoFilter?.close()
+        tempoFilter = next
+        tempo = newTempo
+        theClock.setTempo(newTempo)
     }
 
     private class Crop(

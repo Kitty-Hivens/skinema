@@ -24,6 +24,9 @@ internal class StreamDataSource(private val readers: () -> MediaSource) : BaseDa
     private var uri: Uri? = null
     private var remaining = 0L
 
+    // Whether listeners were told a transfer started, which is when they are owed its end.
+    private var opened = false
+
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
         val r = readers()
@@ -39,6 +42,7 @@ internal class StreamDataSource(private val readers: () -> MediaSource) : BaseDa
             else -> C.LENGTH_UNSET.toLong()
         }
         transferStarted(dataSpec)
+        opened = true
         return remaining
     }
 
@@ -61,7 +65,10 @@ internal class StreamDataSource(private val readers: () -> MediaSource) : BaseDa
         reader = null
         uri = null
         runCatching { r.close() }
-        transferEnded()
+        if (opened) {
+            opened = false
+            transferEnded()
+        }
     }
 }
 

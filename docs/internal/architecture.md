@@ -97,10 +97,10 @@ and the subtitle thread each call `avformat_open_input` on the file, and each
 reads and seeks at its own pace. A `MediaInput` decides how that holds for
 bytes a consumer hands over (`ResolvedInput`, resolved once per open):
 
-- a file: as above;
+- a file: as above.
 - a `MediaSource` that can seek: the same three demuxers, each through a
   cursor of its own over the one source (`SharedSource`), taking turns under
-  a lock so calls into the source never overlap;
+  a lock so calls into the source never overlap.
 - a `MediaSource` that reads forward only: one demuxer on a thread of its own
   (`SharedDemux`), opened by whichever side asks first, routing each packet to
   the lane of the side that plays its stream. The decoders read a lane

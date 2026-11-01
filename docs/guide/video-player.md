@@ -414,20 +414,21 @@ val seekable: Boolean   // false only for a stream that reads forward only
 ```
 
 A `MediaSource` is bytes you fetch and hand over: a download, memory, the
-segments a streaming companion assembles. The player pulls them; it does no
+segments a streaming companion assembles. The player pulls them and does no
 I/O of its own, so the bundle's `--disable-network` holds. A stream goes
 everywhere a file does, `setSource` and the transcoder included, and a switch
 between a file and a stream is an ordinary switch.
 
-How it is read depends on one answer, asked once at the open: does
-`seek(0)` return 0?
+How it is read depends on one answer, asked once: does `seek(0)` return 0?
+The constructor asks on the thread that calls it, so a source should answer
+that at once rather than go to the network first.
 
 - **Yes, it can seek.** It is read the way a file is. The picture, the sound
   and the subtitles each run their own demuxer, through a cursor of their own
   over the one source, and the cursors take turns, so calls into it never
   overlap. Everything works as on a file: seeks, steps, the loop, track
   switches, subtitles turned on mid-play. Each side reads at its own
-  position, so the source is asked for different offsets in turn; keep
+  position, so the source is asked for different offsets in turn. Keep
   `seek` cheap, with a cache in front of anything slow.
 - **No, it reads forward only.** It is the shape of a live stream and can be
   read once, so one demuxer reads it and hands each side the packets of its
@@ -440,11 +441,16 @@ How it is read depends on one answer, asked once at the open: does
   is hidden and time runs on, only the newest pictures are kept, and the
   picture rejoins from a keyframe. Read-ahead stops at about a second of each
   stream, so a pause holds the stream where it was: a live source that cannot
-  wait has to buffer or drop on its own side.
+  wait has to buffer or drop on its own side. A rate change leaves what the
+  sound line already holds to play out at the old rate, since it cannot be
+  read again. Subtitles render with the system's fonts: fonts attached to
+  the container are not read from a stream that cannot be walked.
 
-The player owns the stream from the moment it is handed over. A switch away
-from it closes it once nothing reads it any more, and a close closes it at
-once. `close()` may arrive while a read is blocked inside your source, and it
+The player owns the stream from the moment it is handed over, so a
+`MediaInput.Stream` plays once: a switch away from it closes it once nothing
+reads it any more, and a close closes it at once. A `setSource` made after
+the close, or replaced by a later one before it was made, still closes the
+stream it carried. To play the same bytes again, hand over a new source. `close()` may arrive while a read is blocked inside your source, and it
 must make that read return: that is how a stalled stream is torn down within
 the close budget. A read that throws fails the player, with your exception as
 the cause.

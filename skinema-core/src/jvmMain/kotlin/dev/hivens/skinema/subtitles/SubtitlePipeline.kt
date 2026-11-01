@@ -147,11 +147,11 @@ internal class SubtitlePipeline(
     private lateinit var arena: Arena
     private var fmtCtx = MemorySegment.NULL
 
-    // The AVIO context a stream's bytes come through; null for a file.
+    // The AVIO context a stream's bytes come through. Null for a file.
     private var avioSource: AvioSource? = null
 
     // Where this track's packets come from on a forward-only stream, whose one
-    // demuxer every side shares; null when this pipeline has a demuxer of its own.
+    // demuxer every side shares. Null when this pipeline has a demuxer of its own.
     private var lane: SharedDemux.Lane? = null
     private var codecCtx = MemorySegment.NULL
     private var assLibrary = MemorySegment.NULL
