@@ -5,8 +5,12 @@ import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
+import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
+import dev.hivens.skinema.libav.VideoDecoder
+import dev.hivens.skinema.libav.resolve
 import java.nio.file.Path
 
 /**
@@ -70,6 +74,9 @@ class Transcoder private constructor(
     private val audioRate: Int?,
     private val config: TranscodeConfig,
     private val output: Path,
+    // Released once both decoders have closed: a stream is this
+    // transcoder's from the open on.
+    private val input: ResolvedInput,
 ) : AutoCloseable {
 
     private var writer: MediaWriter? = null
@@ -279,6 +286,7 @@ class Transcoder private constructor(
         runCatching { writer?.close() }.onFailure { Debug.trace("transcoder writer close", it) }
         runCatching { video.close() }.onFailure { Debug.trace("transcoder video close", it) }
         runCatching { audio?.close() }.onFailure { Debug.trace("transcoder audio close", it) }
+        input.release()
     }
 
     companion object {
@@ -300,25 +308,38 @@ class Transcoder private constructor(
          * it.
          */
         fun open(input: MediaInput, output: Path, config: TranscodeConfig): Transcoder {
-            val file = when (input) {
-                is MediaInput.File -> input.path
-                is MediaInput.Stream -> throw LibavException("a MediaSource does not transcode yet")
+            val resolved = input.resolve()
+            val video = try {
+                when (resolved) {
+                    is ResolvedInput.File -> FrameSources.open(resolved.path)
+                    is ResolvedInput.Seekable -> VideoDecoder.open(resolved.shared.cursor(), HwAccel.OFF)
+                    is ResolvedInput.Live -> throw LibavException("a stream that reads forward only does not transcode yet")
+                }
+            } catch (t: Throwable) {
+                resolved.release()
+                throw t
             }
-            val video = FrameSources.open(file)
             val audio = if (config.audioCodec != null) {
-                runCatching { AudioDecoder.openOrNull(file) }.getOrNull()
+                runCatching {
+                    when (resolved) {
+                        is ResolvedInput.File -> AudioDecoder.openOrNull(resolved.path)
+                        is ResolvedInput.Seekable -> AudioDecoder.openOrNull(resolved.shared.cursor())
+                        is ResolvedInput.Live -> null
+                    }
+                }.getOrNull()
             } else {
                 null
             }
             if (config.audioCodec != null && audio == null) {
                 runCatching { video.close() }
-                throw LibavException("'$file' has no audio stream to encode as '${config.audioCodec}'")
+                resolved.release()
+                throw LibavException("'${resolved.label}' has no audio stream to encode as '${config.audioCodec}'")
             }
             val rate = audio?.let { d ->
                 d.tracks.firstOrNull { it.streamIndex == d.streamIndex }?.sampleRate
                     ?: d.tracks.firstOrNull()?.sampleRate
             }
-            return Transcoder(video, audio, rate, config, output)
+            return Transcoder(video, audio, rate, config, output, resolved)
         }
 
         /**

@@ -4,6 +4,7 @@ import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -146,6 +147,48 @@ class TranscoderTest {
                 "expected about $whole frames of sound, got $frames",
             )
         }
+    }
+
+    @Test
+    fun `a seekable stream transcodes with its sound and is closed after`() {
+        Fixtures.assumeDecodeEnvironment()
+        Fixtures.assumeLibraryEncoder("libx264")
+        Fixtures.assumeLibraryEncoder("aac")
+        val input = Fixtures.generate(
+            dir.resolve("streamed.mkv"),
+            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "2",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "2",
+            "-map", "0:v", "-map", "1:a",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-c:a", "flac",
+        )
+        val bytes = Files.readAllBytes(input)
+        var closed = false
+        val source = object : MediaSource {
+            private var pos = 0
+            override fun read(dst: ByteArray, offset: Int, length: Int): Int {
+                if (pos >= bytes.size) return -1
+                val n = minOf(length, bytes.size - pos)
+                System.arraycopy(bytes, pos, dst, offset, n)
+                pos += n
+                return n
+            }
+            override fun seek(position: Long): Long {
+                if (position < 0 || position > bytes.size) return -1
+                pos = position.toInt()
+                return position
+            }
+            override fun size(): Long = bytes.size.toLong()
+            override fun close() {
+                closed = true
+            }
+        }
+        val out = dir.resolve("streamed-out.mp4")
+        Transcoder.open(MediaInput.Stream(source), out, TranscodeConfig(videoCodec = "libx264", audioCodec = "aac")).use { it.run() }
+        assertTrue(closed, "the transcoder owns the stream and closes it")
+        VideoDecoder.open(out).use { d ->
+            assertEquals(20, generateSequence { d.nextFrame(convert = false) }.count(), "two seconds at ten frames a second")
+        }
+        assertNotNull(AudioDecoder.openOrNull(out), "the output carries the sound").close()
     }
 
     /**

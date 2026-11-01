@@ -5,6 +5,7 @@ import dev.hivens.skinema.audio.BoundedPcmSink
 import dev.hivens.skinema.audio.FakePcmSink
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.AfterTest
@@ -130,7 +131,7 @@ class TeardownTest {
         Fixtures.assumeDecodeEnvironment()
         val sink = BoundedPcmSink(capacityFrames = 4_410L)
         val pipeline = AudioPipeline(
-            sounded("shutter.mkv"),
+            ResolvedInput.File(sounded("shutter.mkv")),
             sink,
             writeStallNanos = 30_000_000_000L,
         )

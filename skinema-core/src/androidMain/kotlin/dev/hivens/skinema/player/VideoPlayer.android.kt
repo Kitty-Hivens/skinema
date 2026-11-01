@@ -26,7 +26,6 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.FileDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -47,6 +46,7 @@ import dev.hivens.skinema.android.ImageFrameSource
 import dev.hivens.skinema.android.ImageFrames
 import dev.hivens.skinema.android.Input
 import dev.hivens.skinema.android.PcmSinkAudioSink
+import dev.hivens.skinema.android.PlayerDataSourceFactory
 import dev.hivens.skinema.android.firstTrack
 import dev.hivens.skinema.android.layoutFor
 import dev.hivens.skinema.android.openExtractor
@@ -61,6 +61,8 @@ import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.NoVideoStreamException
+import dev.hivens.skinema.libav.ResolvedInput
+import dev.hivens.skinema.libav.resolve
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.subtitles.SubtitleOverlay
@@ -261,11 +263,23 @@ actual class VideoPlayer actual constructor(
     actual var source: MediaInput = input
         private set
 
-    // The file behind [source].
+    /**
+     * [source] as the readers open it, resolved on the player thread by the
+     * open. Owned by this player: a switch releases the one it leaves, and a
+     * close or a failure closes it.
+     */
     @Volatile
-    private var sourcePath: Path = (input as? MediaInput.File)?.path ?: Path.of("")
+    private var resolved: ResolvedInput? = null
 
-    actual val seekable: Boolean get() = true
+    actual val seekable: Boolean get() = resolved !is ResolvedInput.Live
+
+    // The streams Media3 may be reading, by the host of the URI they are
+    // played under. A switch's probe registers its candidate here too.
+    private val streams = ConcurrentHashMap<String, ResolvedInput.Seekable>()
+    private val streamIds = AtomicInteger(0)
+    private val dataSources = PlayerDataSourceFactory { uri ->
+        streams[uri.host]?.let { s -> { s.shared.cursor() } }
+    }
 
     @Volatile
     actual var sourceFailure: Throwable? = null
@@ -719,7 +733,7 @@ actual class VideoPlayer actual constructor(
             issueStepSeek((shown / NANOS_PER_MILLI + 1) * NANOS_PER_MILLI)
             return
         }
-        val file = sourcePath
+        val file = checkNotNull(resolved)
         // For when the decode below cannot answer. An exact seek lands on the
         // first frame at or after its target, so a target a millisecond back,
         // or half a frame back, lands on the frame already shown. A frame and
@@ -811,7 +825,8 @@ actual class VideoPlayer actual constructor(
      * play in a player of this shape: no such track, no decoder for it, or
      * the error Media3 gave. Null when it will. Off the player thread.
      */
-    private fun probe(path: Path, picture: Boolean): Throwable? {
+    private fun probe(input: ResolvedInput, picture: Boolean): Throwable? {
+        val label = input.label
         val probeThread = HandlerThread("skinema-probe").apply { start() }
         val probeHandler = Handler(probeThread.looper)
         val done = CountDownLatch(1)
@@ -822,7 +837,7 @@ actual class VideoPlayer actual constructor(
                 val context = AppContext.get()
                 val p = ExoPlayer.Builder(context, DefaultRenderersFactory(context).setMediaCodecSelector(codecSelector(hardware)))
                     .setLooper(probeThread.looper)
-                    .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+                    .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
                     .setBandwidthMeter(NoBandwidthMeter)
                     .setUsePlatformDiagnostics(false)
                     .build()
@@ -838,7 +853,7 @@ actual class VideoPlayer actual constructor(
                         val type = if (picture) C.TRACK_TYPE_VIDEO else C.TRACK_TYPE_AUDIO
                         val groups = tracks.groups.filter { it.type == type }
                         answer = when {
-                            groups.isEmpty() -> LibavException(if (picture) "$path gives no picture" else "$path carries no sound")
+                            groups.isEmpty() -> LibavException(if (picture) "$label gives no picture" else "$label carries no sound")
                             groups.none { it.isSupported(true) } -> {
                                 val mime = groups.first().getTrackFormat(0).sampleMimeType
                                 LibavException(
@@ -855,7 +870,7 @@ actual class VideoPlayer actual constructor(
                         done.countDown()
                     }
                 })
-                p.setMediaItem(MediaItem.fromUri(Uri.fromFile(path.toFile())))
+                p.setMediaItem(MediaItem.fromUri(uriOf(input)))
                 p.prepare()
             } catch (t: Throwable) {
                 answer = t
@@ -864,7 +879,7 @@ actual class VideoPlayer actual constructor(
         }
         try {
             if (!done.await(PROBE_MILLIS, TimeUnit.MILLISECONDS)) {
-                answer = LibavException("$path did not open within ${PROBE_MILLIS / 1000} s")
+                answer = LibavException("$label did not open within ${PROBE_MILLIS / 1000} s")
             }
         } finally {
             probeHandler.post {
@@ -877,11 +892,11 @@ actual class VideoPlayer actual constructor(
 
     /** How a step back finds the frame before the one shown; a test replaces it to make the discovery fail. */
     @Volatile
-    internal var previousFrameFinder: (Path, Long) -> Long? = ::previousFramePts
+    internal var previousFrameFinder: (ResolvedInput, Long) -> Long? = ::previousFramePts
 
-    private fun previousFramePts(file: Path, shown: Long): Long? {
+    private fun previousFramePts(input: ResolvedInput, shown: Long): Long? {
         if (shown <= 0L) return 0L
-        VideoDecoder.open(file, hardware).use { d ->
+        openDecoder(input).use { d ->
             d.seekBefore(shown)
             var previous: Long? = null
             while (true) {
@@ -913,12 +928,6 @@ actual class VideoPlayer actual constructor(
     }
 
     actual fun setSource(input: MediaInput) = post {
-        if (input !is MediaInput.File) {
-            sourceFailure = LibavException(STREAM_NOT_YET)
-            noteChange()
-            return@post
-        }
-        val path = input.path
         // Read on the player thread, behind the open, where the player
         // knows its shape: a switch asked for straight after construction
         // would otherwise find a picture player not yet knowing it has one.
@@ -933,27 +942,33 @@ actual class VideoPlayer actual constructor(
             // platform extractor reads a different set of containers, so a
             // check through it refused files the player plays and passed
             // files it does not.
+            var candidate: ResolvedInput? = null
             val refusal = runCatching {
-                if (picture && isImageFile(path)) {
-                    VideoDecoder.open(path, hardware).use { it.nextFrame(convert = false) ?: error("$path gives no picture") }
+                val r = input.resolve().also { candidate = it }
+                register(r)
+                if (picture && isImageFile(r)) {
+                    openDecoder(r).use { it.nextFrame(convert = false) ?: error("${r.label} gives no picture") }
                 } else {
-                    probe(path, picture)?.let { throw it }
+                    probe(r, picture)?.let { throw it }
                 }
             }.exceptionOrNull()
             if (refusal != null) {
+                candidate?.let(::letGo)
                 sourceFailure = refusal
                 noteChange()
                 return@execute
             }
-            val image = picture && isImageFile(path)
-            val info = if (image) null else ContainerInfo.read(Input.File(path))
+            val opened = checkNotNull(candidate)
+            val image = picture && isImageFile(opened)
+            val info = if (image) null else readContainer(opened)
             post {
                 // A player that had ended plays the next file, as on the desktop.
                 val ended = if (clip != null) clipEnded else player?.playbackState == Player.STATE_ENDED
                 if (ended) userPaused = false
                 sourceFailure = null
                 source = input
-                sourcePath = path
+                resolved?.let(::letGo)
+                resolved = opened
                 everReady = false
                 seekPending = false
                 lastPublishedPts = 0L
@@ -972,7 +987,7 @@ actual class VideoPlayer actual constructor(
                         it.clearMediaItems()
                     }
                     publishCues()
-                    startClip(path)
+                    startClip(opened)
                     return@post
                 }
                 closeClip()
@@ -993,7 +1008,7 @@ actual class VideoPlayer actual constructor(
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, videoTrackDisabled || !picture)
                     .build()
                 publishCues()
-                p.setMediaItem(mediaItem(path))
+                p.setMediaItem(mediaItem(opened))
                 p.prepare()
                 // A player stopped for a hidden picture stays stopped: the
                 // switch does not start a file nobody is watching.
@@ -1078,7 +1093,7 @@ actual class VideoPlayer actual constructor(
             val position = p.currentPosition
             val playing = p.playWhenReady
             reapplyChoices = true
-            p.setMediaItem(mediaItem(sourcePath), position)
+            p.setMediaItem(mediaItem(checkNotNull(resolved)), position)
             p.prepare()
             p.playWhenReady = playing
         }
@@ -1157,8 +1172,8 @@ actual class VideoPlayer actual constructor(
     private val decodeWork = Executors.newSingleThreadExecutor { r -> Thread(r, "skinema-player-work").apply { isDaemon = true } }
 
     /** The file, with every side-loaded subtitle file attached under its tagged id. */
-    private fun mediaItem(path: Path): MediaItem = MediaItem.Builder()
-        .setUri(Uri.fromFile(path.toFile()))
+    private fun mediaItem(input: ResolvedInput): MediaItem = MediaItem.Builder()
+        .setUri(uriOf(input))
         .setSubtitleConfigurations(
             externals.map { e ->
                 MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(e.path.toFile()))
@@ -1173,20 +1188,22 @@ actual class VideoPlayer actual constructor(
     private fun open(input: MediaInput, explicitClock: MediaClock?, audioTrack: Int?, startPaused: Boolean) {
         if (closing) return
         try {
-            val path = (input as? MediaInput.File)?.path ?: throw LibavException(STREAM_NOT_YET)
             require(explicitClock == null) { "explicitClock is not supported on Android: ExoPlayer takes no external media clock" }
             bridge = FrameBridge(::onImage, ::fail)
-            if (isImageFile(path)) {
-                startClip(path)
+            val opened = input.resolve()
+            resolved = opened
+            register(opened)
+            if (isImageFile(opened)) {
+                startClip(opened)
             } else {
-                hasVideo = carriesVideo(path)
-                val info = ContainerInfo.read(Input.File(path))
+                hasVideo = carriesVideo(opened)
+                val info = readContainer(opened)
                 tags = info.tags
                 coverArt = info.coverArt
                 chapters = info.chapters
                 val p = buildPlayer()
                 pendingAudioTrack = audioTrack
-                p.setMediaItem(mediaItem(path))
+                p.setMediaItem(mediaItem(opened))
                 p.playWhenReady = !startPaused
                 p.prepare()
             }
@@ -1221,7 +1238,7 @@ actual class VideoPlayer actual constructor(
         // default.
         val p = ExoPlayer.Builder(context, renderers)
             .setLooper(thread.looper)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(FileDataSource.Factory()))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
             .setBandwidthMeter(NoBandwidthMeter)
             .setUsePlatformDiagnostics(false)
             .build()
@@ -1253,24 +1270,58 @@ actual class VideoPlayer actual constructor(
      * than waited for from ExoPlayer's track report, which comes later: the
      * shape a [setSource] keeps has to be known from the start.
      */
-    private fun carriesVideo(path: Path): Boolean = runCatching {
-        val extractor = openExtractor(Input.File(path))
-        try {
-            extractor.firstTrack("video/") >= 0
-        } finally {
-            extractor.release()
+    private fun carriesVideo(input: ResolvedInput): Boolean = runCatching {
+        readerOf(input).use { reader ->
+            val extractor = openExtractor(reader)
+            try {
+                extractor.firstTrack("video/") >= 0
+            } finally {
+                extractor.release()
+            }
         }
     }.getOrDefault(false)
 
+    private fun readContainer(input: ResolvedInput): ContainerInfo = readerOf(input).use { ContainerInfo.read(it) }
+
+    /** A reader of its own over [input]: the file, or a fresh cursor over the stream. Closing it closes only the cursor. */
+    private fun readerOf(input: ResolvedInput): Input = when (input) {
+        is ResolvedInput.File -> Input.File(input.path)
+        is ResolvedInput.Seekable -> Input.Source(input.shared.cursor())
+        is ResolvedInput.Live -> throw LibavException(LIVE_NOT_YET)
+    }
+
+    private fun openDecoder(input: ResolvedInput): VideoDecoder = when (input) {
+        is ResolvedInput.File -> VideoDecoder.open(input.path, hardware)
+        is ResolvedInput.Seekable -> VideoDecoder.open(input.shared.cursor(), hardware)
+        is ResolvedInput.Live -> throw LibavException(LIVE_NOT_YET)
+    }
+
+    /** What Media3 is handed for [input]: the file, or a URI the data source factory answers with the stream. */
+    private fun uriOf(input: ResolvedInput): Uri = when (input) {
+        is ResolvedInput.File -> Uri.fromFile(input.path.toFile())
+        is ResolvedInput.Seekable -> Uri.parse("${PlayerDataSourceFactory.STREAM_SCHEME}://${streams.entries.first { it.value === input }.key}")
+        is ResolvedInput.Live -> throw LibavException(LIVE_NOT_YET)
+    }
+
+    private fun register(input: ResolvedInput) {
+        if (input is ResolvedInput.Seekable) streams["s" + streamIds.incrementAndGet()] = input
+    }
+
+    /** Releases [input], which closes a stream once the last reader of it has let go. */
+    private fun letGo(input: ResolvedInput) {
+        streams.values.remove(input)
+        input.release()
+    }
+
     // -- Image files --------------------------------------------------------------
 
-    private fun isImageFile(path: Path): Boolean =
-        runCatching { Input.File(path).use { ImageFrames.isImage(it.head(16)) } }.getOrDefault(false)
+    private fun isImageFile(input: ResolvedInput): Boolean =
+        runCatching { readerOf(input).use { ImageFrames.isImage(it.head(16)) } }.getOrDefault(false)
 
-    /** Puts the image at [path] on screen in place of whatever played, on its first frame. */
-    private fun startClip(path: Path) {
+    /** Puts the image [input] holds on screen in place of whatever played, on its first frame. */
+    private fun startClip(input: ResolvedInput) {
         if (hardware == HwAccel.REQUIRE) throw LibavException("no hardware decoder takes an image (HwAccel.REQUIRE)")
-        val image = ImageFrames.read(Files.readAllBytes(path))
+        val image = ImageFrames.read(readerOf(input).use { it.readAll() })
         closeClip()
         val c = ImageFrameSource(image)
         clip = c
@@ -1559,7 +1610,7 @@ actual class VideoPlayer actual constructor(
                 // Nothing to show and nothing asked to be heard: the desktop
                 // fails here too, since there is nothing to play.
                 if (!hasVideo && !audio) {
-                    fail(NoVideoStreamException("$sourcePath carries no video stream, and the player was made without sound"))
+                    fail(NoVideoStreamException("${resolved?.label} carries no video stream, and the player was made without sound"))
                     return
                 }
             }
@@ -1661,6 +1712,7 @@ actual class VideoPlayer actual constructor(
             runCatching { player?.release() }
             player = null
             closeClip()
+            resolved?.close()
         }
     }
 
@@ -1680,6 +1732,8 @@ actual class VideoPlayer actual constructor(
                 borrowed.clear()
             }
             decodeWork.shutdownNow()
+            resolved?.close()
+            streams.values.forEach { it.close() }
             synchronized(changeMonitor) {
                 // A failure keeps its state through the close, as on the
                 // desktop: it is the answer a consumer polls for.
@@ -1705,7 +1759,7 @@ actual class VideoPlayer actual constructor(
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
 
-        const val STREAM_NOT_YET = "a MediaSource does not play through the player yet"
+        const val LIVE_NOT_YET = "a stream that reads forward only does not play yet"
 
         /** A frame's length when the track declares no rate: 30 fps, the common case. */
         const val FALLBACK_FRAME_NANOS = 33_333_333L

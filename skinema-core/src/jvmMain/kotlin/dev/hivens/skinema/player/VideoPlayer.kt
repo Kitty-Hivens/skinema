@@ -15,12 +15,15 @@ import dev.hivens.skinema.libav.Chapter
 import dev.hivens.skinema.libav.FrameSource
 import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.HwAccel
-import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.MediaSource
 import dev.hivens.skinema.libav.NoVideoStreamException
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
+import dev.hivens.skinema.libav.openFrames
 import dev.hivens.skinema.libav.probeSubtitleFile
+import dev.hivens.skinema.libav.resolve
 import dev.hivens.skinema.subtitles.SubtitleOverlay
 import dev.hivens.skinema.subtitles.SubtitlePipeline
 import java.nio.file.Path
@@ -66,7 +69,7 @@ actual class VideoPlayer internal constructor(
     // sources (scripted hiccups) enter here. No defaults on this
     // constructor -- the test source set sees internal members, and a
     // second defaulted overload would make every call ambiguous.
-    private val frameSourceFactory: (Path) -> FrameSource,
+    private val frameSourceFactory: (ResolvedInput) -> FrameSource,
 ) : AutoCloseable {
 
     actual constructor(
@@ -189,7 +192,7 @@ actual class VideoPlayer internal constructor(
     ) : this(
         input, loop, audio, explicitClock, sink, readAheadFrames, audioTrack, unwatched,
         startPaused, volume, audioChannels,
-        { FrameSources.open(it, hardware) },
+        { it.openFrames(hardware) },
     )
 
     actual sealed interface State {
@@ -474,10 +477,27 @@ actual class VideoPlayer internal constructor(
     // accumulates on [intendedPositionNanos] instead of the on-screen pts.
     private var seekInFlight = false
     private val stateBeforeSeek = java.util.concurrent.atomic.AtomicReference<State?>(null)
+    // Why the constructor's input could not be resolved (a stream that threw
+    // when asked whether it can seek); the decode thread fails with it.
+    private var openFailure: Throwable? = null
+
+    /**
+     * [source] as the sides open it. Owned by this player: a switch releases
+     * the one it leaves, which closes a stream once the last side reading it
+     * has let go, and the teardown closes the last one outright.
+     */
+    @Volatile
+    private var resolved: ResolvedInput = try {
+        input.resolve()
+    } catch (t: Throwable) {
+        openFailure = t
+        ResolvedInput.Live(DeadSource)
+    }
+
     private val audioPipeline: AudioPipeline? =
-        if (audio && input is MediaInput.File) {
+        if (audio && openFailure == null) {
             AudioPipeline(
-                input.path,
+                resolved,
                 sink ?: JavaSoundSink(),
                 audioTrack,
                 // Clamped here because this is the public edge; the pipeline
@@ -872,11 +892,7 @@ actual class VideoPlayer internal constructor(
     actual var source: MediaInput = input
         private set
 
-    // The file behind [source], which every side opens on its own.
-    @Volatile
-    private var sourcePath: Path = (input as? MediaInput.File)?.path ?: Path.of("")
-
-    actual val seekable: Boolean get() = true
+    actual val seekable: Boolean get() = resolved !is ResolvedInput.Live
 
     /**
      * Why the last [setSource] did not take, or null when the last one did.
@@ -1117,6 +1133,9 @@ actual class VideoPlayer internal constructor(
     private fun tearDownSides(deadlineNanos: Long = teardownDeadline()) {
         audioPipeline?.announceClose()
         subtitlePipeline?.announceClose()
+        // Closed outright rather than released: a side blocked inside the
+        // stream's read is broken out of it, not waited for.
+        resolved.close()
         runCatching { audioPipeline?.awaitExit(deadlineNanos) }
         runCatching { subtitlePipeline?.awaitExit(deadlineNanos) }
     }
@@ -1159,7 +1178,8 @@ actual class VideoPlayer internal constructor(
         }
 
         val decoder = try {
-            frameSourceFactory(fileOf(source))
+            openFailure?.let { throw it }
+            frameSourceFactory(resolved)
         } catch (t: Throwable) {
             // Frameless is the answer to a file with nothing to show, and to
             // nothing else. Every throw used to take this door when the file
@@ -1273,6 +1293,7 @@ actual class VideoPlayer internal constructor(
             // told together they overlap and the cost is the slowest side.
             audioPipeline?.announceClose()
             subtitlePipeline?.announceClose()
+            resolved.close()
             joinWithin(pacer, deadline)
             runCatching { current.close() }
             runCatching { audioPipeline?.awaitExit(deadline) }
@@ -1328,9 +1349,13 @@ actual class VideoPlayer internal constructor(
      * the last file's.
      */
     private fun switchSource(old: FrameSource, wanted: MediaInput): FrameSource {
+        var input: ResolvedInput? = null
         val next = try {
-            frameSourceFactory(fileOf(wanted))
+            val r = wanted.resolve()
+            input = r
+            frameSourceFactory(r)
         } catch (t: Throwable) {
+            input?.release()
             sourceFailure = t
             // A refusal changes no state, and a queue reads it off
             // [sourceFailure]: without this, one waiting on the change count
@@ -1340,10 +1365,12 @@ actual class VideoPlayer internal constructor(
         }
         // Null is a file with no pictures in it, which is not a refusal: the
         // EOF path decides what it means once the switch has gone through.
+        val opened = checkNotNull(input)
         val first = try {
             next.nextFrame(convert = false)
         } catch (t: Throwable) {
             runCatching { next.close() }
+            opened.release()
             sourceFailure = t
             noteChange()
             return old
@@ -1353,10 +1380,10 @@ actual class VideoPlayer internal constructor(
         // plays; only a pause the consumer asked for survives the switch.
         val resumePlaying = state !is State.Paused
         publishState(State.Opening)
-        val sound = audioPipeline?.takeIf { it.alive }?.setSource(fileOf(wanted))
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(opened)
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
         runCatching { old.close() }
-        resetForNewSource(wanted)
+        resetForNewSource(wanted, opened)
         publishFileMetadata(next)
         landFirstFrame(next, first, resumePlaying)
         return next
@@ -1364,16 +1391,18 @@ actual class VideoPlayer internal constructor(
 
     /** The frameless half of [switchSource]: no picture to open or to land. */
     private fun switchFramelessSource(wanted: MediaInput) {
-        if (wanted is MediaInput.Stream) {
-            sourceFailure = LibavException(STREAM_NOT_YET)
+        val opened = try {
+            wanted.resolve()
+        } catch (t: Throwable) {
+            sourceFailure = t
             noteChange()
             return
         }
         val resumePlaying = state !is State.Paused
         publishState(State.Opening)
-        val sound = audioPipeline?.takeIf { it.alive }?.setSource(fileOf(wanted))
+        val sound = audioPipeline?.takeIf { it.alive }?.setSource(opened)
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
-        resetForNewSource(wanted)
+        resetForNewSource(wanted, opened)
         durationNanos = audioPipeline?.durationNanos
         tags = audioPipeline?.tags ?: emptyMap()
         chapters = audioPipeline?.chapters ?: emptyList()
@@ -1391,7 +1420,7 @@ actual class VideoPlayer internal constructor(
      * to replace it. What that would cost if it were left alone is a lap end
      * measured against a pts from another file.
      */
-    private fun resetForNewSource(wanted: MediaInput) {
+    private fun resetForNewSource(wanted: MediaInput, opened: ResolvedInput) {
         queue.clear()
         eofPending = false
         rejoinFloorPts = Long.MIN_VALUE
@@ -1409,7 +1438,10 @@ actual class VideoPlayer internal constructor(
         externalSubtitleIds.set(0)
         synchronized(subtitleTracksLock) { subtitleTracks = emptyList() }
         source = wanted
-        sourcePath = fileOf(wanted)
+        // Released, not closed: a side may still be winding down on it, and
+        // the stream closes once the last one has let go.
+        resolved.release()
+        resolved = opened
         sourceFailure = null
     }
 
@@ -2451,7 +2483,7 @@ actual class VideoPlayer internal constructor(
         if (track.isText && !Ass.available) return
         current?.announceClose()
         val fresh = SubtitlePipeline(
-            path = track.externalPath ?: sourcePath,
+            input = track.externalPath?.let { ResolvedInput.File(it) } ?: resolved,
             clock = clock,
             track = track,
             storageSize = decoder?.videoSize(),
@@ -2847,11 +2879,9 @@ actual class VideoPlayer internal constructor(
     }
 
     private companion object {
-        const val STREAM_NOT_YET = "a MediaSource does not play through the player yet"
-
-        fun fileOf(input: MediaInput): Path = when (input) {
-            is MediaInput.File -> input.path
-            is MediaInput.Stream -> throw LibavException(STREAM_NOT_YET)
+        /** Stands in for an input that could not be resolved; nothing ever reads it. */
+        object DeadSource : MediaSource {
+            override fun read(dst: ByteArray, offset: Int, length: Int): Int = -1
         }
 
         /**

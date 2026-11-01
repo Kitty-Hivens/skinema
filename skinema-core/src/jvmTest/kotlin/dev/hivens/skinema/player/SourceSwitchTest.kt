@@ -11,6 +11,7 @@ import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
@@ -57,7 +58,10 @@ class SourceSwitchTest {
 
     private fun player(sources: Map<Path, FrameSource>, loop: Boolean = false) = VideoPlayer(
         MediaInput.File(first), loop, false, clock, null, 4, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
-    ) { asked -> sources[asked] ?: throw NoSuchFileException(asked.toString()) }
+    ) { asked ->
+        val path = (asked as ResolvedInput.File).path
+        sources[path] ?: throw NoSuchFileException(path.toString())
+    }
 
     @Test
     fun `a switch plays the next file on the same player`() {
@@ -183,7 +187,12 @@ class SourceSwitchTest {
             assertTrue(awaitTrue { p.state is VideoPlayer.State.Paused }, "the pause must land")
 
             p.setSource(MediaInput.File(second))
-            assertTrue(awaitTrue { p.source == MediaInput.File(second) }, "the switch must take")
+            // The source names the new file a moment before the switch settles,
+            // so the state is read once it has.
+            assertTrue(
+                awaitTrue { p.source == MediaInput.File(second) && p.state !is VideoPlayer.State.Opening },
+                "the switch must take and settle",
+            )
             assertIs<VideoPlayer.State.Paused>(p.state, "and it must stay paused")
             var seen = -1L
             assertTrue(
@@ -404,7 +413,8 @@ class SourceSwitchAudioTest {
         val refused = Fixtures.av1(dir.resolve("refused.mp4"))
         val player = VideoPlayer(
             MediaInput.File(one), false, false, null, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
-        ) { path ->
+        ) { input ->
+            val path = (input as ResolvedInput.File).path
             if (path == refused) VideoDecoder.openWithoutDevice(path, HwAccel.REQUIRE, "av1") else FrameSources.open(path)
         }
         player.use { p ->

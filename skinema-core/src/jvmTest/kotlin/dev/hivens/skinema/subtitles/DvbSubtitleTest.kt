@@ -2,6 +2,7 @@ package dev.hivens.skinema.subtitles
 
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -173,7 +174,7 @@ class DvbSubtitleTest {
         val path = dvbFixture("window.mkv")
         val track = VideoDecoder.open(path).use { it.subtitleTracks().single() }
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, track, 320 to 240)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, track, 320 to 240)
         try {
             val latest = Latest()
             // Before the cue, and the wait is a handshake rather than a sleep:
@@ -231,7 +232,7 @@ class DvbSubtitleTest {
         val path = dvbTsFixture("broadcast.ts")
         val track = VideoDecoder.open(path).use { it.subtitleTracks().single() }
         clock.start(0)
-        val pipeline = SubtitlePipeline(path, clock, track, 320 to 240)
+        val pipeline = SubtitlePipeline(ResolvedInput.File(path), clock, track, 320 to 240)
         try {
             val latest = Latest()
             frames.set(framesFor(2_500))

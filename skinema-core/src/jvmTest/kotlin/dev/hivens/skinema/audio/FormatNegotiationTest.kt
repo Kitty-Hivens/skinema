@@ -1,6 +1,7 @@
 package dev.hivens.skinema.audio
 
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.ResolvedInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -47,7 +48,7 @@ class FormatNegotiationTest {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("ac3")
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(surround("all.ac3"), sink)
+        val pipeline = AudioPipeline(ResolvedInput.File(surround("all.ac3")), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "the device must open")
             val agreed = assertNotNull(pipeline.activeFormat, "an open line has a shape")
@@ -70,7 +71,7 @@ class FormatNegotiationTest {
         Fixtures.assumeEncoder("ac3")
         val sink = FakePcmSink()
         sink.accepts = { it.channels <= 2 }
-        val pipeline = AudioPipeline(surround("fold.ac3"), sink)
+        val pipeline = AudioPipeline(ResolvedInput.File(surround("fold.ac3")), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "the device must still open")
             val agreed = assertNotNull(pipeline.activeFormat)
@@ -105,7 +106,7 @@ class FormatNegotiationTest {
         Fixtures.assumeDecodeEnvironment()
         Fixtures.assumeEncoder("ac3")
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(surround("floor.ac3"), sink)
+        val pipeline = AudioPipeline(ResolvedInput.File(surround("floor.ac3")), sink)
         sink.accepts = { it == PcmFormat.floor(it.sampleRate) }
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "the floor must open")
@@ -127,7 +128,7 @@ class FormatNegotiationTest {
         Fixtures.assumeEncoder("ac3")
         val sink = FakePcmSink()
         val pipeline = AudioPipeline(
-            surround("stereo.ac3"),
+            ResolvedInput.File(surround("stereo.ac3")),
             sink,
             channelPreference = ChannelPreference.Stereo,
         )
@@ -156,7 +157,7 @@ class FormatNegotiationTest {
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "pcm_s24le",
         )
         val sink = FakePcmSink()
-        val pipeline = AudioPipeline(file, sink)
+        val pipeline = AudioPipeline(ResolvedInput.File(file), sink)
         try {
             assertNotNull(pipeline.clockFuture.get(10, TimeUnit.SECONDS), "the device must open")
             val agreed = assertNotNull(pipeline.activeFormat)

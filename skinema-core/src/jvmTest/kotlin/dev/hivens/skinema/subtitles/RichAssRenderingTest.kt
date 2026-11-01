@@ -2,6 +2,7 @@ package dev.hivens.skinema.subtitles
 
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.VideoDecoder
 import java.nio.file.Files
@@ -101,7 +102,7 @@ class RichAssRenderingTest {
      * The pipeline over [path], rendering at the script's own 640x480 so the
      * coordinates a test writes are the coordinates it reads back.
      */
-    private fun pipeline(path: Path) = SubtitlePipeline(path, clock, trackOf(path), 640 to 480)
+    private fun pipeline(path: Path) = SubtitlePipeline(ResolvedInput.File(path), clock, trackOf(path), 640 to 480)
 
     private class Latest {
         var overlay: SubtitleOverlay? = null

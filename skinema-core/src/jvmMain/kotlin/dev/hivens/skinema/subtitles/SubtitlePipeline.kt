@@ -7,12 +7,16 @@ import dev.hivens.skinema.core.MediaClock
 import dev.hivens.skinema.core.TripleBuffer
 import dev.hivens.skinema.core.nanosToPts
 import dev.hivens.skinema.core.ptsToNanos
+import dev.hivens.skinema.libav.AvioSource
+import dev.hivens.skinema.libav.LIVE_NOT_YET
 import dev.hivens.skinema.libav.Libav
 import dev.hivens.skinema.libav.LibavAbi
 import dev.hivens.skinema.libav.LibavException
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.SubtitleTrack
 import dev.hivens.skinema.libav.dictValue
 import dev.hivens.skinema.libav.formatStartTimeNanos
+import dev.hivens.skinema.libav.openInput
 import dev.hivens.skinema.libav.streamAt
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
@@ -20,7 +24,6 @@ import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
-import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,7 +55,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * notices.
  */
 internal class SubtitlePipeline(
-    private val path: Path,
+    private val input: ResolvedInput,
     private val clock: MediaClock,
     val track: SubtitleTrack,
     private val storageSize: Pair<Int, Int>?,
@@ -142,6 +145,9 @@ internal class SubtitlePipeline(
     // Thread-confined session state, opened by run().
     private lateinit var arena: Arena
     private var fmtCtx = MemorySegment.NULL
+
+    // The AVIO context a stream's bytes come through; null for a file.
+    private var avioSource: AvioSource? = null
     private var codecCtx = MemorySegment.NULL
     private var assLibrary = MemorySegment.NULL
     private var assRenderer = MemorySegment.NULL
@@ -379,12 +385,22 @@ internal class SubtitlePipeline(
             openCaptionDecoder()
             return
         }
-        val ctxOut = arena.allocate(ADDRESS)
-        Libav.checkAv(
-            Libav.avformatOpenInput(ctxOut, arena.allocateFrom(path.toString())),
-            "avformat_open_input($path)",
-        )
-        fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+        when (val from = input) {
+            is ResolvedInput.File -> {
+                val ctxOut = arena.allocate(ADDRESS)
+                Libav.checkAv(
+                    Libav.avformatOpenInput(ctxOut, arena.allocateFrom(from.path.toString())),
+                    "avformat_open_input(${from.path})",
+                )
+                fmtCtx = ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
+            }
+            is ResolvedInput.Seekable -> {
+                val opened = openInput(arena, from.shared.cursor(), closeArenaOnFailure = false)
+                fmtCtx = opened.fmtCtx
+                avioSource = opened.avioSource
+            }
+            is ResolvedInput.Live -> throw LibavException(LIVE_NOT_YET)
+        }
         Libav.checkAv(Libav.avformatFindStreamInfo(fmtCtx), "avformat_find_stream_info(subs)")
         startTimeNanos = formatStartTimeNanos(fmtCtx)
 
@@ -994,6 +1010,8 @@ internal class SubtitlePipeline(
                 ptrPtr.set(ADDRESS, 0, fmtCtx)
                 Libav.avformatCloseInput(ptrPtr)
             }
+            // After the format context, which reads through it to the last.
+            avioSource?.free(ptrPtr)
         }
     }
 

@@ -1316,9 +1316,10 @@ internal fun openInput(arena: Arena, path: Path): OpenedInput {
  *
  * A failure releases the AVIO context, its buffer and the source before
  * closing the arena: the failed open frees the format context itself, and
- * the rest is ours.
+ * the rest is ours. A caller whose arena outlives the open (the subtitle
+ * side keeps its renderer in it) passes [closeArenaOnFailure] false.
  */
-internal fun openInput(arena: Arena, source: MediaSource): OpenedInput {
+internal fun openInput(arena: Arena, source: MediaSource, closeArenaOnFailure: Boolean = true): OpenedInput {
     var avioSource: AvioSource? = null
     val fmtCtx = try {
         val avio = AvioSource(arena, source)
@@ -1338,7 +1339,7 @@ internal fun openInput(arena: Arena, source: MediaSource): OpenedInput {
         ctxOut.get(ADDRESS, 0).reinterpret(LibavAbi.FormatContext.SIZEOF)
     } catch (t: Throwable) {
         avioSource?.free(arena.allocate(ADDRESS))
-        arena.close()
+        if (closeArenaOnFailure) arena.close()
         throw t
     }
     return OpenedInput(fmtCtx, avioSource)

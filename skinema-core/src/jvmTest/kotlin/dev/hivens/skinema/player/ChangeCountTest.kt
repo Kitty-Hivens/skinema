@@ -4,6 +4,7 @@ import dev.hivens.skinema.audio.ChannelPreference
 import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.Fixtures
 import dev.hivens.skinema.libav.MediaInput
+import dev.hivens.skinema.libav.ResolvedInput
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
@@ -87,7 +88,7 @@ class ChangeCountTest {
         val refused = ScriptedFrameSource(frameCount = 60, failAt = 0)
         val player = VideoPlayer(
             MediaInput.File(Path.of("first")), false, false, clock, null, 1, null, WhenUnwatched.Freeze, false, 1f, ChannelPreference.Source,
-        ) { asked -> if (asked == Path.of("second")) refused else ScriptedFrameSource(frameCount = 60) }
+        ) { asked -> if ((asked as ResolvedInput.File).path == Path.of("second")) refused else ScriptedFrameSource(frameCount = 60) }
         player.use { p ->
             assertTrue(awaitTrue { p.acquireFrame() != null }, "playback must start")
             Thread.sleep(100)

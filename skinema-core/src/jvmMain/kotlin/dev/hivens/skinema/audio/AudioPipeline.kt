@@ -5,8 +5,9 @@ import dev.hivens.skinema.core.AudioClock
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.AudioTrack
 import dev.hivens.skinema.libav.Chapter
+import dev.hivens.skinema.libav.ResolvedInput
 import dev.hivens.skinema.libav.TempoFilter
-import java.nio.file.Path
+import dev.hivens.skinema.libav.openSound
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -25,10 +26,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * moving (without sound there is nothing left to sync to).
  */
 internal class AudioPipeline(
-    // A var because the file itself can change under this pipeline: a source
+    // A var because the input itself can change under this pipeline: a source
     // switch reopens it here, and a track switch after that has to reopen the
-    // file being played rather than the one this side was built with.
-    private var path: Path,
+    // input being played rather than the one this side was built with.
+    private var input: ResolvedInput,
     private val sink: PcmSink,
     private val initialTrack: Int? = null,
     initialVolume: Float = 1f,
@@ -99,7 +100,7 @@ internal class AudioPipeline(
         data object Resume : Command
         data class Seek(val ptsNanos: Long) : Command
         data class SwitchTrack(val streamIndex: Int) : Command
-        data class SetSource(val path: Path, val done: CompletableFuture<Unit>) : Command
+        data class SetSource(val input: ResolvedInput, val done: CompletableFuture<Unit>) : Command
         data class SetTempo(val tempo: Double) : Command
         data class VideoLanded(val atNanos: Long) : Command
         data object Close : Command
@@ -331,7 +332,7 @@ internal class AudioPipeline(
     }
 
     /**
-     * Plays [newPath] through the thread, the line and the clock this pipeline
+     * Plays [newInput] through the thread, the line and the clock this pipeline
      * already holds.
      *
      * The future completes once the switch has been performed, and the caller
@@ -340,13 +341,13 @@ internal class AudioPipeline(
      * publish the previous file's. A pipeline that is no longer there completes
      * it at once, since nothing is going to happen either way.
      */
-    fun setSource(newPath: Path): CompletableFuture<Unit> {
+    fun setSource(newInput: ResolvedInput): CompletableFuture<Unit> {
         val done = CompletableFuture<Unit>()
         if (!alive) {
             done.complete(Unit)
             return done
         }
-        commands.put(Command.SetSource(newPath, done))
+        commands.put(Command.SetSource(newInput, done))
         return done
     }
 
@@ -429,7 +430,7 @@ internal class AudioPipeline(
         // otherwise leaked for the life of the process by the most ordinary
         // case there is: asking for audio on a file that has none.
         val opened = try {
-            AudioDecoder.openOrNull(path, initialTrack)
+            input.openSound(initialTrack)
         } catch (_: Throwable) {
             runCatching { sink.close() }
             finish()
@@ -1023,7 +1024,7 @@ internal class AudioPipeline(
             true
         }
         is Command.SetSource -> {
-            switchSource(cmd.path)
+            switchSource(cmd.input)
             cmd.done.complete(Unit)
             true
         }
@@ -1139,7 +1140,7 @@ internal class AudioPipeline(
         pendingPcm = null
 
         val next = try {
-            AudioDecoder.openOrNull(path, streamIndex)
+            input.openSound(streamIndex)
         } catch (_: Throwable) {
             null
         }
@@ -1224,17 +1225,17 @@ internal class AudioPipeline(
      * only then does the line run, so the two start together instead of the
      * sound running out ahead of a picture that is still opening.
      */
-    private fun switchSource(newPath: Path) {
+    private fun switchSource(newInput: ResolvedInput) {
         val theClock = clock ?: return
         freezeSink()
         flushLine()
         pendingPcm = null
         tempoFilter?.reset()
         awaitingLanding = true
-        path = newPath
+        input = newInput
 
         val next = try {
-            AudioDecoder.openOrNull(newPath, null)
+            newInput.openSound(null)
         } catch (_: Throwable) {
             null
         }
@@ -1282,7 +1283,7 @@ internal class AudioPipeline(
         rebuildTempoFor(crop.format)
         pendingPcm = crop.remainder
         if (DEBUG_SEEK) {
-            System.err.println("[audio-source] $newPath rate=${crop.sampleRate} anchored=${crop.anchorNanos / 1_000_000}ms")
+            System.err.println("[audio-source] ${newInput.label} rate=${crop.sampleRate} anchored=${crop.anchorNanos / 1_000_000}ms")
         }
     }
 
