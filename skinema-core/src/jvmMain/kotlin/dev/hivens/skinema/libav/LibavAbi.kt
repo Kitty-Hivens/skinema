@@ -92,6 +92,9 @@ object LibavAbi {
         const val FLAGS = 40L
         const val DURATION = 64L
         const val SIZEOF = 104L
+
+        /** AV_PKT_FLAG_KEY: the packet holds a keyframe. */
+        const val FLAG_KEY = 1
     }
 
     object CodecParameters {

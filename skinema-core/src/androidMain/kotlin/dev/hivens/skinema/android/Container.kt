@@ -22,19 +22,31 @@ internal sealed interface Input : AutoCloseable {
         val cursor = SourceCursor(source)
     }
 
+    /**
+     * A stream that reads forward only, kept readable near its start by a
+     * tape. A reader that [owns] it closes the tape with itself, which closes
+     * the stream: a decoder does, the player's own looks at it do not.
+     */
+    class Stream(val tape: ForwardTape, val owns: Boolean = true) : Input
+
     val label: String
         get() = when (this) {
             is File -> path.toString()
-            is Source -> "custom source"
+            is Source, is Stream -> "custom source"
         }
 
     override fun close() {
-        if (this is Source) cursor.source.close()
+        when (this) {
+            is Source -> cursor.source.close()
+            is Stream -> if (owns) tape.close()
+            is File -> {}
+        }
     }
 
     /** Up to [n] of the input's first bytes, for telling an image from a video. */
     fun head(n: Int): ByteArray = when (this) {
         is File -> java.io.FileInputStream(path.toFile()).use { it.readNBytes(n) }
+        is Stream -> readFrom(tape.reader(), n)
         is Source -> {
             val buffer = ByteArray(n)
             var got = 0
@@ -50,6 +62,7 @@ internal sealed interface Input : AutoCloseable {
     /** The whole input in memory: what an image is read from. */
     fun readAll(): ByteArray = when (this) {
         is File -> java.nio.file.Files.readAllBytes(path)
+        is Stream -> readFrom(tape.reader(), Int.MAX_VALUE)
         is Source -> {
             val out = java.io.ByteArrayOutputStream()
             val buffer = ByteArray(64 * 1024)
@@ -65,28 +78,49 @@ internal sealed interface Input : AutoCloseable {
     }
 }
 
+/** Up to [limit] bytes from [reader], read forward from where it stands. */
+private fun readFrom(reader: MediaSource, limit: Int): ByteArray {
+    val out = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(64 * 1024)
+    while (out.size() < limit) {
+        val read = reader.read(buffer, 0, minOf(buffer.size, limit - out.size()))
+        if (read <= 0) break
+        out.write(buffer, 0, read)
+    }
+    return out.toByteArray()
+}
+
 /**
- * An extractor over [input]. Refusals come back as [LibavException], the type
+ * A demuxer over [input]: the platform extractor, or Media3's for a stream
+ * that reads forward only. Refusals come back as [LibavException], the type
  * every decoder in this library fails with, so a consumer catches one thing
  * whichever platform it runs on.
  */
-internal fun openExtractor(input: Input): MediaExtractor {
+internal fun openExtractor(input: Input): Demuxer {
+    if (input is Input.Stream) {
+        return try {
+            StreamDemuxer { input.tape.reader() }
+        } catch (e: Exception) {
+            throw LibavException("Media3's extractor cannot open ${input.label}: ${e.message}")
+        }
+    }
     val extractor = MediaExtractor()
     try {
         when (input) {
             is Input.File -> extractor.setDataSource(input.path.toString())
             is Input.Source -> extractor.setDataSource(MediaSourceDataSource(input.cursor))
+            is Input.Stream -> error("handled above")
         }
     } catch (e: Exception) {
         extractor.release()
         val why = (input as? Input.Source)?.cursor?.refusal ?: e.message
         throw LibavException("the platform extractor cannot open ${input.label}: $why")
     }
-    return extractor
+    return PlatformDemuxer(extractor)
 }
 
 /** Index of the first track whose type starts with [prefix] ("video/", "audio/"), or -1. */
-internal fun MediaExtractor.firstTrack(prefix: String): Int =
+internal fun Demuxer.firstTrack(prefix: String): Int =
     (0 until trackCount).firstOrNull { getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith(prefix) == true } ?: -1
 
 internal fun MediaFormat.intOrNull(key: String): Int? = if (containsKey(key)) getInteger(key) else null
@@ -97,7 +131,7 @@ internal fun MediaFormat.longOrNull(key: String): Long? = if (containsKey(key)) 
 internal fun MediaFormat.numberOrNull(key: String): Double? = if (containsKey(key)) getNumber(key)?.toDouble() else null
 
 /** Every audio track, keyed by its index in the container as the desktop keys them. */
-internal fun MediaExtractor.audioTracks(): List<AudioTrack> = (0 until trackCount).mapNotNull { i ->
+internal fun Demuxer.audioTracks(): List<AudioTrack> = (0 until trackCount).mapNotNull { i ->
     val f = getTrackFormat(i)
     if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") != true) return@mapNotNull null
     AudioTrack(
@@ -111,7 +145,7 @@ internal fun MediaExtractor.audioTracks(): List<AudioTrack> = (0 until trackCoun
 }
 
 /** The subtitle tracks the platform extractor exposes. */
-internal fun MediaExtractor.subtitleTracks(): List<SubtitleTrack> = (0 until trackCount).mapNotNull { i ->
+internal fun Demuxer.subtitleTracks(): List<SubtitleTrack> = (0 until trackCount).mapNotNull { i ->
     val f = getTrackFormat(i)
     val mime = f.getString(MediaFormat.KEY_MIME) ?: return@mapNotNull null
     val text = mime.startsWith("text/") || mime == "application/x-subrip" || mime == "application/x-ssa"
@@ -153,12 +187,16 @@ internal class ContainerInfo(val tags: Map<String, String>, val coverArt: ByteAr
         )
 
         fun read(input: Input): ContainerInfo {
+            // The retriever and the chapter reader both read by offset, which
+            // a forward-only stream cannot give them.
+            if (input is Input.Stream) return ContainerInfo(emptyMap(), null, emptyList())
             val chapters = Chapters.read(input)
             val retriever = MediaMetadataRetriever()
             return try {
                 when (input) {
                     is Input.File -> retriever.setDataSource(input.path.toString())
                     is Input.Source -> retriever.setDataSource(MediaSourceDataSource(input.cursor))
+                    is Input.Stream -> error("handled above")
                 }
                 val tags = buildMap {
                     for ((key, name) in KEYS) retriever.extractMetadata(key)?.takeIf { it.isNotBlank() }?.let { put(name, it) }

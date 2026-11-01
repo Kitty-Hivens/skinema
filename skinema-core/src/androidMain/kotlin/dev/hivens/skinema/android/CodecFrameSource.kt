@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal class CodecFrameSource private constructor(
     private val input: Input,
-    private val extractor: MediaExtractor,
+    private val extractor: Demuxer,
     private val codec: MediaCodec,
     private val trackFormat: MediaFormat,
     val streamIndex: Int,
@@ -153,7 +153,7 @@ internal class CodecFrameSource private constructor(
     private fun seekToMicros(micros: Long) {
         releaseHeld()
         previousPtsNanos = -1L
-        extractor.seekTo(micros, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+        extractor.seekToPrevious(micros)
         codec.flush()
         inputDone = false
         outputDone = false

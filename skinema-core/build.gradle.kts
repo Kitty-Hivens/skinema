@@ -69,6 +69,14 @@ abstract class AndroidFixtures : DefaultTask() {
             "green-live.webm", "-f", "lavfi", "-i", "color=c=0x00FF00:s=320x240:r=15:d=1",
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-g", "5", "-f", "webm", "-live", "1",
         )
+        // Picture and sound muxed as a live stream is, to be read forward only
+        // the way a consumer's stream would hand it over.
+        ffmpeg(
+            "live-with-sound.mkv", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=3",
+            "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=3",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-bf", "0", "-c:a", "aac", "-shortest",
+            "-live", "1",
+        )
         // HD converted with the BT.709 matrix, once tagged and once not: the
         // untagged file is the geometry rule's case.
         val blueHd = arrayOf(
@@ -241,6 +249,7 @@ kotlin {
                 dependsOn(jvmSharedMain)
                 dependencies {
                     implementation(libs.media3.exoplayer)
+                    implementation(libs.media3.inspector)
                 }
             }
             getByName("androidDeviceTest") {

@@ -60,6 +60,9 @@ actual class VideoDecoder private constructor(
     // The file this decoder can reopen to restart a demuxer that cannot seek;
     // null when the bytes come from a MediaSource, which seeks on its own.
     private val reopenPath: String?,
+    // Where packets come from when a shared demuxer reads a forward-only
+    // stream for every side; null when this decoder has a demuxer of its own.
+    private val lane: SharedDemux.Lane? = null,
 ) : FrameSource {
 
     // The container's duration when it declares one, otherwise what a full
@@ -109,6 +112,11 @@ actual class VideoDecoder private constructor(
                 "the device opened but decoded this stream in software (HwAccel.REQUIRE)",
             )
         }
+    }
+
+    /** Parks or unparks the lane a forward-only stream feeds this decoder from; nothing for a demuxer of its own. */
+    internal fun parkLane(parked: Boolean) {
+        lane?.parked = parked
     }
 
     /** The GPU surface a device was opened for; AV_PIX_FMT_NONE for software. */
@@ -209,7 +217,7 @@ actual class VideoDecoder private constructor(
                 "the device opened but could not decode this stream (HwAccel.REQUIRE): ${Libav.errorText(ret)} ($ret)",
             )
         }
-        val codecpar = streamAt(fmtCtx, streamIndex).get(ADDRESS, LibavAbi.Stream.CODECPAR)
+        val codecpar = lane?.codecpar ?: streamAt(fmtCtx, streamIndex).get(ADDRESS, LibavAbi.Stream.CODECPAR)
             .reinterpret(LibavAbi.CodecParameters.SIZEOF)
         val replacement = decoderContext(arena, software, codecpar)
         val opened = Libav.avcodecOpen2(replacement, software)
@@ -407,6 +415,16 @@ actual class VideoDecoder private constructor(
 
     private fun seekToUnit(ts: Long) {
         dropPacketsInFlight()
+        val shared = lane
+        if (shared != null) {
+            // A forward-only stream cannot go back. What a reposition can still
+            // mean is starting over from the newest keyframe already read, which
+            // is where a picture rejoining a clock that ran on wants to be.
+            shared.skipToLatestKeyframe()
+            Libav.avcodecFlushBuffers(codecCtx)
+            draining = false
+            return
+        }
         val seeked = Libav.avSeekFrame(fmtCtx, streamIndex, ts, LibavAbi.AVSEEK_FLAG_BACKWARD)
         avioSource?.throwIfFailed() // a source error inside the seek upcall, as itself
         Libav.checkAv(seeked, "av_seek_frame")
@@ -528,7 +546,7 @@ actual class VideoDecoder private constructor(
             return
         }
         while (true) {
-            val ret = Libav.avReadFrame(fmtCtx, packet)
+            val ret = lane?.take(packet) ?: Libav.avReadFrame(fmtCtx, packet)
             // A seek to the start that found nothing to read gets two
             // escapes, cheapest first: rewind the byte stream, then replace
             // the demuxer. Each is tried once, so a demuxer that seeks
@@ -855,10 +873,15 @@ actual class VideoDecoder private constructor(
             ptrPtr.set(ADDRESS, 0, hwDeviceCtx)
             Libav.avBufferUnref(ptrPtr)
         }
-        ptrPtr.set(ADDRESS, 0, fmtCtx)
-        Libav.avformatCloseInput(ptrPtr)
-        // After the demuxer let go of the pb, release the custom AVIO (if any).
-        avioSource?.free(ptrPtr)
+        val shared = lane
+        if (shared != null) {
+            shared.release()
+        } else {
+            ptrPtr.set(ADDRESS, 0, fmtCtx)
+            Libav.avformatCloseInput(ptrPtr)
+            // After the demuxer let go of the pb, release the custom AVIO (if any).
+            avioSource?.free(ptrPtr)
+        }
         arena.close()
     }
 
@@ -1130,6 +1153,104 @@ actual class VideoDecoder private constructor(
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
             return openVideo(arena, opened.fmtCtx, opened.avioSource, hardware, "custom source", deviceDecoder = deviceDecoder)
+        }
+
+        /**
+         * A decoder for the picture of a forward-only stream, taking its
+         * packets from a lane of [demux] rather than from a demuxer of its own.
+         * Same refusals as an open: no picture, a picture this build cannot
+         * decode, or a hardware policy the machine cannot meet.
+         */
+        internal fun openLane(demux: SharedDemux, hardware: HwAccel): VideoDecoder {
+            val index = demux.bestVideo
+            val info = demux.streams.getOrNull(index)
+                ?: throw NoVideoStreamException("the stream carries no video this build can decode")
+            if (info.attachedPicture) throw NoVideoStreamException("the only video stream of the stream is an attached picture")
+            val arena = Arena.ofConfined()
+            val lane = try {
+                demux.lane(index)
+            } catch (t: Throwable) {
+                arena.close()
+                throw t
+            }
+            var codecCtx = MemorySegment.NULL
+            var hwDevice = MemorySegment.NULL
+            var deviceRef = MemorySegment.NULL
+            var packet = MemorySegment.NULL
+            var frame = MemorySegment.NULL
+            try {
+                val codecpar = lane.codecpar
+                val codecId = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID)
+                val found = Libav.avcodecFindDecoder(codecId)
+                if (found == MemorySegment.NULL) throw NoVideoStreamException("the stream carries no video this build can decode")
+                val software = pickDecoder(arena, codecpar, found)
+                val hw = if (hardware == HwAccel.OFF) {
+                    HwSetup(LibavAbi.AV_PIX_FMT_NONE, MemorySegment.NULL, MemorySegment.NULL, software)
+                } else {
+                    val codecName = Libav.avcodecGetName(codecId).reinterpret(Long.MAX_VALUE).getString(0)
+                    openHwDevice(arena, hardwareCandidates(arena, software, codecName, info.alphaTagged), hardware)
+                }
+                hwDevice = hw.deviceCtx
+                deviceRef = hw.deviceRef
+                codecCtx = decoderContext(arena, hw.decoder, codecpar)
+                if (hw.pixFmt != LibavAbi.AV_PIX_FMT_NONE) {
+                    wireHwDevice(arena, codecCtx, hw)
+                    deviceRef = MemorySegment.NULL
+                }
+                Libav.checkAv(Libav.avcodecOpen2(codecCtx, hw.decoder), "avcodec_open2")
+                packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
+                frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
+                    throw LibavException("av_packet_alloc/av_frame_alloc returned NULL")
+                }
+                val width = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.WIDTH)
+                val height = codecpar.get(JAVA_INT, LibavAbi.CodecParameters.HEIGHT)
+                if (width <= 0 || height <= 0) throw LibavException("the stream has a video stream with no dimensions")
+                return VideoDecoder(
+                    arena, MemorySegment.NULL, codecCtx, packet, frame, index, info.timeBaseNum, info.timeBaseDen,
+                    demux.startTimeNanos,
+                    info.durationNanos,
+                    demux.tags,
+                    demux.chapters,
+                    demux.coverArt,
+                    info.rotationDegrees,
+                    demux.subtitleTracks,
+                    width to height,
+                    hw.pixFmt,
+                    hardware,
+                    hwDevice,
+                    hw.decoder,
+                    software.takeIf { it.address() != hw.decoder.address() },
+                    null,
+                    null,
+                    lane,
+                )
+            } catch (t: Throwable) {
+                val ptrPtr = arena.allocate(ADDRESS)
+                if (codecCtx != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, codecCtx)
+                    Libav.avcodecFreeContext(ptrPtr)
+                }
+                if (packet != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, packet)
+                    Libav.avPacketFree(ptrPtr)
+                }
+                if (frame != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, frame)
+                    Libav.avFrameFree(ptrPtr)
+                }
+                if (deviceRef != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, deviceRef)
+                    Libav.avBufferUnref(ptrPtr)
+                }
+                if (hwDevice != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, hwDevice)
+                    Libav.avBufferUnref(ptrPtr)
+                }
+                lane.release()
+                arena.close()
+                throw t
+            }
         }
 
         /** Shared tail: an opened [fmtCtx] -> a video decoder, or fail-closed. */

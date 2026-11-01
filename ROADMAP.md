@@ -1977,6 +1977,45 @@ README once the library is usable.
   40 KB, nothing reported anywhere), where the platform extractor needs
   random access.
 
+  A stream is asked once, at the open, whether it can seek: a source at its
+  start that answers a seek to zero with zero can. The player owns what it
+  is handed. A switch releases the stream it leaves, which closes it once
+  the last side still winding down on it has let go, and a close closes it
+  at once, without the lock, because closing is how a read blocked inside a
+  stalled stream is broken out of.
+
+  The shared demuxer reads ahead the way ffplay does: about a second of
+  each stream it routes, past which it waits, unless a side is waiting on
+  an empty lane, since a full sound lane and a starving picture would
+  otherwise wait on each other for good. The lanes made ready at the open
+  count before a side takes them. The first version left them out and a
+  fast source was read to its end in the moment between the open and the
+  first claim, which the rejoin then showed as a jump to the stream's last
+  keyframe. While the picture is hidden and time runs on, its lane keeps
+  only what follows the latest keyframe, and the rejoin starts there; under
+  a pause it is not trimmed, since the sound stops too and both pick up
+  where they stood. A track switch or a subtitle selection takes effect
+  from the next packets, and the clock steps to where they are.
+
+  Every behaviour was mutation-checked, and five first passed against the
+  defect. A step back on a live stream decoded forward looking for an
+  earlier frame, read the stream to its end and ended the player, while the
+  frame and the position the test looked at stayed put; it now checks the
+  state too. A settle that did nothing passed a test asserting a refusal
+  that came for another reason. The rule that a starving side keeps the
+  reading going matters only at the byte cap, which no fixture reached, so
+  that cap is a test parameter now. Three are kept as guards no test can
+  see. Turning the lap is gated, but a lap on a live stream reads nothing
+  and the existing rule for an empty lap ends it anyway, at the same
+  position. Parking the hidden picture's lane bounds memory, not behaviour.
+  And the rejoin's resync to the newest keyframe is defensive, since a
+  parked lane already starts at one.
+
+  Android has no shared demuxer, so a live stream there feeds one decoder:
+  the player through Media3, or the picture of a transcode. A transcode
+  asked for its sound too is refused by name, since two readers over one
+  tape part ways as soon as one runs past what it keeps.
+
 Adoption bar (the primary consumer): the launcher takes skinema as a
 normal published dependency once 0.x is on Maven Central with bundled
 natives for its official platforms, the background harness has survived

@@ -44,6 +44,9 @@ actual class AudioDecoder private constructor(
     // The custom byte source backing this decoder (freed at close, after the
     // format context); null for a file-Path decoder.
     private val avioSource: AvioSource? = null,
+    // Where packets come from when a shared demuxer reads a forward-only
+    // stream for every side; null when this decoder has a demuxer of its own.
+    private val lane: SharedDemux.Lane? = null,
 ) : AutoCloseable {
 
     actual class PcmChunk internal constructor(
@@ -130,6 +133,14 @@ actual class AudioDecoder private constructor(
 
     /** Same contract as [VideoDecoder.seekTo]; also reopens a drained stream. */
     actual fun seekTo(ptsNanos: Long) {
+        if (lane != null) {
+            // A forward-only stream cannot go back: the decoder is flushed and
+            // carries on from the packets the lane holds, and whoever asked
+            // crops from the first chunk at or after the target.
+            Libav.avcodecFlushBuffers(codecCtx)
+            draining = false
+            return
+        }
         // Re-apply the container start_time the timeline was normalized
         // against (see formatStartTimeNanos) before seeking the demuxer.
         val ts = nanosToPts(ptsNanos + startTimeNanos, timeBaseNum, timeBaseDen)
@@ -143,7 +154,7 @@ actual class AudioDecoder private constructor(
     private fun feedOnePacket() {
         if (draining) throw LibavException("audio decoder demanded input while draining")
         while (true) {
-            val ret = Libav.avReadFrame(fmtCtx, packet)
+            val ret = lane?.take(packet) ?: Libav.avReadFrame(fmtCtx, packet)
             if (ret < 0) {
                 // A real EOF, or the AvioSource caught a MediaSource exception
                 // and signalled EOF to get off the native stack; resurface it
@@ -333,9 +344,14 @@ actual class AudioDecoder private constructor(
         Libav.avPacketFree(ptrPtr)
         ptrPtr.set(ADDRESS, 0, codecCtx)
         Libav.avcodecFreeContext(ptrPtr)
-        ptrPtr.set(ADDRESS, 0, fmtCtx)
-        Libav.avformatCloseInput(ptrPtr)
-        avioSource?.free(ptrPtr)
+        val shared = lane
+        if (shared != null) {
+            shared.release()
+        } else {
+            ptrPtr.set(ADDRESS, 0, fmtCtx)
+            Libav.avformatCloseInput(ptrPtr)
+            avioSource?.free(ptrPtr)
+        }
         arena.close()
     }
 
@@ -391,6 +407,69 @@ actual class AudioDecoder private constructor(
             val arena = Arena.ofConfined()
             val opened = openInput(arena, source)
             return openAudio(arena, opened.fmtCtx, opened.avioSource, streamIndex, "custom source")
+        }
+
+        /**
+         * The sound of a forward-only stream, from a lane of [demux]: the
+         * requested [streamIndex] or the best pick. Null when the stream has no
+         * sound, as [openOrNull] answers.
+         */
+        internal fun openLane(demux: SharedDemux, streamIndex: Int?): AudioDecoder? {
+            val index = streamIndex ?: demux.bestAudio.takeIf { it >= 0 } ?: return null
+            if (demux.audioTracks.none { it.streamIndex == index }) {
+                throw LibavException("stream $index is not an audio track of the stream")
+            }
+            val info = demux.streams[index]
+            val arena = Arena.ofConfined()
+            val lane = try {
+                demux.lane(index)
+            } catch (t: Throwable) {
+                arena.close()
+                throw t
+            }
+            var codecCtx = MemorySegment.NULL
+            var packet = MemorySegment.NULL
+            var frame = MemorySegment.NULL
+            try {
+                val decoder = Libav.avcodecFindDecoder(lane.codecpar.get(JAVA_INT, LibavAbi.CodecParameters.CODEC_ID))
+                if (decoder == MemorySegment.NULL) throw LibavException("no decoder for audio stream $index of the stream")
+                codecCtx = Libav.avcodecAllocContext3(decoder)
+                if (codecCtx == MemorySegment.NULL) throw LibavException("avcodec_alloc_context3(audio) returned NULL")
+                Libav.checkAv(Libav.avcodecParametersToContext(codecCtx, lane.codecpar), "avcodec_parameters_to_context(audio)")
+                Libav.checkAv(Libav.avcodecOpen2(codecCtx, decoder), "avcodec_open2(audio)")
+                packet = Libav.avPacketAlloc().reinterpret(LibavAbi.Packet.SIZEOF)
+                frame = Libav.avFrameAlloc().reinterpret(LibavAbi.Frame.SIZEOF)
+                if (packet == MemorySegment.NULL || frame == MemorySegment.NULL) {
+                    throw LibavException("av_packet_alloc/av_frame_alloc(audio) returned NULL")
+                }
+                return AudioDecoder(
+                    arena, MemorySegment.NULL, codecCtx, packet, frame, index, info.timeBaseNum, info.timeBaseDen,
+                    demux.startTimeNanos,
+                    info.durationNanos, demux.audioTracks,
+                    demux.tags,
+                    demux.chapters,
+                    demux.coverArt,
+                    null,
+                    lane,
+                )
+            } catch (t: Throwable) {
+                val ptrPtr = arena.allocate(ADDRESS)
+                if (packet != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, packet)
+                    Libav.avPacketFree(ptrPtr)
+                }
+                if (frame != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, frame)
+                    Libav.avFrameFree(ptrPtr)
+                }
+                if (codecCtx != MemorySegment.NULL) {
+                    ptrPtr.set(ADDRESS, 0, codecCtx)
+                    Libav.avcodecFreeContext(ptrPtr)
+                }
+                lane.release()
+                arena.close()
+                throw t
+            }
         }
 
         /** Shared tail: an opened [fmtCtx] -> an audio decoder, null when there is no audio. */
@@ -494,7 +573,7 @@ actual class AudioDecoder private constructor(
             }
         }
 
-        private fun enumerateTracks(fmtCtx: MemorySegment, arena: Arena): List<AudioTrack> {
+        internal fun enumerateTracks(fmtCtx: MemorySegment, arena: Arena): List<AudioTrack> {
             val languageKey = arena.allocateFrom("language")
             val titleKey = arena.allocateFrom("title")
             val tracks = mutableListOf<AudioTrack>()

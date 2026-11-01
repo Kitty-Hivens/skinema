@@ -152,11 +152,15 @@ class TranscoderTest {
     @Test
     fun `a seekable stream transcodes with its sound and is closed after`() {
         Fixtures.assumeDecodeEnvironment()
-        Fixtures.assumeLibraryEncoder("libx264")
         Fixtures.assumeLibraryEncoder("aac")
+        // Whichever video encoder this bundle carries, as the geometry guard
+        // below picks it: the subject is the stream, and the decode tier has
+        // no libx264. Sized past SVT-AV1's minimum.
+        val encoder = listOf("libx264", "libsvtav1").firstOrNull { Fixtures.libraryHasEncoder(it) }
+        org.junit.jupiter.api.Assumptions.assumeTrue(encoder != null, "this bundle carries no video encoder")
         val input = Fixtures.generate(
             dir.resolve("streamed.mkv"),
-            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10", "-t", "2",
+            "-f", "lavfi", "-i", "testsrc2=size=128x128:rate=10", "-t", "2",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "2",
             "-map", "0:v", "-map", "1:a",
             "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-c:a", "flac",
@@ -183,7 +187,7 @@ class TranscoderTest {
             }
         }
         val out = dir.resolve("streamed-out.mp4")
-        Transcoder.open(MediaInput.Stream(source), out, TranscodeConfig(videoCodec = "libx264", audioCodec = "aac")).use { it.run() }
+        Transcoder.open(MediaInput.Stream(source), out, TranscodeConfig(videoCodec = encoder!!, audioCodec = "aac")).use { it.run() }
         assertTrue(closed, "the transcoder owns the stream and closes it")
         VideoDecoder.open(out).use { d ->
             assertEquals(20, generateSequence { d.nextFrame(convert = false) }.count(), "two seconds at ten frames a second")

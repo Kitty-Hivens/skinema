@@ -2,9 +2,10 @@ package dev.hivens.skinema.libav
 
 import android.media.AudioFormat
 import android.media.MediaCodec
-import android.media.MediaExtractor
 import android.media.MediaFormat
 import dev.hivens.skinema.android.ContainerInfo
+import dev.hivens.skinema.android.Demuxer
+import dev.hivens.skinema.android.ForwardTape
 import dev.hivens.skinema.android.Input
 import dev.hivens.skinema.android.PcmConvert
 import dev.hivens.skinema.android.audioTracks
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 actual class AudioDecoder private constructor(
     private val input: Input,
-    private val extractor: MediaExtractor,
+    private val extractor: Demuxer,
     private val codec: MediaCodec,
     actual val streamIndex: Int,
     actual val durationNanos: Long?,
@@ -106,7 +107,7 @@ actual class AudioDecoder private constructor(
     }
 
     actual fun seekTo(ptsNanos: Long) {
-        extractor.seekTo(ptsNanos.coerceAtLeast(0) / NANOS_PER_MICRO, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+        extractor.seekToPrevious(ptsNanos.coerceAtLeast(0) / NANOS_PER_MICRO)
         codec.flush()
         inputDone = false
         outputDone = false
@@ -227,7 +228,11 @@ actual class AudioDecoder private constructor(
 
         actual fun openOrNull(path: Path, streamIndex: Int?): AudioDecoder? = openFrom(Input.File(path), streamIndex)
 
-        actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? = openFrom(Input.Source(source), streamIndex)
+        actual fun openOrNull(source: MediaSource, streamIndex: Int?): AudioDecoder? = openFrom(inputOf(source), streamIndex)
+
+        /** A source that can seek is read by offset like a file; one that reads forward only goes through a tape and Media3's extractor. */
+        internal fun inputOf(source: MediaSource): Input =
+            if (SharedSource.canSeek(source)) Input.Source(source) else Input.Stream(ForwardTape(source))
 
         private fun openFrom(input: Input, streamIndex: Int?): AudioDecoder? {
             val extractor = try {

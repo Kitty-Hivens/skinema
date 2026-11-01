@@ -31,13 +31,53 @@ internal sealed interface ResolvedInput {
         override fun close() = shared.close()
     }
 
+    /**
+     * A stream that reads forward only. It can be read once, so the platform
+     * opens one reader over it ([attach]) that every side shares, on the
+     * first side's call, and the others get the same one.
+     */
     class Live(val source: MediaSource) : ResolvedInput {
         override val label: String get() = "the stream"
 
+        private val lock = Any()
+
+        @Volatile
+        private var attached: AutoCloseable? = null
+
+        @Volatile
+        private var closed = false
+
+        /** The one reader over [source], opened by [open] on the first call. */
+        @Suppress("UNCHECKED_CAST")
+        fun <T : AutoCloseable> attach(open: (MediaSource) -> T): T = synchronized(lock) {
+            if (closed) throw LibavException("the stream was closed")
+            (attached as T?)?.let { return it }
+            val opened = open(source)
+            // A close that came while the reader was opening (it reads the
+            // header, which can block) finds nothing to close but the source,
+            // so the reader is closed here instead of handed out.
+            if (closed) {
+                runCatching { opened.close() }
+                throw LibavException("the stream was closed")
+            }
+            attached = opened
+            opened
+        }
+
+        /** The reader, when one has been opened. */
+        fun attachedOrNull(): AutoCloseable? = attached
+
         override fun release() = close()
 
+        /**
+         * Without the lock, which an open blocked inside the source holds:
+         * closing the source is what breaks that read out of it.
+         */
         override fun close() {
-            runCatching { source.close() }
+            if (closed) return
+            closed = true
+            val reader = attached
+            if (reader != null) runCatching { reader.close() } else runCatching { source.close() }
         }
     }
 }

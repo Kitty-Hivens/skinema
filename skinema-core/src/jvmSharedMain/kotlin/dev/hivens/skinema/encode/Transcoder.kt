@@ -4,13 +4,14 @@ import dev.hivens.skinema.Debug
 import dev.hivens.skinema.audio.PcmFormat
 import dev.hivens.skinema.libav.AudioDecoder
 import dev.hivens.skinema.libav.FrameSource
-import dev.hivens.skinema.libav.FrameSources
 import dev.hivens.skinema.libav.HwAccel
 import dev.hivens.skinema.libav.LibavException
 import dev.hivens.skinema.libav.MediaInput
 import dev.hivens.skinema.libav.ResolvedInput
-import dev.hivens.skinema.libav.VideoDecoder
+import dev.hivens.skinema.libav.openFrames
+import dev.hivens.skinema.libav.openSound
 import dev.hivens.skinema.libav.resolve
+import dev.hivens.skinema.libav.settle
 import java.nio.file.Path
 
 /**
@@ -310,26 +311,17 @@ class Transcoder private constructor(
         fun open(input: MediaInput, output: Path, config: TranscodeConfig): Transcoder {
             val resolved = input.resolve()
             val video = try {
-                when (resolved) {
-                    is ResolvedInput.File -> FrameSources.open(resolved.path)
-                    is ResolvedInput.Seekable -> VideoDecoder.open(resolved.shared.cursor(), HwAccel.OFF)
-                    is ResolvedInput.Live -> throw LibavException("a stream that reads forward only does not transcode yet")
-                }
+                resolved.openFrames(HwAccel.OFF)
             } catch (t: Throwable) {
                 resolved.release()
                 throw t
             }
             val audio = if (config.audioCodec != null) {
-                runCatching {
-                    when (resolved) {
-                        is ResolvedInput.File -> AudioDecoder.openOrNull(resolved.path)
-                        is ResolvedInput.Seekable -> AudioDecoder.openOrNull(resolved.shared.cursor())
-                        is ResolvedInput.Live -> null
-                    }
-                }.getOrNull()
+                runCatching { resolved.openSound(null) }.getOrNull()
             } else {
                 null
             }
+            resolved.settle()
             if (config.audioCodec != null && audio == null) {
                 runCatching { video.close() }
                 resolved.release()

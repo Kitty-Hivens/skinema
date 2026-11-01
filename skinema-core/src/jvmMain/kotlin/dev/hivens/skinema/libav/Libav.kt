@@ -259,6 +259,10 @@ object Libav {
     private val hAvPacketUnref = fn(LibavLibrary.AVCODEC, "av_packet_unref", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvPacketFree = fn(LibavLibrary.AVCODEC, "av_packet_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvPacketClone = fn(LibavLibrary.AVCODEC, "av_packet_clone", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    private val hAvPacketMoveRef = fn(LibavLibrary.AVCODEC, "av_packet_move_ref", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS))
+    private val hAvcodecParametersAlloc = fn(LibavLibrary.AVCODEC, "avcodec_parameters_alloc", FunctionDescriptor.of(ADDRESS))
+    private val hAvcodecParametersCopy = fn(LibavLibrary.AVCODEC, "avcodec_parameters_copy", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    private val hAvcodecParametersFree = fn(LibavLibrary.AVCODEC, "avcodec_parameters_free", FunctionDescriptor.ofVoid(ADDRESS))
     private val hAvcodecAllocContext3 = fn(LibavLibrary.AVCODEC, "avcodec_alloc_context3", FunctionDescriptor.of(ADDRESS, ADDRESS))
     private val hAvcodecFindDecoder = fn(LibavLibrary.AVCODEC, "avcodec_find_decoder", FunctionDescriptor.of(ADDRESS, JAVA_INT))
     private val hAvcodecGetName = fn(LibavLibrary.AVCODEC, "avcodec_get_name", FunctionDescriptor.of(ADDRESS, JAVA_INT))
@@ -572,6 +576,10 @@ object Libav {
 
     /** A new packet referencing [packet]'s data (a refcount, not a copy), or NULL when it cannot allocate. */
     fun avPacketClone(packet: MemorySegment): MemorySegment = hAvPacketClone.invoke(packet) as MemorySegment
+    fun avPacketMoveRef(dst: MemorySegment, src: MemorySegment) { hAvPacketMoveRef.invoke(dst, src) }
+    fun avcodecParametersAlloc(): MemorySegment = hAvcodecParametersAlloc.invoke() as MemorySegment
+    fun avcodecParametersCopy(dst: MemorySegment, src: MemorySegment): Int = hAvcodecParametersCopy.invoke(dst, src) as Int
+    fun avcodecParametersFree(parPtrPtr: MemorySegment) { hAvcodecParametersFree.invoke(parPtrPtr) }
 
     fun avcodecAllocContext3(codec: MemorySegment): MemorySegment = hAvcodecAllocContext3.invoke(codec) as MemorySegment
     fun avcodecFindDecoder(codecId: Int): MemorySegment = hAvcodecFindDecoder.invoke(codecId) as MemorySegment

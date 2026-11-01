@@ -24,6 +24,7 @@ import dev.hivens.skinema.libav.VideoDecoder
 import dev.hivens.skinema.libav.openFrames
 import dev.hivens.skinema.libav.probeSubtitleFile
 import dev.hivens.skinema.libav.resolve
+import dev.hivens.skinema.libav.settle
 import dev.hivens.skinema.subtitles.SubtitleOverlay
 import dev.hivens.skinema.subtitles.SubtitlePipeline
 import java.nio.file.Path
@@ -1179,7 +1180,7 @@ actual class VideoPlayer internal constructor(
 
         val decoder = try {
             openFailure?.let { throw it }
-            frameSourceFactory(resolved)
+            frameSourceFactory(resolved).also { resolved.settle() }
         } catch (t: Throwable) {
             // Frameless is the answer to a file with nothing to show, and to
             // nothing else. Every throw used to take this door when the file
@@ -1215,6 +1216,7 @@ actual class VideoPlayer internal constructor(
                     // pipeline's own clock is already running; without, this
                     // wall clock is the only thing that moves and it would
                     // otherwise sit at zero forever.
+                    resolved.settle()
                     if (ownsClock) clock.start(0)
                     enterFramelessStart()
                     while (true) {
@@ -1382,6 +1384,8 @@ actual class VideoPlayer internal constructor(
         publishState(State.Opening)
         val sound = audioPipeline?.takeIf { it.alive }?.setSource(opened)
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
+        opened.settle()
+        picturesParked = false
         runCatching { old.close() }
         resetForNewSource(wanted, opened)
         publishFileMetadata(next)
@@ -1402,6 +1406,7 @@ actual class VideoPlayer internal constructor(
         publishState(State.Opening)
         val sound = audioPipeline?.takeIf { it.alive }?.setSource(opened)
         runCatching { sound?.get(SOURCE_SWITCH_BUDGET_MS, TimeUnit.MILLISECONDS) }
+        opened.settle()
         resetForNewSource(wanted, opened)
         durationNanos = audioPipeline?.durationNanos
         tags = audioPipeline?.tags ?: emptyMap()
@@ -1604,7 +1609,7 @@ actual class VideoPlayer internal constructor(
             if (pendingSourceSwitch != null) return
             if (state is State.Playing && framelessLapDone()) {
                 val pipe = audioPipeline
-                if (loop && framelessLapCanTurn()) {
+                if (loop && seekable && framelessLapCanTurn()) {
                     // Audio-only, so there is no picture to end the lap: this
                     // side owns it. The landing handshake goes with the seek,
                     // without which the sink stays muted from here on -- and
@@ -1641,6 +1646,7 @@ actual class VideoPlayer internal constructor(
             if (pendingSourceSwitch != null) return
 
             noteUnwatched()
+            parkPictures(decoder)
             if (state is State.Playing && !presenting) turnLapUnwatched(decoder)
             if (state !is State.Playing || !presenting) {
                 // Paused, ended, or drawing for nobody: idle until the next
@@ -1681,7 +1687,8 @@ actual class VideoPlayer internal constructor(
                     continue
                 }
                 eofPending = false
-                if (!loop) {
+                // A forward-only stream cannot be turned: its end is the end.
+                if (!loop || !seekable) {
                     enterEnded()
                     continue
                 }
@@ -1767,6 +1774,22 @@ actual class VideoPlayer internal constructor(
         }
     }
 
+    // What the last [parkPictures] told the decoder. Owned by the decode thread.
+    private var picturesParked = false
+
+    /**
+     * On a forward-only stream, keeps only the newest pictures while time runs
+     * on with nobody taking them: the lane holds from its latest keyframe on,
+     * and the rejoin starts there. Not while paused, where the sound stops too
+     * and both have to pick up where they stood.
+     */
+    private fun parkPictures(decoder: FrameSource) {
+        val parked = !presenting && state is State.Playing
+        if (parked == picturesParked) return
+        picturesParked = parked
+        (decoder as? VideoDecoder)?.parkLane(parked)
+    }
+
     /** Converts the decoder's current frame into a queue cell. */
     private fun enqueue(decoder: FrameSource, raw: VideoDecoder.RgbaFrame, forced: Boolean) {
         lapProducedFrames = true
@@ -1831,7 +1854,8 @@ actual class VideoPlayer internal constructor(
             performStepForward(decoder)
             true
         }
-        Command.StepBackward -> performStepBackward(decoder)
+        // A stream that reads forward only cannot go back: nothing to do.
+        Command.StepBackward -> if (!seekable) true else performStepBackward(decoder)
         Command.Resume -> {
             resumeNow(decoder)
             true
@@ -1890,8 +1914,8 @@ actual class VideoPlayer internal constructor(
             applySubtitleSelection(cmd.id, decoder)
             true
         }
-        is Command.Seek -> handleSeek(cmd.ptsNanos, cmd.exact, decoder)
-        is Command.SeekBy -> {
+        is Command.Seek -> if (!seekable) true else handleSeek(cmd.ptsNanos, cmd.exact, decoder)
+        is Command.SeekBy -> if (!seekable) true else {
             // Mid-burst the accumulated target wins (the clock stands at
             // the old anchor and must not be consulted). Outside a burst
             // the playhead is the frame on screen OR the just-landed
@@ -2377,14 +2401,17 @@ actual class VideoPlayer internal constructor(
         when (state) {
             State.Playing -> {}
             State.Paused -> {
-                if (abs(at - shown) <= lastPublishGapNanos) return true
+                if (abs(at - shown) <= lastPublishGapNanos || !seekable) return true
                 return handleSeek(at, exact = true, decoder, preview = false)
             }
             // A landing in flight lands on its own, and an ended or opening
             // player has nothing to catch up.
             else -> return true
         }
-        if (at - shown in 0..REJOIN_DECODE_NANOS) return true
+        // A forward-only stream kept only its newest pictures while nobody
+        // watched, so it always starts again from a keyframe: what the decoder
+        // had before the gap is gone.
+        if (seekable && at - shown in 0..REJOIN_DECODE_NANOS) return true
         queue.clear()
         eofPending = false
         intendedPositionNanos = at
@@ -2414,7 +2441,7 @@ actual class VideoPlayer internal constructor(
         if (audioPipeline?.hasSoundLeft == true) return
         if (clock.mediaNanos() < end) return
         eofPending = false
-        if (loop) restartLap(decoder, resume = true) else enterEnded()
+        if (loop && seekable) restartLap(decoder, resume = true) else enterEnded()
     }
 
     /**
